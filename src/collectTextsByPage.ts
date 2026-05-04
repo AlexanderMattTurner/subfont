@@ -29,6 +29,7 @@ import {
 } from './fontFeatureHelpers';
 import allInitialValues = require('./initialValueByProp');
 import type { Asset, AssetGraph, Relation, PostCssNode } from 'assetgraph';
+import type { FontUsage } from './types/shared';
 
 const fontRelevantCssRegex =
   /font-family|font-weight|font-style|font-stretch|font-display|@font-face|font-variation|font-feature/i;
@@ -953,10 +954,8 @@ interface AssetTextWithPropsEntry {
   >;
   featureTagsByFamily: Map<string, Set<string>>;
   // Populated by buildPerPageFontUsages, then progressively enriched by
-  // subsetFonts (codepoints, subsets, etc.). The wide type reflects this
-  // cross-module mutation pattern.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  fontUsages: any[];
+  // subsetFonts (codepoints, subsets, etc.).
+  fontUsages: FontUsage[];
 }
 
 interface BuildPerPageTimings {

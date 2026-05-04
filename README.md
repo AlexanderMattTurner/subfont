@@ -101,8 +101,8 @@ To include extra characters in a specific font's subset, add `-subfont-text` to 
 
 ## Programmatic API
 
-```js
-const subfont = require('@turntrout/subfont');
+```ts
+import subfont = require('@turntrout/subfont');
 
 const assetGraph = await subfont(
   {
@@ -113,7 +113,7 @@ const assetGraph = await subfont(
 );
 ```
 
-Returns the [Assetgraph](https://github.com/assetgraph/assetgraph) instance.
+The package ships CommonJS with TypeScript declarations. Returns the [Assetgraph](https://github.com/assetgraph/assetgraph) instance.
 
 ### Parameters
 

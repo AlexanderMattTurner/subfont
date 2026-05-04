@@ -7,7 +7,8 @@ import type {
   PostCssNode,
   Relation,
 } from 'assetgraph';
-import type { VariationAxes, AssetGraphError } from './types/shared';
+import type { AssetGraphError, FontUsage } from './types/shared';
+import { wrapAssetGraphError } from './types/shared';
 import compileQuery = require('assetgraph/lib/compileQuery');
 
 import findCustomPropertyDefinitions = require('./findCustomPropertyDefinitions');
@@ -40,32 +41,6 @@ import subsetFontWithGlyphs = require('./subsetFontWithGlyphs');
 import warnAboutMissingGlyphs = require('./warnAboutMissingGlyphs');
 
 const googleFontsCssUrlRegex = /^(?:https?:)?\/\/fonts\.googleapis\.com\/css/;
-
-interface FontUsage {
-  text: string;
-  pageText?: string;
-  fontUrl?: string;
-  preload?: boolean;
-  subsets?: Record<string, Buffer>;
-  fontFamilies: Set<string>;
-  props: Record<string, string>;
-  codepoints: {
-    original: number[];
-    used: number[];
-    unused: number[];
-    page: number[];
-  };
-  smallestSubsetSize?: number;
-  smallestSubsetFormat?: string;
-  smallestOriginalSize?: number;
-  smallestOriginalFormat?: string;
-  fullyInstanced?: boolean;
-  numAxesPinned?: number;
-  numAxesReduced?: number;
-  variationAxes?: VariationAxes;
-  hasFontFeatureSettings?: boolean;
-  fontFeatureTags?: Iterable<string>;
-}
 
 interface AccumulatedFontFaceDeclaration {
   relations: Relation[];
@@ -712,13 +687,7 @@ async function subsetFonts(
         fontUrl,
         // eslint-disable-next-line no-restricted-syntax
         getFontInfo(fontAsset.rawSrc).catch((rawErr: unknown) => {
-          const err =
-            rawErr instanceof Error
-              ? (rawErr as AssetGraphError)
-              : new Error(String(rawErr));
-          (err as AssetGraphError).asset =
-            (err as AssetGraphError).asset || fontAsset;
-          assetGraph.warn(err as AssetGraphError);
+          assetGraph.warn(wrapAssetGraphError(rawErr, fontAsset));
           return null;
         })
       );

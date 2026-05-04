@@ -19,11 +19,11 @@ export function renderNumberRange(min: number, max: number): string {
 }
 
 interface FontUsageLike {
-  fontUrl: string;
-  fontStyles: Set<string>;
-  fontWeights: Set<number>;
-  fontStretches: Set<number>;
-  fontVariationSettings: Iterable<string>;
+  fontUrl?: string;
+  fontStyles?: Set<string | number | undefined>;
+  fontWeights?: Set<string | number | undefined>;
+  fontStretches?: Set<string | number | undefined>;
+  fontVariationSettings?: Iterable<string>;
   props: Record<string, string | undefined>;
 }
 
@@ -78,44 +78,52 @@ export function getVariationAxisUsage(
       fontVariationSettings,
       props,
     } of fontUsages) {
-      if (seenFontUrls.has(fontUrl)) continue;
+      if (!fontUrl || seenFontUrls.has(fontUrl)) continue;
       seenFontUrls.add(fontUrl);
-      if (fontStyles.has('italic')) {
-        noteUsedValue(fontUrl, 'ital', 1);
-      }
-      // If any font-style value except italic is seen (including normal or oblique)
-      // we're also utilizing value 0:
-      if (fontStyles.size > (fontStyles.has('italic') ? 1 : 0)) {
-        noteUsedValue(fontUrl, 'ital', 0);
-      }
-      if (fontStyles.has('oblique')) {
-        noteUsedValue(fontUrl, 'slnt', DEFAULT_OBLIQUE_SLNT);
-      }
-      // If any font-style value except oblique is seen (including normal or italic)
-      // we're also utilizing value 0:
-      if (fontStyles.size > (fontStyles.has('oblique') ? 1 : 0)) {
-        noteUsedValue(fontUrl, 'slnt', 0);
+      if (fontStyles) {
+        if (fontStyles.has('italic')) {
+          noteUsedValue(fontUrl, 'ital', 1);
+        }
+        if (fontStyles.size > (fontStyles.has('italic') ? 1 : 0)) {
+          noteUsedValue(fontUrl, 'ital', 0);
+        }
+        if (fontStyles.has('oblique')) {
+          noteUsedValue(fontUrl, 'slnt', DEFAULT_OBLIQUE_SLNT);
+        }
+        if (fontStyles.size > (fontStyles.has('oblique') ? 1 : 0)) {
+          noteUsedValue(fontUrl, 'slnt', 0);
+        }
       }
 
-      const minMaxFontWeight = parseFontWeightRange(props['font-weight']);
-      for (const fontWeight of fontWeights) {
-        noteUsedValue(fontUrl, 'wght', clamp(fontWeight, ...minMaxFontWeight));
+      if (fontWeights) {
+        const minMaxFontWeight = parseFontWeightRange(props['font-weight']);
+        for (const fontWeight of fontWeights) {
+          noteUsedValue(
+            fontUrl,
+            'wght',
+            clamp(Number(fontWeight), ...minMaxFontWeight)
+          );
+        }
       }
 
-      const minMaxFontStretch = parseFontStretchRange(props['font-stretch']);
-      for (const fontStretch of fontStretches) {
-        noteUsedValue(
-          fontUrl,
-          'wdth',
-          clamp(fontStretch, ...minMaxFontStretch)
-        );
+      if (fontStretches) {
+        const minMaxFontStretch = parseFontStretchRange(props['font-stretch']);
+        for (const fontStretch of fontStretches) {
+          noteUsedValue(
+            fontUrl,
+            'wdth',
+            clamp(Number(fontStretch), ...minMaxFontStretch)
+          );
+        }
       }
 
-      for (const fontVariationSettingsValue of fontVariationSettings) {
-        for (const [axisName, axisValue] of parseFontVariationSettings(
-          fontVariationSettingsValue
-        )) {
-          noteUsedValue(fontUrl, axisName, axisValue);
+      if (fontVariationSettings) {
+        for (const fontVariationSettingsValue of fontVariationSettings) {
+          for (const [axisName, axisValue] of parseFontVariationSettings(
+            fontVariationSettingsValue
+          )) {
+            noteUsedValue(fontUrl, axisName, axisValue);
+          }
         }
       }
     }

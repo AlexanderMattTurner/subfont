@@ -133,7 +133,7 @@ function getSubsetDataUrls(
 interface FontUsageLike {
   subsets?: Record<string, Buffer>;
   props: Record<string, string | number>;
-  codepoints: { used: number[]; original: number[] };
+  codepoints?: { used: number[]; original: number[] };
   fontFamilies: Set<string>;
 }
 
@@ -167,22 +167,20 @@ export function getFontFaceForFontUsage(fontUsage: FontUsageLike): string {
 
   // Intersect used codepoints with original (font's character set) so
   // the unicode-range only advertises characters actually in the subset.
-  let effectiveUsedCodepoints = fontUsage.codepoints.used;
-  if (
-    fontUsage.codepoints.original &&
-    fontUsage.codepoints.original.length > 0
-  ) {
-    const originalSet = new Set(fontUsage.codepoints.original);
-    const filtered = fontUsage.codepoints.used.filter((cp) =>
-      originalSet.has(cp)
-    );
-    if (filtered.length > 0) {
-      effectiveUsedCodepoints = filtered;
+  const codepoints = fontUsage.codepoints;
+  if (codepoints) {
+    let effectiveUsedCodepoints = codepoints.used;
+    if (codepoints.original && codepoints.original.length > 0) {
+      const originalSet = new Set(codepoints.original);
+      const filtered = codepoints.used.filter((cp) => originalSet.has(cp));
+      if (filtered.length > 0) {
+        effectiveUsedCodepoints = filtered;
+      }
     }
+    resultString.push(
+      `  unicode-range: ${unicodeRange(effectiveUsedCodepoints)};`
+    );
   }
-  resultString.push(
-    `  unicode-range: ${unicodeRange(effectiveUsedCodepoints)};`
-  );
 
   resultString.push('}');
 
