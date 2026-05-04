@@ -892,17 +892,17 @@ async function subsetFonts(
         }
       }
     }
-    const subsetFontUsages = (fontUsages as FontUsage[]).filter(
+    const subsetFontUsages = fontUsages.filter(
       (fontUsage) => fontUsage.subsets
     );
     const subsetFontUsagesSet = new Set(subsetFontUsages);
-    const unsubsettedFontUsages = (fontUsages as FontUsage[]).filter(
+    const unsubsettedFontUsages = fontUsages.filter(
       (fontUsage) => !subsetFontUsagesSet.has(fontUsage)
     );
 
     // Remove all existing preload hints to fonts that might have new subsets
     const fontUrls = new Set<string | undefined>(
-      (fontUsages as FontUsage[]).map((fu) => fu.fontUrl)
+      fontUsages.map((fu) => fu.fontUrl)
     );
     for (const relation of preloadRelsByAsset.get(htmlOrSvgAsset) || []) {
       if (!relation.to || !fontUrls.has(relation.to.url)) continue;

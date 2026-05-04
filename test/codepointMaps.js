@@ -93,5 +93,10 @@ describe('codepointMaps', function () {
       // Should only include DFLT + latn; ∑ (math) doesn't map to a script.
       expect(scriptsForText('a + b ∑ c').sort(), 'to equal', ['DFLT', 'latn']);
     });
+
+    it('returns only DFLT+latn for codepoints in gaps between script ranges', function () {
+      // U+0530 falls between Cyrillic Supplement (max 0x052f) and Hebrew (min 0x0590)
+      expect(scriptsForText('԰').sort(), 'to equal', ['DFLT', 'latn']);
+    });
   });
 });

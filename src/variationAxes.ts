@@ -98,6 +98,7 @@ export function getVariationAxisUsage(
       if (fontWeights) {
         const minMaxFontWeight = parseFontWeightRange(props['font-weight']);
         for (const fontWeight of fontWeights) {
+          if (fontWeight == null) continue;
           noteUsedValue(
             fontUrl,
             'wght',
@@ -109,6 +110,7 @@ export function getVariationAxisUsage(
       if (fontStretches) {
         const minMaxFontStretch = parseFontStretchRange(props['font-stretch']);
         for (const fontStretch of fontStretches) {
+          if (fontStretch == null) continue;
           noteUsedValue(
             fontUrl,
             'wdth',
