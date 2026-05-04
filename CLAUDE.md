@@ -57,6 +57,7 @@ pnpm run check-coverage  # Verify coverage thresholds
 - Node.js >= 18 required
 - Use `const` by default; `let` only when reassignment is needed
 - Template literals preferred over string concatenation
+- **Never silence compiler/linter warnings** (e.g. `ignoreDeprecations`, `// @ts-ignore`, `eslint-disable`) without explicit user approval. Fix the root cause or leave the warning visible.
 
 ## Subset-size efficiency improvements
 

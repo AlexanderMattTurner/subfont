@@ -674,5 +674,82 @@ describe('getCssRulesByProperty', function () {
 
       expect(result.color, 'to have length', 2);
     });
+
+    it('should keep rules with different predicates', function () {
+      const result = getRules(
+        ['color'],
+        'h1 { color: red; } @media print { h1 { color: red; } }',
+        []
+      );
+
+      expect(result.color, 'to have length', 2);
+    });
+  });
+
+  describe('comma-separated selectors', function () {
+    it('should create separate entries per selector', function () {
+      const result = getRules(
+        ['font-weight'],
+        'h1, h2, h3 { font-weight: bold; }',
+        []
+      );
+
+      expect(result['font-weight'], 'to have length', 3);
+      expect(result['font-weight'][0].selector, 'to equal', 'h1');
+      expect(result['font-weight'][1].selector, 'to equal', 'h2');
+      expect(result['font-weight'][2].selector, 'to equal', 'h3');
+    });
+
+    it('should compute specificity independently per selector', function () {
+      const result = getRules(['color'], '#main, .item, p { color: red; }', []);
+
+      expect(result.color, 'to have length', 3);
+      expect(result.color[0].specificityArray, 'to equal', [0, 1, 0, 0]);
+      expect(result.color[1].specificityArray, 'to equal', [0, 0, 1, 0]);
+      expect(result.color[2].specificityArray, 'to equal', [0, 0, 0, 1]);
+    });
+  });
+
+  describe('custom properties', function () {
+    it('should preserve case-sensitive custom property names', function () {
+      const result = getRules(
+        ['--myColor', '--MYCOLOR'],
+        ':root { --myColor: red; --MYCOLOR: blue; }',
+        []
+      );
+
+      expect(result['--myColor'], 'to have length', 1);
+      expect(result['--myColor'][0].value, 'to equal', 'red');
+      expect(result['--MYCOLOR'], 'to have length', 1);
+      expect(result['--MYCOLOR'][0].value, 'to equal', 'blue');
+    });
+
+    it('should collect custom properties even if not in the requested list', function () {
+      const result = getRules(
+        ['color'],
+        ':root { --font-color: red; color: var(--font-color); }',
+        []
+      );
+
+      expect(result['--font-color'], 'to have length', 1);
+    });
+  });
+
+  describe('empty namespace prefix', function () {
+    it('should return empty string for |element (no-namespace) selector', function () {
+      const result = getRules(
+        ['color'],
+        '@namespace svg "http://www.w3.org/2000/svg"; |div { color: red }',
+        []
+      );
+
+      expect(result, 'to satisfy', {
+        color: [
+          {
+            namespaceURI: '',
+          },
+        ],
+      });
+    });
   });
 });

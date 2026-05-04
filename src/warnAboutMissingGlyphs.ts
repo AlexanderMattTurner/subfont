@@ -21,9 +21,9 @@ interface FontFaceDeclaration {
 
 interface FontUsageLike {
   subsets?: Record<string, Buffer | Uint8Array>;
-  pageText: string;
+  pageText?: string;
   fontFamilies: Set<string>;
-  codepoints: { original: number[] };
+  codepoints?: { original: number[] };
   props: Record<string, string>;
 }
 
@@ -146,6 +146,7 @@ async function warnAboutMissingGlyphs(
       if (!characterSetLookup) continue; // getFontInfo failed on subset; already warned
 
       let missedAny = false;
+      if (!fontUsage.pageText) continue;
       for (const char of fontUsage.pageText) {
         // Turns out that browsers don't mind that these are missing:
         if (char === '\t' || char === '\n') {
@@ -186,7 +187,7 @@ async function warnAboutMissingGlyphs(
             entry = { relation, codepoints: new Set() };
             unicodeRangeAccumulator.set(node, entry);
           }
-          for (const cp of fontUsage.codepoints.original) {
+          for (const cp of fontUsage.codepoints?.original ?? []) {
             entry.codepoints.add(cp);
           }
         }
