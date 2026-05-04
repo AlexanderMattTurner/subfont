@@ -45,6 +45,9 @@ function getFontBufferHashPrefix(fontBuffer: FontBuffer): crypto.Hash {
   return cached;
 }
 
+// NB: JSON.stringify silently omits `undefined` values, so {featureTags: undefined}
+// serializes identically to {}. Currently correct (undefined means "retain all",
+// a deterministic behavior), but new undefined-able fields need explicit handling.
 type ExtraSubsetCacheOptions = Record<string, boolean | string[] | undefined>;
 
 function subsetCacheKey(
@@ -135,6 +138,8 @@ class SubsetDiskCache {
   }
 }
 
+// featureTags is not included because fontUrl uniquely determines the canonical
+// fontUsage (and thus its featureTags) within a single getSubsetsForFontUsage call.
 export function getSubsetPromiseId(
   fontUsage: FontUsage,
   format: string,
