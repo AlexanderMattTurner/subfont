@@ -431,7 +431,7 @@ async function subsetFontWithGlyphs(
   originalFont: Buffer | Uint8Array,
   text: string,
   {
-    targetFormat,
+    targetFormat = 'woff2',
     glyphIds,
     variationAxes,
     featureTags,
@@ -504,11 +504,7 @@ async function subsetFontWithGlyphs(
     // that are safe to call concurrently in the main thread.
     return targetFormat === 'woff2'
       ? convertInWorker(subsetFont as Buffer, targetFormat, 'truetype')
-      : fontverter.convert(
-          subsetFont as Buffer,
-          targetFormat as string,
-          'truetype'
-        );
+      : fontverter.convert(subsetFont as Buffer, targetFormat, 'truetype');
   } finally {
     if (!released) releaseInstance(inst);
   }

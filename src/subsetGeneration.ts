@@ -15,7 +15,7 @@ import {
 
 // Bump when subsetting behaviour changes to invalidate stale disk-cache
 // entries (e.g. after adding hinting removal or table stripping).
-const SUBSET_CACHE_VERSION = '4';
+const SUBSET_CACHE_VERSION = '5';
 
 type FontBuffer = Buffer | Uint8Array;
 
@@ -45,7 +45,10 @@ function getFontBufferHashPrefix(fontBuffer: FontBuffer): crypto.Hash {
   return cached;
 }
 
-type ExtraSubsetCacheOptions = Record<string, boolean | string[]>;
+// NB: JSON.stringify silently omits `undefined` values, so {featureTags: undefined}
+// serializes identically to {}. Currently correct (undefined means "retain all",
+// a deterministic behavior), but new undefined-able fields need explicit handling.
+type ExtraSubsetCacheOptions = Record<string, boolean | string[] | undefined>;
 
 function subsetCacheKey(
   fontBuffer: FontBuffer,
@@ -135,6 +138,8 @@ class SubsetDiskCache {
   }
 }
 
+// featureTags is not included because fontUrl uniquely determines the canonical
+// fontUsage (and thus its featureTags) within a single getSubsetsForFontUsage call.
 export function getSubsetPromiseId(
   fontUsage: FontUsage,
   format: string,
@@ -262,15 +267,6 @@ export async function getSubsetsForFontUsage(
         }
       }
 
-      // Per-fontUsage decisions — same across all target formats.
-      // False positives (keeping a table the page doesn't need) cost a few
-      // hundred bytes; false negatives (dropping a needed table) break
-      // rendering, so the heuristics err on the side of keeping.
-      const extraOptions = {
-        dropMathTable: !pageNeedsMathTable(text),
-        dropColorTables: !pageNeedsColorTables(text),
-        scriptTags: scriptsForText(text),
-      };
       // Targeted feature retention when we can fully enumerate the
       // CSS-requested feature tags. If the page declares feature settings
       // but the tags couldn't be extracted (e.g. resolution through CSS
@@ -282,6 +278,19 @@ export async function getSubsetsForFontUsage(
           : fontUsage.fontFeatureTags
             ? [...fontUsage.fontFeatureTags]
             : [];
+
+      // Per-fontUsage decisions — same across all target formats.
+      // False positives (keeping a table the page doesn't need) cost a few
+      // hundred bytes; false negatives (dropping a needed table) break
+      // rendering, so the heuristics err on the side of keeping.
+      // featureTags is included so different CSS feature-settings don't
+      // collide in the disk cache.
+      const extraOptions = {
+        dropMathTable: !pageNeedsMathTable(text),
+        dropColorTables: !pageNeedsColorTables(text),
+        scriptTags: scriptsForText(text),
+        featureTags,
+      };
 
       for (const targetFormat of formats) {
         const promiseId = getSubsetPromiseId(
@@ -313,7 +322,6 @@ export async function getSubsetsForFontUsage(
               targetFormat,
               glyphIds: featureGlyphIds,
               variationAxes: subsetInfo.variationAxes,
-              featureTags,
               ...extraOptions,
             });
 

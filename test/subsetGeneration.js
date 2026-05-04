@@ -191,6 +191,17 @@ describe('subsetGeneration', function () {
           { dropMathTable: true },
         ],
       },
+      {
+        desc: 'featureTags in extraOptions',
+        args: [
+          Buffer.from('font'),
+          'abc',
+          'woff2',
+          null,
+          null,
+          { featureTags: ['smcp', 'ss02'] },
+        ],
+      },
     ].forEach(({ desc, args }) => {
       it(`should differ when ${desc} changes`, function () {
         expect(
@@ -199,6 +210,38 @@ describe('subsetGeneration', function () {
           subsetCacheKey(...args)
         );
       });
+    });
+
+    it('should produce different keys for different featureTags values', function () {
+      const fontBuf = Buffer.from('font');
+      const withSmcp = subsetCacheKey(fontBuf, 'abc', 'woff2', null, null, {
+        featureTags: ['smcp'],
+      });
+      const withSs02 = subsetCacheKey(fontBuf, 'abc', 'woff2', null, null, {
+        featureTags: ['ss02'],
+      });
+      const withBoth = subsetCacheKey(fontBuf, 'abc', 'woff2', null, null, {
+        featureTags: ['smcp', 'ss02'],
+      });
+      const withNone = subsetCacheKey(fontBuf, 'abc', 'woff2', null, null, {
+        featureTags: [],
+      });
+      const withUndefined = subsetCacheKey(
+        fontBuf,
+        'abc',
+        'woff2',
+        null,
+        null,
+        {
+          featureTags: undefined,
+        }
+      );
+
+      // All distinct featureTags combos must produce distinct keys
+      const keys = new Set([withSmcp, withSs02, withBoth, withNone]);
+      expect(keys.size, 'to equal', 4);
+      // undefined featureTags should differ from empty array
+      expect(withUndefined, 'not to equal', withNone);
     });
   });
 
@@ -236,6 +279,36 @@ describe('subsetGeneration', function () {
       fs.writeFileSync(filePath, 'x');
       // set() should resolve without throwing even when the path is invalid
       await new SubsetDiskCache(filePath).set('key', Buffer.from('data'));
+    });
+
+    it('should warn only once on repeated write failures', async function () {
+      const warnings = [];
+      const fakeConsole = { warn: (msg) => warnings.push(msg) };
+      const filePath = pathModule.join(tmpDir, 'afile');
+      fs.writeFileSync(filePath, 'x');
+      const cache = new SubsetDiskCache(filePath, fakeConsole);
+      await cache.set('key1', Buffer.from('a'));
+      await cache.set('key2', Buffer.from('b'));
+      await cache.set('key3', Buffer.from('c'));
+      // Only one write-failure warning should appear despite three failures
+      const writeWarnings = warnings.filter((w) =>
+        w.includes('failed to write')
+      );
+      expect(writeWarnings, 'to have length', 1);
+    });
+
+    it('should retry write after ENOENT when cache dir is removed mid-session', async function () {
+      const nested = pathModule.join(tmpDir, 'volatile');
+      const cache = new SubsetDiskCache(nested);
+      const buf = Buffer.from('payload');
+      // First write creates the dir
+      await cache.set('first', buf);
+      expect(await cache.get('first'), 'to equal', buf);
+      // Remove the dir to simulate external cleanup
+      fs.rmSync(nested, { recursive: true, force: true });
+      // Second write should detect ENOENT, recreate, and succeed
+      await cache.set('second', buf);
+      expect(await cache.get('second'), 'to equal', buf);
     });
   });
 });

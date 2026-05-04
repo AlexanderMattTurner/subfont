@@ -522,6 +522,268 @@ function buildFontInfoReport(
   }));
 }
 
+// Compute codepoint sets (original, used, unused, page) for every fontUsage
+// and attach them to the fontUsage objects. Also applies fontDisplay if set.
+async function computeCodepoints(
+  assetGraph: AssetGraph,
+  htmlOrSvgAssetTextsWithProps: AssetTextWithProps[],
+  fontDisplay: string | undefined
+): Promise<void> {
+  if (fontDisplay) {
+    for (const { fontUsages } of htmlOrSvgAssetTextsWithProps) {
+      for (const fontUsage of fontUsages) {
+        fontUsage.props['font-display'] = fontDisplay;
+      }
+    }
+  }
+
+  const loadedAssetsByUrl = new Map<string, Asset>();
+  for (const asset of assetGraph.findAssets({ isLoaded: true })) {
+    if (asset.url) loadedAssetsByUrl.set(asset.url, asset);
+  }
+  const codepointFontAssetByUrl = new Map<string, Asset>();
+  for (const { fontUsages } of htmlOrSvgAssetTextsWithProps) {
+    for (const fontUsage of fontUsages) {
+      if (
+        fontUsage.fontUrl &&
+        !codepointFontAssetByUrl.has(fontUsage.fontUrl)
+      ) {
+        const originalFont = loadedAssetsByUrl.get(fontUsage.fontUrl);
+        if (originalFont) {
+          codepointFontAssetByUrl.set(fontUsage.fontUrl, originalFont);
+        }
+      }
+    }
+  }
+
+  type FontInfo = Awaited<ReturnType<typeof getFontInfo>> | null;
+  const fontInfoPromises = new Map<string, Promise<FontInfo>>();
+  for (const [fontUrl, fontAsset] of codepointFontAssetByUrl) {
+    if (fontAsset.isLoaded) {
+      fontInfoPromises.set(
+        fontUrl,
+        // eslint-disable-next-line no-restricted-syntax
+        getFontInfo(fontAsset.rawSrc).catch((rawErr: unknown) => {
+          assetGraph.warn(wrapAssetGraphError(rawErr, fontAsset));
+          return null;
+        })
+      );
+    }
+  }
+  const fontInfoResults = new Map<string, FontInfo>(
+    await Promise.all(
+      [...fontInfoPromises].map(
+        async ([key, promise]) => [key, await promise] as [string, FontInfo]
+      )
+    )
+  );
+
+  const globalCodepointsByFontUrl = new Map<
+    string | undefined,
+    {
+      originalCodepoints: number[] | null;
+      usedCodepoints?: number[];
+      unusedCodepoints?: number[];
+    }
+  >();
+  const codepointsCache = new Map<string, number[]>();
+  for (const { fontUsages } of htmlOrSvgAssetTextsWithProps) {
+    for (const fontUsage of fontUsages) {
+      let cached = globalCodepointsByFontUrl.get(fontUsage.fontUrl);
+      if (!cached) {
+        cached = { originalCodepoints: null };
+        const fontInfo = fontUsage.fontUrl
+          ? fontInfoResults.get(fontUsage.fontUrl)
+          : undefined;
+        if (fontInfo) {
+          const originalCodepoints: number[] = fontInfo.characterSet;
+          const usedCodepoints = getCodepoints(fontUsage.text);
+          const usedCodepointsSet = new Set(usedCodepoints);
+          cached.originalCodepoints = originalCodepoints;
+          cached.usedCodepoints = usedCodepoints;
+          cached.unusedCodepoints = originalCodepoints.filter(
+            (n) => !usedCodepointsSet.has(n)
+          );
+        }
+        globalCodepointsByFontUrl.set(fontUsage.fontUrl, cached);
+      }
+
+      if (cached.originalCodepoints) {
+        const pageText = fontUsage.pageText ?? '';
+        let pageCodepoints = codepointsCache.get(pageText);
+        if (!pageCodepoints) {
+          pageCodepoints = getCodepoints(pageText);
+          codepointsCache.set(pageText, pageCodepoints);
+        }
+        fontUsage.codepoints = {
+          original: cached.originalCodepoints,
+          used: cached.usedCodepoints ?? [],
+          unused: cached.unusedCodepoints ?? [],
+          page: pageCodepoints,
+        };
+      } else {
+        fontUsage.codepoints = {
+          original: [],
+          used: [],
+          unused: [],
+          page: [],
+        };
+      }
+    }
+  }
+}
+
+// Inject __subset font-family names into CSS declarations and SVG attributes
+// so the browser picks up the subset fonts instead of the originals.
+function injectSubsetFontFamilies(
+  assetGraph: AssetGraph,
+  htmlOrSvgAssetTextsWithProps: AssetTextWithProps[],
+  omitFallbacks: boolean
+): void {
+  const webfontNameMap: Record<string, string> = Object.create(null);
+  for (const { fontUsages } of htmlOrSvgAssetTextsWithProps) {
+    for (const { subsets, fontFamilies, props } of fontUsages) {
+      if (subsets) {
+        for (const fontFamily of fontFamilies) {
+          webfontNameMap[fontFamily.toLowerCase()] =
+            `${props['font-family']}__subset`;
+        }
+      }
+    }
+  }
+
+  let customPropertyDefinitions:
+    | ReturnType<typeof findCustomPropertyDefinitions>
+    | undefined;
+  const cssAssetsDirtiedByCustomProps = new Set<Asset>();
+
+  for (const svgAsset of assetGraph.findAssets({ type: 'Svg' })) {
+    if (!svgAsset.isLoaded) continue;
+    let changesMade = false;
+    for (const element of Array.from(
+      svgAsset.parseTree.querySelectorAll('[font-family]')
+    )) {
+      const fontFamilies = cssListHelpers.splitByCommas(
+        element.getAttribute('font-family')
+      );
+      for (let i = 0; i < fontFamilies.length; i += 1) {
+        const subsetFontFamily =
+          webfontNameMap[
+            cssFontParser.parseFontFamily(fontFamilies[i])[0].toLowerCase()
+          ];
+        if (subsetFontFamily && !fontFamilies.includes(subsetFontFamily)) {
+          fontFamilies.splice(
+            i,
+            omitFallbacks ? 1 : 0,
+            maybeCssQuote(subsetFontFamily)
+          );
+          i += 1;
+          element.setAttribute('font-family', fontFamilies.join(', '));
+          changesMade = true;
+        }
+      }
+    }
+    if (changesMade) {
+      svgAsset.markDirty();
+    }
+  }
+
+  const cssAssets = assetGraph.findAssets({ type: 'Css', isLoaded: true });
+  const parseTreeToAsset = new Map<Asset['parseTree'], Asset>();
+  for (const cssAsset of cssAssets) {
+    parseTreeToAsset.set(cssAsset.parseTree, cssAsset);
+  }
+  for (const cssAsset of cssAssets) {
+    let changesMade = false;
+    cssAsset.eachRuleInParseTree((cssRule) => {
+      if (cssRule.parent.type !== 'rule' || cssRule.type !== 'decl') return;
+
+      const propName = cssRule.prop.toLowerCase();
+      if (
+        (propName === 'font' || propName === 'font-family') &&
+        cssRule.value.includes('var(')
+      ) {
+        if (!customPropertyDefinitions) {
+          customPropertyDefinitions = findCustomPropertyDefinitions(cssAssets);
+        }
+        for (const customPropertyName of extractReferencedCustomPropertyNames(
+          cssRule.value
+        )) {
+          for (const relatedCssRule of [
+            cssRule,
+            ...(customPropertyDefinitions[customPropertyName] || []),
+          ]) {
+            const modifiedValue = injectSubsetDefinitions(
+              relatedCssRule.value,
+              webfontNameMap,
+              omitFallbacks
+            );
+            if (modifiedValue !== relatedCssRule.value) {
+              relatedCssRule.value = modifiedValue;
+              const ownerAsset = parseTreeToAsset.get(relatedCssRule.root());
+              if (ownerAsset) {
+                cssAssetsDirtiedByCustomProps.add(ownerAsset);
+              }
+            }
+          }
+        }
+      } else if (propName === 'font-family') {
+        const fontFamilies = cssListHelpers.splitByCommas(cssRule.value);
+        for (let i = 0; i < fontFamilies.length; i += 1) {
+          const subsetFontFamily =
+            webfontNameMap[
+              cssFontParser.parseFontFamily(fontFamilies[i])[0].toLowerCase()
+            ];
+          if (subsetFontFamily && !fontFamilies.includes(subsetFontFamily)) {
+            fontFamilies.splice(
+              i,
+              omitFallbacks ? 1 : 0,
+              maybeCssQuote(subsetFontFamily)
+            );
+            i += 1;
+            cssRule.value = fontFamilies.join(', ');
+            changesMade = true;
+          }
+        }
+      } else if (propName === 'font') {
+        const fontProperties = cssFontParser.parseFont(cssRule.value);
+        const fontFamilies =
+          fontProperties && fontProperties['font-family'].map(unquote);
+        if (!fontFamilies) return;
+
+        const subsetFontFamily = webfontNameMap[fontFamilies[0].toLowerCase()];
+        if (!subsetFontFamily || fontFamilies.includes(subsetFontFamily))
+          return;
+
+        if (omitFallbacks) {
+          fontFamilies.shift();
+        }
+        fontFamilies.unshift(subsetFontFamily);
+        const stylePrefix = fontProperties['font-style']
+          ? `${fontProperties['font-style']} `
+          : '';
+        const weightPrefix = fontProperties['font-weight']
+          ? `${fontProperties['font-weight']} `
+          : '';
+        const lineHeightSuffix = fontProperties['line-height']
+          ? `/${fontProperties['line-height']}`
+          : '';
+        cssRule.value = `${stylePrefix}${weightPrefix}${
+          fontProperties['font-size']
+        }${lineHeightSuffix} ${fontFamilies.map(maybeCssQuote).join(', ')}`;
+        changesMade = true;
+      }
+    });
+    if (changesMade) {
+      cssAsset.markDirty();
+    }
+  }
+
+  for (const dirtiedAsset of cssAssetsDirtiedByCustomProps) {
+    dirtiedAsset.markDirty();
+  }
+}
+
 interface SubsetFontsOptions {
   formats?: string[];
   subsetPath?: string;
@@ -645,132 +907,17 @@ async function subsetFonts(
   timings['omitFallbacks processing'] = omitFallbacksPhase.end();
 
   const codepointPhase = trackPhase('codepoint generation');
-
-  if (fontDisplay) {
-    for (const htmlOrSvgAssetTextWithProps of htmlOrSvgAssetTextsWithProps as AssetTextWithProps[]) {
-      for (const fontUsage of htmlOrSvgAssetTextWithProps.fontUsages) {
-        fontUsage.props['font-display'] = fontDisplay;
-      }
-    }
-  }
-
-  // Pre-compute the global codepoints (original, used, unused) once per fontUrl
-  // since fontUsage.text is the same global union on every page.
-  // Pre-index all loaded assets by URL for O(1) lookups instead of O(n) scans.
-  const loadedAssetsByUrl = new Map<string, Asset>();
-  for (const asset of assetGraph.findAssets({ isLoaded: true })) {
-    if (asset.url) loadedAssetsByUrl.set(asset.url, asset);
-  }
-  const codepointFontAssetByUrl = new Map<string, Asset>();
-  for (const htmlOrSvgAssetTextWithProps of htmlOrSvgAssetTextsWithProps as AssetTextWithProps[]) {
-    for (const fontUsage of htmlOrSvgAssetTextWithProps.fontUsages) {
-      if (
-        fontUsage.fontUrl &&
-        !codepointFontAssetByUrl.has(fontUsage.fontUrl)
-      ) {
-        const originalFont = loadedAssetsByUrl.get(fontUsage.fontUrl);
-        if (originalFont) {
-          codepointFontAssetByUrl.set(fontUsage.fontUrl, originalFont);
-        }
-      }
-    }
-  }
-
-  // getFontInfo internally serializes harfbuzzjs WASM calls (which are
-  // not concurrency-safe), so Promise.all here just queues them up
-  // and avoids awaiting each individually in the loop below.
-  type FontInfo = Awaited<ReturnType<typeof getFontInfo>> | null;
-  const fontInfoPromises = new Map<string, Promise<FontInfo>>();
-  for (const [fontUrl, fontAsset] of codepointFontAssetByUrl) {
-    if (fontAsset.isLoaded) {
-      fontInfoPromises.set(
-        fontUrl,
-        // eslint-disable-next-line no-restricted-syntax
-        getFontInfo(fontAsset.rawSrc).catch((rawErr: unknown) => {
-          assetGraph.warn(wrapAssetGraphError(rawErr, fontAsset));
-          return null;
-        })
-      );
-    }
-  }
-  const fontInfoResults = new Map<string, FontInfo>(
-    await Promise.all(
-      [...fontInfoPromises].map(
-        async ([key, promise]) => [key, await promise] as [string, FontInfo]
-      )
-    )
+  await computeCodepoints(
+    assetGraph,
+    htmlOrSvgAssetTextsWithProps as AssetTextWithProps[],
+    fontDisplay
   );
-
-  // Build global codepoints synchronously from pre-fetched results
-  const globalCodepointsByFontUrl = new Map<
-    string | undefined,
-    {
-      originalCodepoints: number[] | null;
-      usedCodepoints?: number[];
-      unusedCodepoints?: number[];
-    }
-  >();
-  const codepointsCache = new Map<string, number[]>();
-  for (const htmlOrSvgAssetTextWithProps of htmlOrSvgAssetTextsWithProps as AssetTextWithProps[]) {
-    for (const fontUsage of htmlOrSvgAssetTextWithProps.fontUsages) {
-      let cached = globalCodepointsByFontUrl.get(fontUsage.fontUrl);
-      if (!cached) {
-        cached = { originalCodepoints: null };
-        const fontInfo = fontUsage.fontUrl
-          ? fontInfoResults.get(fontUsage.fontUrl)
-          : undefined;
-        if (fontInfo) {
-          const originalCodepoints: number[] = fontInfo.characterSet;
-          const usedCodepoints = getCodepoints(fontUsage.text);
-          const usedCodepointsSet = new Set(usedCodepoints);
-          cached.originalCodepoints = originalCodepoints;
-          cached.usedCodepoints = usedCodepoints;
-          cached.unusedCodepoints = originalCodepoints.filter(
-            (n) => !usedCodepointsSet.has(n)
-          );
-        }
-        globalCodepointsByFontUrl.set(fontUsage.fontUrl, cached);
-      }
-
-      if (cached.originalCodepoints) {
-        // Cache getCodepoints result by pageText string to avoid
-        // recomputing for pages with identical text per font
-        const pageText = fontUsage.pageText ?? '';
-        let pageCodepoints = codepointsCache.get(pageText);
-        if (!pageCodepoints) {
-          pageCodepoints = getCodepoints(pageText);
-          codepointsCache.set(pageText, pageCodepoints);
-        }
-        fontUsage.codepoints = {
-          original: cached.originalCodepoints,
-          used: cached.usedCodepoints ?? [],
-          unused: cached.unusedCodepoints ?? [],
-          page: pageCodepoints,
-        };
-      } else {
-        fontUsage.codepoints = {
-          original: [],
-          used: [],
-          unused: [],
-          page: [],
-        };
-      }
-    }
-  }
-
   timings['codepoint generation'] = codepointPhase.end();
 
   if (onlyInfo) {
     return {
-      fontInfo: (htmlOrSvgAssetTextsWithProps as AssetTextWithProps[]).map(
-        ({ fontUsages, htmlOrSvgAsset }) => ({
-          assetFileName: htmlOrSvgAsset.nonInlineAncestor.urlOrDescription,
-          fontUsages: fontUsages.map((fontUsage) =>
-            (({ hasFontFeatureSettings, fontFeatureTags, ...rest }) => rest)(
-              fontUsage
-            )
-          ),
-        })
+      fontInfo: buildFontInfoReport(
+        htmlOrSvgAssetTextsWithProps as AssetTextWithProps[]
       ),
       timings,
     };
@@ -842,7 +989,7 @@ async function subsetFonts(
   // under the same stylesheet config produce byte-identical output, so this
   // collapses the per-page string build from O(pages) to O(unique configs).
   const subsetCssTextCache = new WeakMap<
-    object,
+    AccumulatedFontFaceDeclaration[],
     { subset: string; unused: string }
   >();
 
@@ -945,9 +1092,7 @@ async function subsetFonts(
     }
     numFontUsagesWithSubset += subsetFontUsages.length;
 
-    let cssTextParts = subsetCssTextCache.get(
-      accumulatedFontFaceDeclarations as object
-    );
+    let cssTextParts = subsetCssTextCache.get(accumulatedFontFaceDeclarations);
     if (!cssTextParts) {
       cssTextParts = {
         subset: getFontUsageStylesheet(subsetFontUsages),
@@ -956,10 +1101,7 @@ async function subsetFonts(
           accumulatedFontFaceDeclarations
         ),
       };
-      subsetCssTextCache.set(
-        accumulatedFontFaceDeclarations as object,
-        cssTextParts
-      );
+      subsetCssTextCache.set(accumulatedFontFaceDeclarations, cssTextParts);
     }
     let subsetCssText = cssTextParts.subset;
     const unusedVariantsCss = cssTextParts.unused;
@@ -1242,159 +1384,11 @@ async function subsetFonts(
   timings['Google Fonts + cleanup'] = googleCleanupPhase.end();
 
   const injectPhase = trackPhase('inject subset font-family into CSS/SVG');
-
-  // Use subsets in font-family:
-
-  const webfontNameMap = Object.create(null);
-
-  for (const { fontUsages } of htmlOrSvgAssetTextsWithProps) {
-    for (const { subsets, fontFamilies, props } of fontUsages) {
-      if (subsets) {
-        for (const fontFamily of fontFamilies) {
-          webfontNameMap[fontFamily.toLowerCase()] =
-            `${props['font-family']}__subset`;
-        }
-      }
-    }
-  }
-
-  let customPropertyDefinitions:
-    | ReturnType<typeof findCustomPropertyDefinitions>
-    | undefined;
-  const cssAssetsDirtiedByCustomProps = new Set<Asset>();
-  // Inject subset font name before original webfont in SVG font-family attributes
-  const svgAssets = assetGraph.findAssets({ type: 'Svg' });
-  for (const svgAsset of svgAssets) {
-    if (!svgAsset.isLoaded) continue;
-    let changesMade = false;
-    for (const element of Array.from(
-      svgAsset.parseTree.querySelectorAll('[font-family]')
-    )) {
-      const fontFamilies = cssListHelpers.splitByCommas(
-        element.getAttribute('font-family')
-      );
-      for (let i = 0; i < fontFamilies.length; i += 1) {
-        const subsetFontFamily =
-          webfontNameMap[
-            cssFontParser.parseFontFamily(fontFamilies[i])[0].toLowerCase()
-          ];
-        if (subsetFontFamily && !fontFamilies.includes(subsetFontFamily)) {
-          fontFamilies.splice(
-            i,
-            omitFallbacks ? 1 : 0,
-            maybeCssQuote(subsetFontFamily)
-          );
-          i += 1;
-          element.setAttribute('font-family', fontFamilies.join(', '));
-          changesMade = true;
-        }
-      }
-    }
-    if (changesMade) {
-      svgAsset.markDirty();
-    }
-  }
-
-  // Inject subset font name before original webfont in CSS
-  const cssAssets = assetGraph.findAssets({
-    type: 'Css',
-    isLoaded: true,
-  });
-  const parseTreeToAsset = new Map<Asset['parseTree'], Asset>();
-  for (const cssAsset of cssAssets) {
-    parseTreeToAsset.set(cssAsset.parseTree, cssAsset);
-  }
-  for (const cssAsset of cssAssets) {
-    let changesMade = false;
-    cssAsset.eachRuleInParseTree((cssRule) => {
-      if (cssRule.parent.type !== 'rule' || cssRule.type !== 'decl') return;
-
-      const propName = cssRule.prop.toLowerCase();
-      if (
-        (propName === 'font' || propName === 'font-family') &&
-        cssRule.value.includes('var(')
-      ) {
-        if (!customPropertyDefinitions) {
-          customPropertyDefinitions = findCustomPropertyDefinitions(cssAssets);
-        }
-        for (const customPropertyName of extractReferencedCustomPropertyNames(
-          cssRule.value
-        )) {
-          for (const relatedCssRule of [
-            cssRule,
-            ...(customPropertyDefinitions[customPropertyName] || []),
-          ]) {
-            const modifiedValue = injectSubsetDefinitions(
-              relatedCssRule.value,
-              webfontNameMap,
-              omitFallbacks // replaceOriginal
-            );
-            if (modifiedValue !== relatedCssRule.value) {
-              relatedCssRule.value = modifiedValue;
-              const ownerAsset = parseTreeToAsset.get(relatedCssRule.root());
-              if (ownerAsset) {
-                cssAssetsDirtiedByCustomProps.add(ownerAsset);
-              }
-            }
-          }
-        }
-      } else if (propName === 'font-family') {
-        const fontFamilies = cssListHelpers.splitByCommas(cssRule.value);
-        for (let i = 0; i < fontFamilies.length; i += 1) {
-          const subsetFontFamily =
-            webfontNameMap[
-              cssFontParser.parseFontFamily(fontFamilies[i])[0].toLowerCase()
-            ];
-          if (subsetFontFamily && !fontFamilies.includes(subsetFontFamily)) {
-            fontFamilies.splice(
-              i,
-              omitFallbacks ? 1 : 0,
-              maybeCssQuote(subsetFontFamily)
-            );
-            i += 1;
-            cssRule.value = fontFamilies.join(', ');
-            changesMade = true;
-          }
-        }
-      } else if (propName === 'font') {
-        const fontProperties = cssFontParser.parseFont(cssRule.value);
-        const fontFamilies =
-          fontProperties && fontProperties['font-family'].map(unquote);
-        if (!fontFamilies) return;
-
-        const subsetFontFamily = webfontNameMap[fontFamilies[0].toLowerCase()];
-        if (!subsetFontFamily || fontFamilies.includes(subsetFontFamily))
-          return;
-
-        // Rebuild the font shorthand with the subset family prepended
-        if (omitFallbacks) {
-          fontFamilies.shift();
-        }
-        fontFamilies.unshift(subsetFontFamily);
-        const stylePrefix = fontProperties['font-style']
-          ? `${fontProperties['font-style']} `
-          : '';
-        const weightPrefix = fontProperties['font-weight']
-          ? `${fontProperties['font-weight']} `
-          : '';
-        const lineHeightSuffix = fontProperties['line-height']
-          ? `/${fontProperties['line-height']}`
-          : '';
-        cssRule.value = `${stylePrefix}${weightPrefix}${
-          fontProperties['font-size']
-        }${lineHeightSuffix} ${fontFamilies.map(maybeCssQuote).join(', ')}`;
-        changesMade = true;
-      }
-    });
-    if (changesMade) {
-      cssAsset.markDirty();
-    }
-  }
-
-  for (const dirtiedAsset of cssAssetsDirtiedByCustomProps) {
-    dirtiedAsset.markDirty();
-  }
-
+  injectSubsetFontFamilies(
+    assetGraph,
+    htmlOrSvgAssetTextsWithProps as AssetTextWithProps[],
+    omitFallbacks
+  );
   timings['inject subset font-family'] = injectPhase.end();
 
   const orphanCleanupPhase = trackPhase('source maps + orphan cleanup');
