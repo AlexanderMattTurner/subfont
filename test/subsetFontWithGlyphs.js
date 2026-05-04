@@ -285,6 +285,30 @@ describe('subsetFontWithGlyphs', function () {
     }
   });
 
+  it('should default to woff2 when targetFormat is omitted', async function () {
+    const result = await subsetFontWithGlyphs(ttfBuffer, 'Hello');
+
+    expect(result, 'to be a', Buffer);
+    expect(result.length, 'to be greater than', 0);
+    // woff2 magic: 774F4632 (wOF2)
+    expect(result[0], 'to equal', 0x77);
+    expect(result[1], 'to equal', 0x4f);
+    expect(result[2], 'to equal', 0x46);
+    expect(result[3], 'to equal', 0x32);
+  });
+
+  it('should default to woff2 when options object is provided but targetFormat is undefined', async function () {
+    const result = await subsetFontWithGlyphs(ttfBuffer, 'Hello', {
+      targetFormat: undefined,
+    });
+
+    expect(result, 'to be a', Buffer);
+    expect(result.length, 'to be greater than', 0);
+    // woff2 magic: 774F4632 (wOF2)
+    expect(result[0], 'to equal', 0x77);
+    expect(result[1], 'to equal', 0x4f);
+  });
+
   it('should handle concurrent calls via worker pool', async function () {
     const results = await Promise.all([
       subsetFontWithGlyphs(ttfBuffer, 'A', { targetFormat: 'woff2' }),
