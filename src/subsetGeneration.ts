@@ -15,7 +15,7 @@ import {
 
 // Bump when subsetting behaviour changes to invalidate stale disk-cache
 // entries (e.g. after adding hinting removal or table stripping).
-const SUBSET_CACHE_VERSION = '5';
+const SUBSET_CACHE_VERSION = '6';
 
 type FontBuffer = Buffer | Uint8Array;
 
