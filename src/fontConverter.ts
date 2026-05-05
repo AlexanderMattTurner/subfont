@@ -153,3 +153,9 @@ export function convert(
     _waiters.push(resolve);
   }).then((e) => doConvert(e, buffer, targetFormat, sourceFormat));
 }
+
+export async function destroy(): Promise<void> {
+  _waiters.length = 0;
+  await Promise.all(_pool.map((e) => e.worker.terminate()));
+  _pool.length = 0;
+}

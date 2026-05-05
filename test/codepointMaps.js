@@ -67,7 +67,7 @@ describe('codepointMaps', function () {
       { name: 'Greek', text: 'Γεια σας', expected: 'grek' },
       { name: 'Arabic', text: 'مرحبا', expected: 'arab' },
       { name: 'Hebrew', text: 'שלום', expected: 'hebr' },
-      { name: 'Armenian', text: 'Բարեdelays', expected: 'armn' },
+      { name: 'Armenian', text: 'Բարև', expected: 'armn' },
       { name: 'Devanagari', text: 'नमस्ते', expected: 'deva' },
       { name: 'Bengali', text: 'হ্যালো', expected: 'beng' },
       { name: 'Sinhala', text: 'ආයුබෝවන්', expected: 'sinh' },
