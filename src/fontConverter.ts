@@ -39,13 +39,12 @@ function createPoolWorker(): PoolWorker {
     _taskByWorker.delete(worker);
     clearTaskTimer(msg.taskId);
     const cb = _taskCallbacks.get(msg.taskId);
-    if (cb) {
-      _taskCallbacks.delete(msg.taskId);
-      if (msg.type === 'result' && msg.buffer) {
-        cb.resolve(Buffer.from(msg.buffer));
-      } else {
-        cb.reject(new Error(msg.error || 'Font conversion failed'));
-      }
+    if (!cb) return;
+    _taskCallbacks.delete(msg.taskId);
+    if (msg.type === 'result' && msg.buffer) {
+      cb.resolve(Buffer.from(msg.buffer));
+    } else {
+      cb.reject(new Error(msg.error || 'Font conversion failed'));
     }
     releaseWorker(pw);
     if (!pw.busy) worker.unref();
@@ -54,14 +53,12 @@ function createPoolWorker(): PoolWorker {
   worker.on('error', (err) => {
     const taskId = _taskByWorker.get(worker);
     _taskByWorker.delete(worker);
-    if (taskId !== undefined) {
-      clearTaskTimer(taskId);
-      const cb = _taskCallbacks.get(taskId);
-      if (cb) {
-        _taskCallbacks.delete(taskId);
-        cb.reject(err);
-      }
-    }
+    if (taskId === undefined) return;
+    clearTaskTimer(taskId);
+    const cb = _taskCallbacks.get(taskId);
+    if (!cb) return;
+    _taskCallbacks.delete(taskId);
+    cb.reject(err);
     releaseWorker(pw);
     if (!pw.busy) worker.unref();
   });
@@ -70,14 +67,14 @@ function createPoolWorker(): PoolWorker {
   return pw;
 }
 
-function initPool(): Promise<void> {
+async function initPool(): Promise<void> {
   if (!_initPromise) {
-    _initPromise = Promise.resolve().then(() => {
+    _initPromise = (async () => {
       _pool = [];
       for (let i = 0; i < POOL_SIZE; i++) {
         _pool.push(createPoolWorker());
       }
-    });
+    })();
   }
   return _initPromise;
 }
