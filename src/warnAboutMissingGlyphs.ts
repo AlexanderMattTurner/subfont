@@ -70,7 +70,9 @@ async function warnAboutMissingGlyphs(
             .then((info) => new Set(info.characterSet))
             // eslint-disable-next-line no-restricted-syntax
             .catch((rawErr: unknown) => {
-              assetGraph.warn(rawErr as Error);
+              assetGraph.warn(
+                rawErr instanceof Error ? rawErr : new Error(String(rawErr))
+              );
               return null;
             })
         );

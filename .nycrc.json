@@ -12,6 +12,6 @@
   "lines": 82,
   "functions": 78,
   "statements": 82,
-  "sourceMap": false,
+  "sourceMap": true,
   "produce-source-map": false
 }
