@@ -895,6 +895,15 @@ async function subsetFonts(
   timings.collectTextsByPage = collectPhase.end();
   timings.collectTextsByPageDetails = subTimings;
 
+  // textByProps is consumed inside collectTextsByPage (see buildPerPageFontUsages)
+  // and never read again by anything in the subsetFonts pipeline; the raw
+  // font-tracer text strings inside scale with #pages and are the largest
+  // per-page artefact at the 1800-page scale. Release them before
+  // computeCodepoints / subsetting / injection so they don't pin heap.
+  for (const entry of htmlOrSvgAssetTextsWithProps) {
+    entry.textByProps = [];
+  }
+
   const omitFallbacksPhase = trackPhase('omitFallbacks processing');
   const potentiallyOrphanedAssets = new Set<Asset>();
   if (omitFallbacks) {
