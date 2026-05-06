@@ -1391,6 +1391,10 @@ async function subsetFonts(
     googleFontStylesheet.unload();
   }
 
+  // Cache served its purpose; injectSubsetFontFamilies and the rest of the
+  // function don't need it. Free the URL keys before injection runs.
+  selfHostedGoogleCssByUrl.clear();
+
   // Clean up, making sure not to detach the same relation twice, eg. when multiple pages use the same stylesheet that imports a font
   for (const relation of relationsToRemove) {
     relation.detach();
