@@ -350,15 +350,9 @@ export async function getSubsetsForFontUsage(
     })
   );
 
-  // Await all subset promises
-  const resolvedSubsets = new Map<string, Buffer | null>(
-    await Promise.all(
-      [...subsetPromiseMap].map(
-        async ([key, promise]) =>
-          [key, await promise] as [string, Buffer | null]
-      )
-    )
-  );
+  // Wait for all subsets to settle. Errors are already swallowed inside the
+  // subset call site (returns null on failure), so this can't reject.
+  await Promise.all(subsetPromiseMap.values());
 
   // Original input buffers (full WOFF/TTF bytes) aren't needed after
   // subsetting. Release them before the propagation loops below so the GC
@@ -373,7 +367,8 @@ export async function getSubsetsForFontUsage(
     );
   }
 
-  // Assign subset results to canonical font usages
+  // Assign subset results to canonical font usages. Drain subsetPromiseMap
+  // as we go so each Promise wrapper is GC-eligible immediately.
   for (const [, fontUsage] of canonicalFontUsageByUrl) {
     const info = subsetInfoByFontUrl.get(fontUsage.fontUrl as string);
     if (!info) continue;
@@ -383,7 +378,10 @@ export async function getSubsetsForFontUsage(
         targetFormat,
         info.variationAxes
       );
-      const subsetBuffer = resolvedSubsets.get(promiseId);
+      const promise = subsetPromiseMap.get(promiseId);
+      if (!promise) continue;
+      const subsetBuffer = await promise;
+      subsetPromiseMap.delete(promiseId);
       if (subsetBuffer) {
         if (!fontUsage.subsets) {
           fontUsage.subsets = {};
