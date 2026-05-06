@@ -360,11 +360,10 @@ export async function getSubsetsForFontUsage(
     )
   );
 
-  // Subsets have been generated; original input buffers and the promise map
-  // are no longer needed. Release them before the propagation loops below so
-  // the GC can reclaim them while subset CSS assembly runs in subsetFonts.ts.
+  // Original input buffers (full WOFF/TTF bytes) aren't needed after
+  // subsetting. Release them before the propagation loops below so the GC
+  // can reclaim them while subset CSS assembly runs in subsetFonts.ts.
   originalFontBuffers.clear();
-  subsetPromiseMap.clear();
 
   if (cacheStats && debug && console) {
     const total = cacheStats.hits + cacheStats.misses;

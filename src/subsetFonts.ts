@@ -1276,6 +1276,7 @@ async function subsetFonts(
   }
 
   timings['lazy load fallback CSS'] = lazyFallbackPhase.end();
+  // Same reasoning as subsetCssAssetCache: keys are full CSS text.
   fallbackCssAssetCache.clear();
 
   const removeFontFacePhase = trackPhase('remove original @font-face');
