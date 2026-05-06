@@ -1247,6 +1247,14 @@ async function collectTextsByPage(
       htmlOrSvgAssetTextsWithProps,
       globalTextByProps
     );
+    // Per-page tracing artefacts (stylesheetsWithPredicates, etc.) are no
+    // longer needed once flattened. Font-face declarations are retained via
+    // htmlOrSvgAssetTextsWithProps; everything else can drop now. Clear all
+    // arrays that reference PageData so buildPerPageFontUsages below doesn't
+    // run with the per-page tracing state still alive.
+    pageData.length = 0;
+    pagesNeedingFullTrace.length = 0;
+    fastPathPages.length = 0;
     subTimings['Result assembly'] = assemblePhase.end();
     if (debug && console) {
       console.log(
