@@ -40,6 +40,7 @@ const EMOJI_RANGES: Range[] = [
 const SCRIPT_RANGES: ScriptRange[] = [
   { min: 0x0370, max: 0x03ff, tag: 'grek' }, // Greek and Coptic
   { min: 0x0400, max: 0x052f, tag: 'cyrl' }, // Cyrillic + Supplement
+  { min: 0x0530, max: 0x058f, tag: 'armn' }, // Armenian
   { min: 0x0590, max: 0x05ff, tag: 'hebr' }, // Hebrew
   { min: 0x0600, max: 0x06ff, tag: 'arab' }, // Arabic
   { min: 0x0750, max: 0x077f, tag: 'arab' }, // Arabic Supplement
@@ -51,8 +52,17 @@ const SCRIPT_RANGES: ScriptRange[] = [
   { min: 0x0c00, max: 0x0c7f, tag: 'telu' }, // Telugu
   { min: 0x0c80, max: 0x0cff, tag: 'knda' }, // Kannada
   { min: 0x0d00, max: 0x0d7f, tag: 'mlym' }, // Malayalam
+  { min: 0x0d80, max: 0x0dff, tag: 'sinh' }, // Sinhala
+  { min: 0x0e00, max: 0x0e7f, tag: 'thai' }, // Thai
+  { min: 0x0e80, max: 0x0eff, tag: 'lao ' }, // Lao
+  { min: 0x0f00, max: 0x0fff, tag: 'tibt' }, // Tibetan
+  { min: 0x1000, max: 0x109f, tag: 'mymr' }, // Myanmar
+  { min: 0x10a0, max: 0x10ff, tag: 'geor' }, // Georgian
   { min: 0x1100, max: 0x11ff, tag: 'hang' }, // Hangul Jamo
+  { min: 0x1200, max: 0x137f, tag: 'ethi' }, // Ethiopic
+  { min: 0x1780, max: 0x17ff, tag: 'khmr' }, // Khmer
   { min: 0x1f00, max: 0x1fff, tag: 'grek' }, // Greek Extended
+  { min: 0x2d00, max: 0x2d2f, tag: 'geor' }, // Georgian Supplement
   { min: 0x2de0, max: 0x2dff, tag: 'cyrl' }, // Cyrillic Extended-A
   { min: 0x3040, max: 0x30ff, tag: 'kana' }, // Hiragana / Katakana
   { min: 0x3130, max: 0x318f, tag: 'hang' }, // Hangul Compatibility Jamo

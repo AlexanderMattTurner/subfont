@@ -2,7 +2,6 @@ import { parentPort } from 'worker_threads';
 import * as fontverter from 'fontverter';
 
 interface ConvertMessage {
-  taskId: number;
   buffer: Uint8Array | Buffer;
   targetFormat: string;
   sourceFormat?: string;
@@ -22,9 +21,9 @@ port.on('message', async (msg: ConvertMessage) => {
       msg.targetFormat,
       msg.sourceFormat
     );
-    port.postMessage({ type: 'result', taskId: msg.taskId, buffer: result });
+    port.postMessage({ type: 'result', buffer: result });
   } catch (rawErr) {
     const err = rawErr as Error;
-    port.postMessage({ type: 'error', taskId: msg.taskId, error: err.message });
+    port.postMessage({ type: 'error', error: err.message });
   }
 });

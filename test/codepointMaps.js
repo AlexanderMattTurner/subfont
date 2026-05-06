@@ -67,9 +67,18 @@ describe('codepointMaps', function () {
       { name: 'Greek', text: 'Γεια σας', expected: 'grek' },
       { name: 'Arabic', text: 'مرحبا', expected: 'arab' },
       { name: 'Hebrew', text: 'שלום', expected: 'hebr' },
+      { name: 'Armenian', text: 'Բարև', expected: 'armn' },
       { name: 'Devanagari', text: 'नमस्ते', expected: 'deva' },
       { name: 'Bengali', text: 'হ্যালো', expected: 'beng' },
+      { name: 'Sinhala', text: 'ආයුබෝවන්', expected: 'sinh' },
       { name: 'Tamil', text: 'வணக்கம்', expected: 'taml' },
+      { name: 'Thai', text: 'สวัสดี', expected: 'thai' },
+      { name: 'Lao', text: 'ສະບາຍດີ', expected: 'lao ' },
+      { name: 'Tibetan', text: 'བཀྲ་ཤིས', expected: 'tibt' },
+      { name: 'Myanmar', text: 'မင်္ဂလာပါ', expected: 'mymr' },
+      { name: 'Georgian', text: 'გამარჯობა', expected: 'geor' },
+      { name: 'Ethiopic', text: 'ሰላም', expected: 'ethi' },
+      { name: 'Khmer', text: 'សួស្តី', expected: 'khmr' },
       { name: 'Hiragana/Katakana', text: 'こんにちは', expected: 'kana' },
       { name: 'Hangul', text: '안녕하세요', expected: 'hang' },
       { name: 'Han / CJK ideographs', text: '你好', expected: 'hani' },
@@ -95,8 +104,8 @@ describe('codepointMaps', function () {
     });
 
     it('returns only DFLT+latn for codepoints in gaps between script ranges', function () {
-      // U+0530 falls between Cyrillic Supplement (max 0x052f) and Hebrew (min 0x0590)
-      expect(scriptsForText('԰').sort(), 'to equal', ['DFLT', 'latn']);
+      // U+0800 (Samaritan) falls between Arabic Supplement (max 0x077f) and Devanagari (min 0x0900)
+      expect(scriptsForText('ࠀ').sort(), 'to equal', ['DFLT', 'latn']);
     });
   });
 });

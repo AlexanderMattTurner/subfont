@@ -48,7 +48,7 @@ pnpm run check-coverage  # Verify coverage thresholds
 - Tests have a 5-minute timeout (configured in `.mocharc.yml`)
 - Tests use `httpception` for HTTP mocking and `unexpected` for assertions
 - Some tests require puppeteer browser binaries (installed via `pnpm install`)
-- Coverage thresholds: branches 70%, lines 80%, functions 75%, statements 80%
+- Coverage thresholds: branches 75%, lines 82%, functions 78%, statements 82%
 - Coverage excludes: `lib/cli.js`, `lib/fontConverterWorker.js`, `lib/fontTracerWorker.js`
 
 ## Conventions

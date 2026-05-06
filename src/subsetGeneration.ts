@@ -15,7 +15,7 @@ import {
 
 // Bump when subsetting behaviour changes to invalidate stale disk-cache
 // entries (e.g. after adding hinting removal or table stripping).
-const SUBSET_CACHE_VERSION = '5';
+const SUBSET_CACHE_VERSION = '6';
 
 type FontBuffer = Buffer | Uint8Array;
 
@@ -359,6 +359,11 @@ export async function getSubsetsForFontUsage(
       )
     )
   );
+
+  // Original input buffers (full WOFF/TTF bytes) aren't needed after
+  // subsetting. Release them before the propagation loops below so the GC
+  // can reclaim them while subset CSS assembly runs in subsetFonts.ts.
+  originalFontBuffers.clear();
 
   if (cacheStats && debug && console) {
     const total = cacheStats.hits + cacheStats.misses;

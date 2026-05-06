@@ -1164,6 +1164,10 @@ async function subsetFonts(
 
   timings['insert subsets loop'] = insertPhase.end();
 
+  // Cache keys are the full subset CSS text (with base64-encoded fonts);
+  // clear once injection is done so those strings are GC-eligible.
+  subsetCssAssetCache.clear();
+
   if (numFontUsagesWithSubset === 0) {
     return { fontInfo: [], timings };
   }
@@ -1272,6 +1276,8 @@ async function subsetFonts(
   }
 
   timings['lazy load fallback CSS'] = lazyFallbackPhase.end();
+  // Same reasoning as subsetCssAssetCache: keys are full CSS text.
+  fallbackCssAssetCache.clear();
 
   const removeFontFacePhase = trackPhase('remove original @font-face');
 

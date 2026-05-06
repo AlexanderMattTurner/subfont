@@ -1247,6 +1247,12 @@ async function collectTextsByPage(
       htmlOrSvgAssetTextsWithProps,
       globalTextByProps
     );
+    // Drop per-page tracing state; what's still needed is reachable via
+    // htmlOrSvgAssetTextsWithProps. PageData wrappers are pinned by all
+    // three arrays, so all three must be emptied.
+    pageData.length = 0;
+    pagesNeedingFullTrace.length = 0;
+    fastPathPages.length = 0;
     subTimings['Result assembly'] = assemblePhase.end();
     if (debug && console) {
       console.log(

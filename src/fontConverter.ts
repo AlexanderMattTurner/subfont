@@ -1,5 +1,5 @@
-import os = require('os');
 import pathModule = require('path');
+import os = require('os');
 import { Worker } from 'worker_threads';
 
 const workerPath = pathModule.join(__dirname, 'fontConverterWorker.js');
@@ -8,117 +8,135 @@ const POOL_SIZE = Math.max(1, Math.min(os.cpus().length, 8));
 
 interface WorkerMessage {
   type: 'result' | 'error';
-  taskId: number;
   buffer?: Uint8Array | Buffer;
   error?: string;
 }
 
-interface TaskCallbacks {
-  resolve: (value: Buffer) => void;
-  reject: (reason: Error) => void;
-}
-
-interface PoolWorker {
+interface PoolEntry {
   worker: Worker;
   busy: boolean;
 }
 
-let _pool: PoolWorker[] | undefined;
-let _initPromise: Promise<void> | undefined;
-let _nextTaskId = 0;
-const _taskCallbacks = new Map<number, TaskCallbacks>();
-const _taskTimers = new Map<number, NodeJS.Timeout>();
-const _taskByWorker = new Map<Worker, number>();
-const _waiters: Array<(pw: PoolWorker) => void> = [];
+const _pool: PoolEntry[] = [];
+const _waiters: Array<(entry: PoolEntry) => void> = [];
 
-function createPoolWorker(): PoolWorker {
+function createEntry(): PoolEntry {
   const worker = new Worker(workerPath);
-  const pw: PoolWorker = { worker, busy: false };
-
-  worker.on('message', (msg: WorkerMessage) => {
-    _taskByWorker.delete(worker);
-    clearTaskTimer(msg.taskId);
-    const cb = _taskCallbacks.get(msg.taskId);
-    if (!cb) return;
-    _taskCallbacks.delete(msg.taskId);
-    if (msg.type === 'result' && msg.buffer) {
-      cb.resolve(Buffer.from(msg.buffer));
-    } else {
-      cb.reject(new Error(msg.error || 'Font conversion failed'));
-    }
-    releaseWorker(pw);
-    if (!pw.busy) worker.unref();
-  });
-
-  worker.on('error', (err) => {
-    const taskId = _taskByWorker.get(worker);
-    _taskByWorker.delete(worker);
-    if (taskId === undefined) return;
-    clearTaskTimer(taskId);
-    const cb = _taskCallbacks.get(taskId);
-    if (!cb) return;
-    _taskCallbacks.delete(taskId);
-    cb.reject(err);
-    releaseWorker(pw);
-    if (!pw.busy) worker.unref();
-  });
-
   worker.unref();
-  return pw;
+  return { worker, busy: false };
 }
 
-async function initPool(): Promise<void> {
-  if (!_initPromise) {
-    _initPromise = (async () => {
-      _pool = [];
-      for (let i = 0; i < POOL_SIZE; i++) {
-        _pool.push(createPoolWorker());
-      }
-    })();
-  }
-  return _initPromise;
-}
-
-function clearTaskTimer(taskId: number): void {
-  const timer = _taskTimers.get(taskId);
-  if (timer) {
-    clearTimeout(timer);
-    _taskTimers.delete(taskId);
-  }
-}
-
-function releaseWorker(pw: PoolWorker): void {
-  pw.busy = false;
-  if (_waiters.length > 0) {
-    pw.busy = true;
-    const waiter = _waiters.shift();
-    if (waiter) waiter(pw);
-  }
-}
-
-async function acquireWorker(): Promise<PoolWorker> {
-  await initPool();
-  const idle = _pool!.find((pw) => !pw.busy);
+function acquire(): PoolEntry | null {
+  const idle = _pool.find((e) => !e.busy);
   if (idle) {
     idle.busy = true;
     return idle;
   }
-  return new Promise<PoolWorker>((resolve, reject) => {
-    const entry = (pw: PoolWorker) => {
-      clearTimeout(timer);
-      resolve(pw);
-    };
+  if (_pool.length < POOL_SIZE) {
+    const entry = createEntry();
+    entry.busy = true;
+    _pool.push(entry);
+    return entry;
+  }
+  return null;
+}
+
+function release(entry: PoolEntry): void {
+  entry.busy = false;
+  if (_waiters.length > 0) {
+    entry.busy = true;
+    const waiter = _waiters.shift()!;
+    waiter(entry);
+  }
+}
+
+function replaceEntry(entry: PoolEntry): void {
+  const idx = _pool.indexOf(entry);
+  if (idx === -1) return;
+  const replacement = createEntry();
+  _pool[idx] = replacement;
+  if (_waiters.length > 0) {
+    replacement.busy = true;
+    const waiter = _waiters.shift()!;
+    waiter(replacement);
+  }
+}
+
+function doConvert(
+  entry: PoolEntry,
+  buffer: Buffer | Uint8Array,
+  targetFormat: string,
+  sourceFormat: string | undefined
+): Promise<Buffer> {
+  return new Promise<Buffer>((resolve, reject) => {
+    let settled = false;
+    const { worker } = entry;
+
     const timer = setTimeout(() => {
-      const idx = _waiters.indexOf(entry);
-      if (idx !== -1) _waiters.splice(idx, 1);
+      if (settled) return;
+      settled = true;
+      cleanup();
+      worker.terminate();
+      replaceEntry(entry);
       reject(
         new Error(
-          `Timed out waiting for a font converter worker after ${CONVERT_TIMEOUT_MS}ms`
+          `Font conversion to ${targetFormat} timed out after ${CONVERT_TIMEOUT_MS}ms`
         )
       );
     }, CONVERT_TIMEOUT_MS);
     timer.unref();
-    _waiters.push(entry);
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      worker.off('message', onMessage);
+      worker.off('error', onError);
+      worker.off('exit', onExit);
+    };
+
+    const onMessage = (msg: WorkerMessage) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      release(entry);
+      if (msg.type === 'result' && msg.buffer) {
+        resolve(Buffer.from(msg.buffer));
+      } else {
+        reject(
+          new Error(msg.error || `Font conversion to ${targetFormat} failed`)
+        );
+      }
+    };
+
+    const onError = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      worker.terminate();
+      replaceEntry(entry);
+      reject(err);
+    };
+
+    const onExit = (code: number) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      replaceEntry(entry);
+      reject(
+        new Error(`Font converter worker exited unexpectedly with code ${code}`)
+      );
+    };
+
+    worker.on('message', onMessage);
+    worker.on('error', onError);
+    worker.on('exit', onExit);
+    try {
+      worker.postMessage({ buffer, targetFormat, sourceFormat });
+    } catch (err) {
+      settled = true;
+      cleanup();
+      release(entry);
+      reject(err);
+    }
   });
 }
 
@@ -127,33 +145,17 @@ export function convert(
   targetFormat: string,
   sourceFormat?: string
 ): Promise<Buffer> {
-  const taskId = _nextTaskId++;
-  return acquireWorker().then(
-    (pw) =>
-      new Promise<Buffer>((resolve, reject) => {
-        _taskCallbacks.set(taskId, { resolve, reject });
+  const entry = acquire();
+  if (entry) {
+    return doConvert(entry, buffer, targetFormat, sourceFormat);
+  }
+  return new Promise<PoolEntry>((resolve) => {
+    _waiters.push(resolve);
+  }).then((e) => doConvert(e, buffer, targetFormat, sourceFormat));
+}
 
-        const timer = setTimeout(() => {
-          _taskTimers.delete(taskId);
-          const cb = _taskCallbacks.get(taskId);
-          if (cb) {
-            _taskCallbacks.delete(taskId);
-            _taskByWorker.delete(pw.worker);
-            cb.reject(
-              new Error(
-                `Font conversion to ${targetFormat} timed out after ${CONVERT_TIMEOUT_MS}ms`
-              )
-            );
-            releaseWorker(pw);
-            if (!pw.busy) pw.worker.unref();
-          }
-        }, CONVERT_TIMEOUT_MS);
-        timer.unref();
-        _taskTimers.set(taskId, timer);
-
-        _taskByWorker.set(pw.worker, taskId);
-        pw.worker.ref();
-        pw.worker.postMessage({ taskId, buffer, targetFormat, sourceFormat });
-      })
-  );
+export async function destroy(): Promise<void> {
+  _waiters.length = 0;
+  await Promise.all(_pool.map((e) => e.worker.terminate()));
+  _pool.length = 0;
 }
