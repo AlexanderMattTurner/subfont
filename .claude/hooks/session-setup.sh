@@ -163,12 +163,38 @@ fi
 #######################################
 
 if [ -f "$PROJECT_DIR/package.json" ]; then
-	# Always run install (git hooks are configured in package.json postinstall)
+	# Always run install (git hooks are configured in package.json postinstall).
+	# Capture install output so silent failures don't leave node_modules missing
+	# and break every subsequent `pnpm test`/`pnpm run lint` in the session.
+	install_log=$(mktemp "${TMPDIR:-/tmp}/subfont-install-XXXXXX.log")
+	install_ok=0
 	if command -v pnpm &>/dev/null; then
-		pnpm install --silent || warn "Failed to install Node dependencies"
+		if pnpm install >"$install_log" 2>&1; then
+			install_ok=1
+		fi
 	elif command -v npm &>/dev/null; then
-		npm install --silent || warn "Failed to install Node dependencies"
+		if npm install >"$install_log" 2>&1; then
+			install_ok=1
+		fi
+	else
+		warn "Neither pnpm nor npm is available — Node dependencies cannot be installed"
 	fi
+
+	if [ "$install_ok" = "1" ] && [ ! -d "$PROJECT_DIR/node_modules" ]; then
+		# Install reported success but produced no node_modules (e.g. ran in a
+		# different working directory, or pnpm used a workspace store without
+		# linking). Treat as failure so we don't sleepwalk into a broken session.
+		install_ok=0
+		echo "WARNING: install completed but $PROJECT_DIR/node_modules is missing" >&2
+	fi
+
+	if [ "$install_ok" != "1" ]; then
+		echo "===== install log =====" >&2
+		cat "$install_log" >&2
+		echo "=======================" >&2
+		warn "Failed to install Node dependencies — tests/lint will fail until this is fixed"
+	fi
+	rm -f "$install_log"
 fi
 
 if [ -f "$PROJECT_DIR/uv.lock" ] && command -v uv &>/dev/null; then

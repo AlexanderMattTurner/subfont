@@ -1,5 +1,6 @@
 import memoizeSync = require('memoizesync');
 import os = require('os');
+import * as crypto from 'crypto';
 
 import fontTracer = require('font-tracer');
 import fontSnapper = require('font-snapper');
@@ -632,10 +633,12 @@ function processFastPathPages(
       pd.representativePd as PageData
     );
 
-    // Check if any @font-face variants are unseen by the representative.
-    // Only copy Maps when extensions are actually needed.
-    let effectivePropsMap = uniquePropsMap;
-    let effectiveTextPerPropsKey = textPerPropsKey;
+    // If this page declares any @font-face variant the representative never
+    // observed in use, we can't safely extrapolate which text uses it — the
+    // representative's trace gives us no evidence one way or the other. Fall
+    // back to a full trace rather than over-attributing the page's visible
+    // text to a variant that may not be selected by any element.
+    let hasUnseenVariant = false;
     for (const decl of pd.accumulatedFontFaceDeclarations) {
       const family = decl['font-family'];
       if (!family) continue;
@@ -649,34 +652,25 @@ function processFastPathPages(
         stretch
       );
       if (!seenVariantKeys.has(variantKey)) {
-        // Lazy-copy on first unseen variant
-        if (effectivePropsMap === uniquePropsMap) {
-          effectivePropsMap = new Map(uniquePropsMap);
-          effectiveTextPerPropsKey = new Map(textPerPropsKey);
-        }
-        const propsKey = fontPropsKey(
-          stringifyFontFamily(family),
-          weight,
-          style,
-          stretch
-        );
-        if (!effectivePropsMap.has(propsKey)) {
-          effectivePropsMap.set(propsKey, {
-            'font-family': stringifyFontFamily(family),
-            'font-weight': weight,
-            'font-style': style,
-            'font-stretch': stretch,
-          });
-          effectiveTextPerPropsKey.set(propsKey, []);
-        }
+        hasUnseenVariant = true;
+        break;
       }
+    }
+    if (hasUnseenVariant) {
+      fastPathFallbacks++;
+      pd.textByProps = fontTracer(pd.htmlOrSvgAsset.parseTree, {
+        stylesheetsWithPredicates: pd.stylesheetsWithPredicates,
+        getCssRulesByProperty: memoizedGetCssRulesByProperty,
+        asset: pd.htmlOrSvgAsset,
+      });
+      continue;
     }
 
     const pageText = extractVisibleText(pd.htmlOrSvgAsset.text || '');
 
     pd.textByProps = [];
-    for (const [propsKey, props] of effectivePropsMap) {
-      const repTexts = effectiveTextPerPropsKey.get(propsKey) || [];
+    for (const [propsKey, props] of uniquePropsMap) {
+      const repTexts = textPerPropsKey.get(propsKey) || [];
       pd.textByProps.push({
         text: pageText + repTexts.join(''),
         props: { ...props },
@@ -716,10 +710,18 @@ function indexStylesheetRelations(
 // Build a cache key by traversing stylesheet relations, capturing
 // both asset identity and relation context (media, conditionalComment,
 // noscript) that affect gatherStylesheetsWithPredicates output.
+// Build a key identifying the stylesheet graph reachable from an HTML/SVG
+// asset. With useContentHash=false, each stylesheet contributes its asset id
+// (per-asset identity); with useContentHash=true, inline assets contribute a
+// hash of their text, so byte-identical inline <style> blocks on different
+// pages collapse to the same key. The id-based variant preserves per-page
+// identity needed for the precompute cache (whose results carry mutable
+// PostCSS relations); the content-hashed variant powers fast-path grouping.
 function buildStylesheetKey(
   htmlOrSvgAsset: Asset,
   skipNonFontInlineCss: boolean,
-  stylesheetRelsByFromAsset: Map<Asset, Relation[]>
+  stylesheetRelsByFromAsset: Map<Asset, Relation[]>,
+  useContentHash = false
 ): string {
   const keyParts: string[] = [];
   const visited = new Set<Asset>();
@@ -744,7 +746,15 @@ function buildStylesheetKey(
           continue;
         }
         const media = relation.media || '';
-        keyParts.push(`${target.id}:${media}:${isNoscript ? 'ns' : ''}`);
+        const ident =
+          useContentHash && target.isInline
+            ? `h:${crypto
+                .createHash('sha1')
+                .update(target.text || '')
+                .digest('hex')
+                .slice(0, 16)}`
+            : String(target.id);
+        keyParts.push(`${ident}:${media}:${isNoscript ? 'ns' : ''}`);
         traverse(target, isNoscript);
       }
     }
@@ -872,7 +882,8 @@ function computeStylesheetResults(
     fastPathKey: buildStylesheetKey(
       htmlOrSvgAsset,
       true,
-      stylesheetRelsByFromAsset
+      stylesheetRelsByFromAsset,
+      true
     ),
   };
 }
@@ -1213,9 +1224,21 @@ async function collectTextsByPage(
     planTracing(pageData, Boolean(headlessBrowser));
 
   if (console && pageData.length >= 5) {
-    console.log(
-      `  ${pageData.length} pages with fonts: ${pagesNeedingFullTrace.length} to trace, ${fastPathPages.length} via cached CSS group (${uniqueGroupCount} unique groups)`
-    );
+    if (headlessBrowser) {
+      // In --dynamic mode every page is traced individually; uniqueGroupCount
+      // is informational (how many we *could* dedupe to with static tracing).
+      const dedupeHint =
+        uniqueGroupCount < pageData.length
+          ? ` (would dedupe to ${uniqueGroupCount} group${uniqueGroupCount === 1 ? '' : 's'} without --dynamic)`
+          : '';
+      console.log(
+        `  ${pageData.length} pages with fonts: tracing all individually under --dynamic${dedupeHint}`
+      );
+    } else {
+      console.log(
+        `  ${pageData.length} pages with fonts: ${pagesNeedingFullTrace.length} to trace, ${fastPathPages.length} via cached CSS group (${uniqueGroupCount} unique group${uniqueGroupCount === 1 ? '' : 's'})`
+      );
+    }
   }
 
   const tracingStart = Date.now();
