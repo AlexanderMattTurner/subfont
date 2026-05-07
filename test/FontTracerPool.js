@@ -86,7 +86,7 @@ describe('FontTracerPool', function () {
   });
 
   it('should reject pending tasks when all workers crash', async function () {
-    const pool = new FontTracerPool(1);
+    const pool = new FontTracerPool(1, { respawnOnExit: false });
     await pool.init();
 
     // Manually simulate: kill the worker and verify pending tasks are rejected
@@ -140,7 +140,7 @@ describe('FontTracerPool', function () {
     });
 
     it('should continue processing on surviving worker after one crashes', async function () {
-      pool = new FontTracerPool(2);
+      pool = new FontTracerPool(2, { respawnOnExit: false });
       await pool.init();
 
       // Crash one worker deterministically before submitting tasks
@@ -166,7 +166,7 @@ describe('FontTracerPool', function () {
     });
 
     it('should reject in-flight and queued tasks when all workers crash simultaneously', async function () {
-      pool = new FontTracerPool(2);
+      pool = new FontTracerPool(2, { respawnOnExit: false });
       await pool.init();
 
       // 6 tasks: 2 dispatched (one per worker), 4 queued
@@ -231,7 +231,10 @@ describe('FontTracerPool', function () {
     });
 
     it('should reject a task that exceeds the configured timeout and terminate the hung worker', async function () {
-      pool = new FontTracerPool(1, { taskTimeoutMs: 200 });
+      pool = new FontTracerPool(1, {
+        taskTimeoutMs: 200,
+        respawnOnExit: false,
+      });
       await pool.init();
 
       // Monkey-patch the worker's postMessage so the task is dispatched
@@ -322,6 +325,37 @@ describe('FontTracerPool', function () {
       for (const r of rejected) {
         expect(r.message, 'to match', /Worker pool destroyed|Worker exited/);
       }
+    });
+
+    it('should respawn a worker after timeout so the pool keeps draining', async function () {
+      pool = new FontTracerPool(1, { taskTimeoutMs: 200 });
+      await pool.init();
+
+      // Hang the first dispatch; subsequent ones go through normally.
+      const worker = pool._workers[0];
+      const originalPostMessage = worker.postMessage.bind(worker);
+      let traceMessagesSeen = 0;
+      worker.postMessage = function (msg) {
+        if (msg.type === 'trace') {
+          traceMessagesSeen++;
+          if (traceMessagesSeen === 1) {
+            // First trace request: swallow so the watchdog fires.
+            return;
+          }
+        }
+        return originalPostMessage(msg);
+      };
+
+      const firstResult = settle(pool.trace(html('<p>hung</p>'), []));
+      // Queue a follow-up that should be processed by the respawned worker.
+      const secondResult = settle(pool.trace(html('<p>fine</p>'), []));
+
+      const [first, second] = await Promise.all([firstResult, secondResult]);
+      expect(first.status, 'to be', 'rejected');
+      expect(first.message, 'to contain', 'timed out');
+      expect(second.status, 'to be', 'resolved');
+      expect(pool._workers, 'to have length', 1);
+      expect(pool._idle, 'to have length', 1);
     });
 
     it('should reject task on postMessage failure and keep pool functional', async function () {

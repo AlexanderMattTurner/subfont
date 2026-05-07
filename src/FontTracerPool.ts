@@ -5,7 +5,11 @@ import { Worker } from 'worker_threads';
  * Worker pool for running fontTracer in parallel across pages.
  * Each worker re-parses HTML with jsdom and runs fontTracer independently.
  */
-const DEFAULT_TASK_TIMEOUT_MS = 60_000;
+// Heavy pages (large blog posts with elaborate CSS) under CPU contention on
+// CI runners can comfortably exceed a minute in jsdom + font-tracer. The
+// timer is a watchdog against truly hung workers, not a perf budget, so it
+// errs generous.
+const DEFAULT_TASK_TIMEOUT_MS = 600_000;
 
 interface TaskCallbacks {
   // The pool is generic over the trace payload; the caller knows the
@@ -62,12 +66,14 @@ type WorkerMessage =
 
 interface FontTracerPoolOptions {
   taskTimeoutMs?: number;
+  respawnOnExit?: boolean;
 }
 
 class FontTracerPool {
   private _workerPath: string;
   private _numWorkers: number;
   private _taskTimeoutMs: number;
+  private _respawnOnExit: boolean;
   private _workers: Worker[];
   private _idle: Worker[];
   private _pendingTasks: Array<{ message: TraceMessage }>;
@@ -75,14 +81,20 @@ class FontTracerPool {
   private _taskTimers: Map<number, NodeJS.Timeout>;
   private _taskByWorker: Map<Worker, number>;
   private _nextTaskId: number;
+  private _destroying: boolean;
+  private _spawning: number;
 
   constructor(
     numWorkers: number,
-    { taskTimeoutMs = DEFAULT_TASK_TIMEOUT_MS }: FontTracerPoolOptions = {}
+    {
+      taskTimeoutMs = DEFAULT_TASK_TIMEOUT_MS,
+      respawnOnExit = true,
+    }: FontTracerPoolOptions = {}
   ) {
     this._workerPath = pathModule.join(__dirname, 'fontTracerWorker.js');
     this._numWorkers = numWorkers;
     this._taskTimeoutMs = taskTimeoutMs;
+    this._respawnOnExit = respawnOnExit;
     this._workers = [];
     this._idle = [];
     this._pendingTasks = [];
@@ -90,45 +102,71 @@ class FontTracerPool {
     this._taskTimers = new Map();
     this._taskByWorker = new Map();
     this._nextTaskId = 0;
+    this._destroying = false;
+    this._spawning = 0;
+  }
+
+  private _spawnOne(): Promise<void> {
+    this._spawning++;
+    return new Promise<void>((resolve, reject) => {
+      let worker: Worker;
+      try {
+        worker = new Worker(this._workerPath);
+      } catch (err) {
+        this._spawning--;
+        reject(err instanceof Error ? err : new Error(String(err)));
+        return;
+      }
+      this._workers.push(worker);
+
+      const detachInitHandlers = () => {
+        worker.off('message', onMessage);
+        worker.off('error', failOnInit);
+        worker.off('exit', exitDuringInit);
+      };
+      const failOnInit = (err: Error) => {
+        detachInitHandlers();
+        const idx = this._workers.indexOf(worker);
+        if (idx !== -1) this._workers.splice(idx, 1);
+        this._spawning--;
+        worker.terminate();
+        reject(err);
+      };
+      const exitDuringInit = (code: number) => {
+        // Worker exited before sending 'ready' (e.g. terminated by destroy()
+        // mid-spawn, or crashed during init without emitting 'error'). Settle
+        // the spawn promise so the .catch() upstream can run.
+        detachInitHandlers();
+        const idx = this._workers.indexOf(worker);
+        if (idx !== -1) this._workers.splice(idx, 1);
+        this._spawning--;
+        reject(new Error(`Worker exited during init with code ${code}`));
+      };
+      const onMessage = (msg: WorkerMessage) => {
+        if (msg.type === 'ready') {
+          detachInitHandlers();
+          worker.on('message', (m: WorkerMessage) =>
+            this._onWorkerMessage(worker, m)
+          );
+          worker.on('error', (e) => this._onWorkerError(worker, e));
+          worker.on('exit', (code: number) => this._onWorkerExit(worker, code));
+          this._idle.push(worker);
+          this._spawning--;
+          resolve();
+          this._dispatchPending();
+        }
+      };
+      worker.on('message', onMessage);
+      worker.on('error', failOnInit);
+      worker.on('exit', exitDuringInit);
+      worker.postMessage({ type: 'init' });
+    });
   }
 
   async init(): Promise<void> {
     const initPromises: Array<Promise<void>> = [];
     for (let i = 0; i < this._numWorkers; i++) {
-      const worker = new Worker(this._workerPath);
-      this._workers.push(worker);
-
-      const initPromise = new Promise<void>((resolve, reject) => {
-        const fail = (err: Error) => {
-          worker.off('message', onMessage);
-          worker.off('error', fail);
-          const idx = this._workers.indexOf(worker);
-          if (idx !== -1) this._workers.splice(idx, 1);
-          worker.terminate();
-          reject(err);
-        };
-        const onMessage = (msg: WorkerMessage) => {
-          if (msg.type === 'ready') {
-            worker.off('message', onMessage);
-            worker.off('error', fail);
-            worker.on('message', (msg: WorkerMessage) =>
-              this._onWorkerMessage(worker, msg)
-            );
-            worker.on('error', (err) => this._onWorkerError(worker, err));
-            worker.on('exit', (code: number) =>
-              this._onWorkerExit(worker, code)
-            );
-            this._idle.push(worker);
-            resolve();
-          }
-        };
-        worker.on('message', onMessage);
-        worker.on('error', fail);
-      });
-
-      worker.postMessage({ type: 'init' });
-
-      initPromises.push(initPromise);
+      initPromises.push(this._spawnOne());
     }
     await Promise.all(initPromises);
   }
@@ -200,18 +238,38 @@ class FontTracerPool {
       }
     }
 
-    if (code !== 0 && this._workers.length === 0) {
-      for (const task of this._pendingTasks) {
-        const cb = this._taskCallbacks.get(task.message.taskId);
-        if (cb) {
-          this._taskCallbacks.delete(task.message.taskId);
-          cb.reject(
-            new Error('All workers have crashed, no workers available')
+    if (this._destroying) return;
+
+    if (this._respawnOnExit) {
+      this._spawnOne().catch((err) => {
+        // Respawn failed — fall back to draining if the pool is now empty.
+        if (
+          this._workers.length === 0 &&
+          this._spawning === 0 &&
+          this._pendingTasks.length > 0
+        ) {
+          this._drainPendingWith(
+            `All workers have crashed and respawn failed: ${(err as Error).message}`
           );
         }
-      }
-      this._pendingTasks = [];
+      });
+      return;
     }
+
+    if (code !== 0 && this._workers.length === 0) {
+      this._drainPendingWith('All workers have crashed, no workers available');
+    }
+  }
+
+  private _drainPendingWith(message: string): void {
+    for (const task of this._pendingTasks) {
+      const cb = this._taskCallbacks.get(task.message.taskId);
+      if (cb) {
+        this._taskCallbacks.delete(task.message.taskId);
+        cb.reject(new Error(message));
+      }
+    }
+    this._pendingTasks = [];
   }
 
   private _startTaskTimer(taskId: number): void {
@@ -296,6 +354,7 @@ class FontTracerPool {
   }
 
   async destroy(): Promise<void> {
+    this._destroying = true;
     // Clear all task timers
     for (const timer of this._taskTimers.values()) {
       clearTimeout(timer);
