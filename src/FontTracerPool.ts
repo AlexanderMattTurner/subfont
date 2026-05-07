@@ -119,19 +119,32 @@ class FontTracerPool {
       }
       this._workers.push(worker);
 
-      const failOnInit = (err: Error) => {
+      const detachInitHandlers = () => {
         worker.off('message', onMessage);
         worker.off('error', failOnInit);
+        worker.off('exit', exitDuringInit);
+      };
+      const failOnInit = (err: Error) => {
+        detachInitHandlers();
         const idx = this._workers.indexOf(worker);
         if (idx !== -1) this._workers.splice(idx, 1);
         this._spawning--;
         worker.terminate();
         reject(err);
       };
+      const exitDuringInit = (code: number) => {
+        // Worker exited before sending 'ready' (e.g. terminated by destroy()
+        // mid-spawn, or crashed during init without emitting 'error'). Settle
+        // the spawn promise so the .catch() upstream can run.
+        detachInitHandlers();
+        const idx = this._workers.indexOf(worker);
+        if (idx !== -1) this._workers.splice(idx, 1);
+        this._spawning--;
+        reject(new Error(`Worker exited during init with code ${code}`));
+      };
       const onMessage = (msg: WorkerMessage) => {
         if (msg.type === 'ready') {
-          worker.off('message', onMessage);
-          worker.off('error', failOnInit);
+          detachInitHandlers();
           worker.on('message', (m: WorkerMessage) =>
             this._onWorkerMessage(worker, m)
           );
@@ -145,6 +158,7 @@ class FontTracerPool {
       };
       worker.on('message', onMessage);
       worker.on('error', failOnInit);
+      worker.on('exit', exitDuringInit);
       worker.postMessage({ type: 'init' });
     });
   }
