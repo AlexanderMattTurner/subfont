@@ -560,19 +560,29 @@ async function tracePages(
   }
 }
 
-interface ProcessFastPathOptions {
-  memoizedGetCssRulesByProperty: typeof getCssRulesByProperty;
+interface AttributableEntry {
+  pd: PageData;
+  uniquePropsMap: Map<string, Record<string, string>>;
+  textPerPropsKey: Map<string, string[]>;
 }
 
-// For each page that shares a representative's CSS configuration, copy the
-// representative's font-variant props and overlay this page's visible text.
-// Returns the number of pages that had to fall back to a full trace
-// (because inline style attributes made the fast path unsafe).
-function processFastPathPages(
-  fastPathPages: PageData[],
-  { memoizedGetCssRulesByProperty }: ProcessFastPathOptions
-): number {
-  if (fastPathPages.length === 0) return 0;
+interface FastPathPlan {
+  fallbackPages: PageData[];
+  attributablePages: AttributableEntry[];
+}
+
+// Classify fast-path pages into (a) those that need a real trace because the
+// representative's evidence is insufficient (inline font styles, or declared
+// @font-face variants the rep never observed in use) and (b) those that can
+// be cheaply attributed from the rep's traced output. The actual tracing of
+// fallback pages is deferred to tracePages so it benefits from the worker
+// pool — running fontTracer here, on the main thread, serializes the work.
+function planFastPathPages(fastPathPages: PageData[]): FastPathPlan {
+  const fallbackPages: PageData[] = [];
+  const attributablePages: AttributableEntry[] = [];
+  if (fastPathPages.length === 0) {
+    return { fallbackPages, attributablePages };
+  }
 
   interface RepData {
     uniquePropsMap: Map<string, Record<string, string>>;
@@ -617,15 +627,9 @@ function processFastPathPages(
     return data;
   }
 
-  let fastPathFallbacks = 0;
   for (const pd of fastPathPages) {
     if (hasInlineFontStyles(pd.htmlOrSvgAsset.text || '')) {
-      fastPathFallbacks++;
-      pd.textByProps = fontTracer(pd.htmlOrSvgAsset.parseTree, {
-        stylesheetsWithPredicates: pd.stylesheetsWithPredicates,
-        getCssRulesByProperty: memoizedGetCssRulesByProperty,
-        asset: pd.htmlOrSvgAsset,
-      });
+      fallbackPages.push(pd);
       continue;
     }
 
@@ -633,11 +637,6 @@ function processFastPathPages(
       pd.representativePd as PageData
     );
 
-    // If this page declares any @font-face variant the representative never
-    // observed in use, we can't safely extrapolate which text uses it — the
-    // representative's trace gives us no evidence one way or the other. Fall
-    // back to a full trace rather than over-attributing the page's visible
-    // text to a variant that may not be selected by any element.
     let hasUnseenVariant = false;
     for (const decl of pd.accumulatedFontFaceDeclarations) {
       const family = decl['font-family'];
@@ -657,17 +656,21 @@ function processFastPathPages(
       }
     }
     if (hasUnseenVariant) {
-      fastPathFallbacks++;
-      pd.textByProps = fontTracer(pd.htmlOrSvgAsset.parseTree, {
-        stylesheetsWithPredicates: pd.stylesheetsWithPredicates,
-        getCssRulesByProperty: memoizedGetCssRulesByProperty,
-        asset: pd.htmlOrSvgAsset,
-      });
+      fallbackPages.push(pd);
       continue;
     }
 
-    const pageText = extractVisibleText(pd.htmlOrSvgAsset.text || '');
+    attributablePages.push({ pd, uniquePropsMap, textPerPropsKey });
+  }
+  return { fallbackPages, attributablePages };
+}
 
+// Apply the rep's traced font props to each fast-path-attributable page,
+// overlaying that page's visible text. Pages routed here have already been
+// classified as safe to attribute (no inline styles, no unseen variants).
+function attributeFastPathPages(entries: AttributableEntry[]): void {
+  for (const { pd, uniquePropsMap, textPerPropsKey } of entries) {
+    const pageText = extractVisibleText(pd.htmlOrSvgAsset.text || '');
     pd.textByProps = [];
     for (const [propsKey, props] of uniquePropsMap) {
       const repTexts = textPerPropsKey.get(propsKey) || [];
@@ -677,7 +680,6 @@ function processFastPathPages(
       });
     }
   }
-  return fastPathFallbacks;
 }
 
 // Pre-build an index of stylesheet-related relations by source asset
@@ -1256,12 +1258,31 @@ async function collectTextsByPage(
 
     subTimings['Full tracing'] = fullTracing.end();
 
-    const fastPathPhase = trackPhase('Fast-path extraction');
-    const fastPathFallbacks = processFastPathPages(fastPathPages, {
-      memoizedGetCssRulesByProperty,
-    });
-    subTimings['Fast-path extraction'] = fastPathPhase.end(
-      `${fastPathPages.length} pages, ${fastPathFallbacks} fell back to full trace`
+    const planPhase = trackPhase('Fast-path planning');
+    const { fallbackPages, attributablePages } =
+      planFastPathPages(fastPathPages);
+    subTimings['Fast-path planning'] = planPhase.end(
+      `${attributablePages.length} via cached rep, ${fallbackPages.length} need full trace`
+    );
+
+    if (fallbackPages.length > 0) {
+      const fallbackTracing = trackPhase(
+        `Fallback tracing (${fallbackPages.length} pages)`
+      );
+      await tracePages(fallbackPages, {
+        headlessBrowser,
+        concurrency,
+        console,
+        memoizedGetCssRulesByProperty,
+        debug,
+      });
+      subTimings['Fallback tracing'] = fallbackTracing.end();
+    }
+
+    const attributePhase = trackPhase('Fast-path attribution');
+    attributeFastPathPages(attributablePages);
+    subTimings['Fast-path attribution'] = attributePhase.end(
+      `${attributablePages.length} pages`
     );
 
     const assemblePhase = trackPhase('Result assembly');
