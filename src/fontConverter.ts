@@ -40,6 +40,14 @@ function createWorker(): Worker {
   const worker = new Worker(workerPath);
   worker.unref();
   _allWorkers.add(worker);
+  // Drop crashed idle workers from the cache so we never hand a zombie
+  // to a future caller. doConvert attaches its own short-lived exit
+  // handler for the in-flight case; both can fire harmlessly.
+  worker.on('exit', () => {
+    _allWorkers.delete(worker);
+    const idx = _idleWorkers.indexOf(worker);
+    if (idx !== -1) _idleWorkers.splice(idx, 1);
+  });
   return worker;
 }
 

@@ -40,4 +40,16 @@ describe('fontConverter', function () {
       'to be rejected'
     );
   });
+
+  it('should not hang when concurrency exceeds the pool size', async function () {
+    const N = 16;
+    const results = await Promise.all(
+      Array.from({ length: N }, () => convert(woff2Font, 'sfnt'))
+    );
+    expect(results, 'to have length', N);
+    for (const result of results) {
+      expect(result, 'to be a', Buffer);
+      expect(result.length, 'to equal', results[0].length);
+    }
+  });
 });
