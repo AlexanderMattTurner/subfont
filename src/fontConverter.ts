@@ -12,85 +12,58 @@ interface WorkerMessage {
   error?: string;
 }
 
-interface PoolEntry {
-  worker: Worker;
-  busy: boolean;
+let _activeCount = 0;
+const _queue: Array<() => void> = [];
+const _idleWorkers: Worker[] = [];
+const _allWorkers = new Set<Worker>();
+
+function acquireSlot(): Promise<void> {
+  if (_activeCount < POOL_SIZE) {
+    _activeCount++;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    _queue.push(() => {
+      _activeCount++;
+      resolve();
+    });
+  });
 }
 
-const _pool: PoolEntry[] = [];
-const _waiters: Array<(entry: PoolEntry) => void> = [];
+function releaseSlot(): void {
+  _activeCount--;
+  const next = _queue.shift();
+  if (next) next();
+}
 
-function createEntry(): PoolEntry {
+function createWorker(): Worker {
   const worker = new Worker(workerPath);
   worker.unref();
-  const entry: PoolEntry = { worker, busy: false };
-  worker.on('exit', () => {
-    if (!entry.busy) {
-      replaceEntry(entry);
-    }
-  });
-  return entry;
+  _allWorkers.add(worker);
+  return worker;
 }
 
-function acquire(): PoolEntry | null {
-  const idle = _pool.find((e) => !e.busy);
-  if (idle) {
-    idle.busy = true;
-    return idle;
-  }
-  if (_pool.length < POOL_SIZE) {
-    const entry = createEntry();
-    entry.busy = true;
-    _pool.push(entry);
-    return entry;
-  }
-  return null;
-}
-
-function release(entry: PoolEntry): void {
-  entry.busy = false;
-  if (_waiters.length > 0) {
-    entry.busy = true;
-    const waiter = _waiters.shift()!;
-    waiter(entry);
-  }
-}
-
-function replaceEntry(entry: PoolEntry): void {
-  const idx = _pool.indexOf(entry);
-  if (idx === -1) return;
-  try {
-    const replacement = createEntry();
-    _pool[idx] = replacement;
-    if (_waiters.length > 0) {
-      replacement.busy = true;
-      const waiter = _waiters.shift()!;
-      waiter(replacement);
-    }
-  } catch {
-    // Worker creation failed — shrink the pool. In the degenerate case
-    // where all workers are unspawnable, the pool empties and pending
-    // waiters will hang until the caller's own timeout fires.
-    _pool.splice(idx, 1);
-  }
+function discardWorker(worker: Worker): void {
+  _allWorkers.delete(worker);
+  const idx = _idleWorkers.indexOf(worker);
+  if (idx !== -1) _idleWorkers.splice(idx, 1);
+  worker.terminate().catch(() => {});
 }
 
 function doConvert(
-  entry: PoolEntry,
+  worker: Worker,
   buffer: Buffer | Uint8Array,
   targetFormat: string,
   sourceFormat: string | undefined
 ): Promise<Buffer> {
   return new Promise<Buffer>((resolve, reject) => {
     let settled = false;
-    const { worker } = entry;
 
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
       cleanup();
-      worker.terminate();
-      replaceEntry(entry);
+      discardWorker(worker);
       reject(
         new Error(
           `Font conversion to ${targetFormat} timed out after ${CONVERT_TIMEOUT_MS}ms`
@@ -110,7 +83,7 @@ function doConvert(
       if (settled) return;
       settled = true;
       cleanup();
-      release(entry);
+      _idleWorkers.push(worker);
       if (msg.type === 'result' && msg.buffer) {
         resolve(Buffer.from(msg.buffer));
       } else {
@@ -124,8 +97,7 @@ function doConvert(
       if (settled) return;
       settled = true;
       cleanup();
-      worker.terminate();
-      replaceEntry(entry);
+      discardWorker(worker);
       reject(err);
     };
 
@@ -133,7 +105,7 @@ function doConvert(
       if (settled) return;
       settled = true;
       cleanup();
-      replaceEntry(entry);
+      discardWorker(worker);
       reject(
         new Error(`Font converter worker exited unexpectedly with code ${code}`)
       );
@@ -147,28 +119,30 @@ function doConvert(
     } catch (err) {
       settled = true;
       cleanup();
-      release(entry);
+      discardWorker(worker);
       reject(err);
     }
   });
 }
 
-export function convert(
+export async function convert(
   buffer: Buffer | Uint8Array,
   targetFormat: string,
   sourceFormat?: string
 ): Promise<Buffer> {
-  const entry = acquire();
-  if (entry) {
-    return doConvert(entry, buffer, targetFormat, sourceFormat);
+  await acquireSlot();
+  try {
+    const worker = _idleWorkers.pop() ?? createWorker();
+    return await doConvert(worker, buffer, targetFormat, sourceFormat);
+  } finally {
+    releaseSlot();
   }
-  return new Promise<PoolEntry>((resolve) => {
-    _waiters.push(resolve);
-  }).then((e) => doConvert(e, buffer, targetFormat, sourceFormat));
 }
 
 export async function destroy(): Promise<void> {
-  _waiters.length = 0;
-  await Promise.all(_pool.map((e) => e.worker.terminate()));
-  _pool.length = 0;
+  _queue.length = 0;
+  _idleWorkers.length = 0;
+  const workers = Array.from(_allWorkers);
+  _allWorkers.clear();
+  await Promise.all(workers.map((w) => w.terminate()));
 }
