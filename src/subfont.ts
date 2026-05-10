@@ -10,6 +10,7 @@ import * as urlTools from 'urltools';
 import * as util from 'util';
 import subsetFonts = require('./subsetFonts');
 import { makePhaseTracker } from './progress';
+import type { ReportFontUsage } from './types/shared';
 
 class UsageError extends Error {
   constructor(message: string) {
@@ -60,25 +61,6 @@ interface SubfontOptions {
   cache?: boolean | string;
   /** Exit non-zero if any warnings are emitted. */
   strict?: boolean;
-}
-
-interface ReportFontUsage {
-  fontUrl?: string;
-  preload?: boolean;
-  fullyInstanced?: boolean;
-  numAxesPinned?: number;
-  numAxesReduced?: number;
-  smallestOriginalFormat?: string;
-  smallestSubsetFormat?: string;
-  smallestOriginalSize?: number;
-  smallestSubsetSize?: number;
-  props: Record<string, string>;
-  codepoints: {
-    original: number[];
-    used: number[];
-    unused: number[];
-    page: number[];
-  };
 }
 
 interface SubfontFn {
@@ -356,28 +338,21 @@ const subfont = async function subfont(
   }
 
   const subsetPhase = trackPhase('subsetFonts total');
-  const { fontInfo: rawFontInfo, timings: subsetTimings } = await subsetFonts(
-    assetGraph,
-    {
-      inlineCss,
-      fontDisplay,
-      formats,
-      omitFallbacks: !fallbacks,
-      hrefType: relativeUrls ? 'relative' : 'rootRelative',
-      text,
-      dynamic,
-      console,
-      sourceMaps,
-      debug,
-      concurrency,
-      chromeArgs: chromeFlags,
-      cacheDir,
-    }
-  );
-  const fontInfo = rawFontInfo as Array<{
-    assetFileName: string;
-    fontUsages: ReportFontUsage[];
-  }>;
+  const { fontInfo, timings: subsetTimings } = await subsetFonts(assetGraph, {
+    inlineCss,
+    fontDisplay,
+    formats,
+    omitFallbacks: !fallbacks,
+    hrefType: relativeUrls ? 'relative' : 'rootRelative',
+    text,
+    dynamic,
+    console,
+    sourceMaps,
+    debug,
+    concurrency,
+    chromeArgs: chromeFlags,
+    cacheDir,
+  });
   const subsetFontsTotal = subsetPhase.end();
 
   const postProcessingPhase = trackPhase('post-subsetFonts processing');
@@ -465,17 +440,17 @@ const subfont = async function subfont(
     // worth surfacing is just which pages reference the variant.
     const SAMPLE_PAGES = 5;
     interface VariantEntry {
-      fontUrl?: string;
+      fontUrl: string;
       props: Record<string, string>;
-      preload?: boolean;
+      preload: boolean;
       fullyInstanced?: boolean;
       numAxesPinned?: number;
       numAxesReduced?: number;
       smallestOriginalFormat?: string;
       smallestSubsetFormat?: string;
-      smallestOriginalSize?: number;
+      smallestOriginalSize: number;
       smallestSubsetSize?: number;
-      codepoints?: { original: number; used: number; unused: number };
+      codepoints: { original: number; used: number; unused: number };
       pageCount: number;
       samplePages: string[];
     }
@@ -503,13 +478,11 @@ const subfont = async function subfont(
             smallestSubsetFormat: fu.smallestSubsetFormat,
             smallestOriginalSize: fu.smallestOriginalSize,
             smallestSubsetSize: fu.smallestSubsetSize,
-            codepoints: fu.codepoints
-              ? {
-                  original: fu.codepoints.original.length,
-                  used: fu.codepoints.used.length,
-                  unused: fu.codepoints.unused.length,
-                }
-              : undefined,
+            codepoints: {
+              original: fu.codepoints.original.length,
+              used: fu.codepoints.used.length,
+              unused: fu.codepoints.unused.length,
+            },
             pageCount: 0,
             samplePages: [],
           };
@@ -541,17 +514,15 @@ const subfont = async function subfont(
     let maxOriginalCodePoints = 0;
     for (const fontUsage of fontUsages) {
       sumSmallestSubsetSize += fontUsage.smallestSubsetSize || 0;
-      sumSmallestOriginalSize += fontUsage.smallestOriginalSize ?? 0;
-      if (fontUsage.codepoints) {
-        maxUsedCodePoints = Math.max(
-          fontUsage.codepoints.used.length,
-          maxUsedCodePoints
-        );
-        maxOriginalCodePoints = Math.max(
-          fontUsage.codepoints.original.length,
-          maxOriginalCodePoints
-        );
-      }
+      sumSmallestOriginalSize += fontUsage.smallestOriginalSize;
+      maxUsedCodePoints = Math.max(
+        fontUsage.codepoints.used.length,
+        maxUsedCodePoints
+      );
+      maxOriginalCodePoints = Math.max(
+        fontUsage.codepoints.original.length,
+        maxOriginalCodePoints
+      );
     }
     const fontUsagesByFontFamily: Record<string, ReportFontUsage[]> = {};
     for (const fontUsage of fontUsages) {
@@ -572,7 +543,6 @@ const subfont = async function subfont(
     for (const fontFamily of Object.keys(fontUsagesByFontFamily).sort()) {
       log(`  ${fontFamily}:`);
       for (const fontUsage of fontUsagesByFontFamily[fontFamily]) {
-        if (!fontUsage.codepoints) continue;
         const variantShortName = `${fontUsage.props['font-weight']}${
           fontUsage.props['font-style'] === 'italic' ? 'i' : ' '
         }`;
@@ -586,10 +556,7 @@ const subfont = async function subfont(
         ) {
           status += ` (${fontUsage.codepoints.page.length} on this page)`;
         }
-        if (
-          fontUsage.smallestOriginalSize !== undefined &&
-          fontUsage.smallestSubsetSize !== undefined
-        ) {
+        if (fontUsage.smallestSubsetSize !== undefined) {
           const numAxesReduced = fontUsage.numAxesReduced ?? 0;
           const numAxesPinned = fontUsage.numAxesPinned ?? 0;
           if (fontUsage.fullyInstanced) {
