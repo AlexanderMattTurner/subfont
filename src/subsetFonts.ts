@@ -1009,10 +1009,6 @@ async function insertSubsets({
     }
   }
 
-  // Cache keys are the full subset CSS text (with base64-encoded fonts);
-  // clear once injection is done so those strings are GC-eligible.
-  subsetCssAssetCache.clear();
-
   return { numFontUsagesWithSubset };
 }
 
