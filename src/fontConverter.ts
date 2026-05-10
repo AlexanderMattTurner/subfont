@@ -4,7 +4,7 @@ import { Worker } from 'worker_threads';
 
 const workerPath = pathModule.join(__dirname, 'fontConverterWorker.js');
 const CONVERT_TIMEOUT_MS = 120_000;
-const DEFAULT_POOL_SIZE = Math.max(1, Math.min(os.cpus().length, 8));
+const POOL_SIZE = Math.max(1, Math.min(os.cpus().length, 8));
 
 interface WorkerMessage {
   type: 'result' | 'error';
@@ -17,18 +17,20 @@ interface PoolEntry {
   busy: boolean;
 }
 
-export interface FontConverterPoolOptions {
-  poolSize?: number;
-}
-
 export class FontConverterPool {
-  private readonly poolSize: number;
   private readonly _pool: PoolEntry[] = [];
   private readonly _waiters: Array<(entry: PoolEntry) => void> = [];
   private _destroyed = false;
 
-  constructor({ poolSize = DEFAULT_POOL_SIZE }: FontConverterPoolOptions = {}) {
-    this.poolSize = Math.max(1, poolSize);
+  // Eagerly create all workers so the cost of spawning them does not land
+  // on the first convert() calls. Optional — convert() also lazy-spawns.
+  init(): void {
+    if (this._destroyed) {
+      throw new Error('FontConverterPool has been destroyed');
+    }
+    while (this._pool.length < POOL_SIZE) {
+      this._pool.push(this.createEntry());
+    }
   }
 
   convert(
@@ -74,7 +76,7 @@ export class FontConverterPool {
       idle.busy = true;
       return idle;
     }
-    if (this._pool.length < this.poolSize) {
+    if (this._pool.length < POOL_SIZE) {
       const entry = this.createEntry();
       entry.busy = true;
       this._pool.push(entry);
@@ -95,7 +97,6 @@ export class FontConverterPool {
   private replaceEntry(entry: PoolEntry): void {
     const idx = this._pool.indexOf(entry);
     if (idx === -1) return;
-    if (this._destroyed) return;
     try {
       const replacement = this.createEntry();
       this._pool[idx] = replacement;

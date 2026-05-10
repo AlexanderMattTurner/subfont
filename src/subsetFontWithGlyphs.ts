@@ -97,8 +97,8 @@ interface SubsetFontWithGlyphsOptions {
   scriptTags?: string[];
 }
 
-// WebAssembly.Module compilation is expensive (~50-200ms) and immutable —
-// safe to share across all SubsetterPool instances. Cached at module level.
+// Compile once and share across every SubsetterPool — the module is
+// immutable and compilation costs ~50-200ms per pool otherwise.
 let _compilePromise: Promise<WebAssembly.Module> | undefined;
 function compileModule(): Promise<WebAssembly.Module> {
   if (!_compilePromise) {
@@ -118,10 +118,8 @@ interface SubsetterPoolOptions {
   poolSize?: number;
 }
 
-// Pool of WASM instances for parallel subsetting. Each instance has its
-// own linear memory so concurrent calls are safe. The compiled module is
-// shared across pools (see compileModule above) and instantiated N times
-// per pool (N = poolSize, default = CPU count capped at 8).
+// Each WASM instance owns its own linear memory, so concurrent subsetting
+// across instances is safe. Default poolSize = CPU count, capped at 8.
 class SubsetterPool {
   private readonly poolSize: number;
   private readonly _pool: PoolInstance[] = [];
@@ -552,13 +550,8 @@ async function subsetFontWithGlyphs(
 
 const exported = subsetFontWithGlyphs as SubsetFontWithGlyphsFn;
 
-// Pre-warm the default WASM pool: call early to overlap compilation with
-// other work.
 exported.warmup = () => getDefaultPool().warmup();
 
-// Drop the default pool's instances. Useful in long-running processes that
-// want to reclaim memory between subfont() invocations or in tests that
-// need pool-state isolation. The compiled WebAssembly.Module stays cached.
 exported.destroyPool = () => {
   if (_defaultPool) {
     const pool = _defaultPool;
@@ -567,7 +560,6 @@ exported.destroyPool = () => {
   }
 };
 
-// Class export for callers that want explicit lifecycle control.
 exported.SubsetterPool = SubsetterPool;
 
 export = exported;
