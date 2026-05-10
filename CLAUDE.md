@@ -58,7 +58,7 @@ pnpm run check-coverage  # Verify coverage thresholds
 - Use `const` by default; `let` only when reassignment is needed
 - Template literals preferred over string concatenation
 - **Never silence compiler/linter warnings** (e.g. `ignoreDeprecations`, `// @ts-ignore`, `eslint-disable`) without explicit user approval. Fix the root cause or leave the warning visible.
-- **No legacy aliases or backwards-compat shims without a verified caller.** Before keeping a `type Old = New`, re-exporting a renamed symbol, or adding a deprecated wrapper, grep for actual consumers. If nothing imports it, delete it — even when a task description hand-waves about "the few places that genuinely need it." Trust the search, not the hypothetical.
+- **No legacy aliases or backwards-compat shims without a verified caller.** Before keeping a `type Old = New`, re-exporting a renamed symbol, or adding a deprecated wrapper, grep for actual consumers. If nothing imports it inside the repo, delete it — even when a task description hand-waves about "the few places that genuinely need it." Trust the search, not the hypothetical. When the search _does_ turn up callers, migrate them to the new name in the same change rather than keeping the alias around. If you suspect out-of-tree consumers (downstream packages, published API surface, etc.) might break, surface that concern to the user and let them decide whether to keep a transition alias — don't preserve one on your own initiative.
 
 ## Subset-size efficiency improvements
 
