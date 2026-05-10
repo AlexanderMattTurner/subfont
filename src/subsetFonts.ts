@@ -819,6 +819,234 @@ function injectSubsetFontFamilies(
   }
 }
 
+interface InsertSubsetsArgs {
+  assetGraph: AssetGraph;
+  pages: AssetTextWithProps[];
+  formats: string[];
+  subsetUrl: string;
+  hrefType: string;
+  inlineCss: boolean;
+  omitFallbacks: boolean;
+}
+
+interface InsertSubsetsResult {
+  numFontUsagesWithSubset: number;
+}
+
+// Build subset CSS assets and inject them (plus preload hints) into each
+// page. All cache state is local; nothing leaks back to the caller.
+async function insertSubsets({
+  assetGraph,
+  pages,
+  formats,
+  subsetUrl,
+  hrefType,
+  inlineCss,
+  omitFallbacks,
+}: InsertSubsetsArgs): Promise<InsertSubsetsResult> {
+  // Pre-compute which fontUrls are used (with text) on every page.
+  // Set intersection: O(pages × fonts_per_page) vs the old every+some approach.
+  const fontUrlsUsedOnEveryPage = new Set<string>();
+  if (pages.length > 0) {
+    for (const fu of pages[0].fontUsages) {
+      if (fu.pageText && fu.fontUrl) fontUrlsUsedOnEveryPage.add(fu.fontUrl);
+    }
+    for (let i = 1; i < pages.length; i++) {
+      if (fontUrlsUsedOnEveryPage.size === 0) break;
+      const pageFontUrls = new Set<string>();
+      for (const fu of pages[i].fontUsages) {
+        if (fu.pageText && fu.fontUrl) pageFontUrls.add(fu.fontUrl);
+      }
+      for (const fontUrl of fontUrlsUsedOnEveryPage) {
+        if (!pageFontUrls.has(fontUrl)) {
+          fontUrlsUsedOnEveryPage.delete(fontUrl);
+        }
+      }
+    }
+  }
+
+  // Cache subset CSS assets by their source text to avoid redundant
+  // addAsset/minify/removeAsset cycles for pages sharing identical CSS.
+  const subsetCssAssetCache = new Map<string, Asset>();
+
+  // Cache the heavy CSS-text assembly (including base64-encoded font data)
+  // keyed by the shared accumulatedFontFaceDeclarations array. Pages grouped
+  // under the same stylesheet config produce byte-identical output, so this
+  // collapses the per-page string build from O(pages) to O(unique configs).
+  const subsetCssTextCache = new WeakMap<
+    AccumulatedFontFaceDeclaration[],
+    { subset: string; unused: string }
+  >();
+
+  // Pre-index relations by source asset to avoid O(allRelations) scans
+  // in the per-page injection loop below. Build indices once, then use
+  // O(1) lookups per page instead of repeated assetGraph.findRelations.
+  const styleRelsByAsset = new Map<Asset, Relation[]>();
+  const noscriptRelsByAsset = new Map<Asset, Relation[]>();
+  const preloadRelsByAsset = new Map<Asset, Relation[]>();
+  const relTypeToIndex: Record<string, Map<Asset, Relation[]>> = {
+    HtmlStyle: styleRelsByAsset,
+    SvgStyle: styleRelsByAsset,
+    HtmlNoscript: noscriptRelsByAsset,
+    HtmlPrefetchLink: preloadRelsByAsset,
+    HtmlPreloadLink: preloadRelsByAsset,
+  };
+  for (const relation of assetGraph.findRelations({
+    type: { $in: Object.keys(relTypeToIndex) },
+  })) {
+    const index = relTypeToIndex[relation.type];
+    const from = relation.from;
+    if (!index.has(from)) index.set(from, []);
+    index.get(from)!.push(relation);
+  }
+
+  let numFontUsagesWithSubset = 0;
+  for (const {
+    htmlOrSvgAsset,
+    fontUsages,
+    accumulatedFontFaceDeclarations,
+  } of pages) {
+    const styleRels = styleRelsByAsset.get(htmlOrSvgAsset) || [];
+    let insertionPoint: Relation | undefined = styleRels[0];
+
+    // Fall back to inserting before a <noscript> that contains a stylesheet
+    // when no direct stylesheet relation exists (assetgraph#1251)
+    if (!insertionPoint && htmlOrSvgAsset.type === 'Html') {
+      for (const htmlNoScript of noscriptRelsByAsset.get(htmlOrSvgAsset) ||
+        []) {
+        const noscriptStyleRels = styleRelsByAsset.get(htmlNoScript.to) || [];
+        if (noscriptStyleRels.length > 0) {
+          insertionPoint = htmlNoScript;
+          break;
+        }
+      }
+    }
+    const subsetFontUsages = fontUsages.filter(
+      (fontUsage) => fontUsage.subsets
+    );
+    const subsetFontUsagesSet = new Set(subsetFontUsages);
+    const unsubsettedFontUsages = fontUsages.filter(
+      (fontUsage) => !subsetFontUsagesSet.has(fontUsage)
+    );
+
+    // Remove all existing preload hints to fonts that might have new subsets
+    const fontUrls = new Set<string | undefined>(
+      fontUsages.map((fu) => fu.fontUrl)
+    );
+    for (const relation of preloadRelsByAsset.get(htmlOrSvgAsset) || []) {
+      if (!relation.to || !fontUrls.has(relation.to.url)) continue;
+
+      if (relation.type === 'HtmlPrefetchLink') {
+        const err = new Error(
+          `Detached ${relation.node.outerHTML}. Will be replaced with preload with JS fallback.\nIf you feel this is wrong, open an issue at https://github.com/alexander-turner/subfont/issues`
+        ) as AssetGraphError;
+        err.asset = relation.from;
+        err.relation = relation;
+        assetGraph.info(err);
+      }
+      relation.detach();
+    }
+
+    const unsubsettedFontUsagesToPreload = unsubsettedFontUsages.filter(
+      (fontUsage) => fontUsage.preload
+    );
+
+    if (unsubsettedFontUsagesToPreload.length > 0) {
+      // Insert <link rel="preload">
+      for (const fontUsage of unsubsettedFontUsagesToPreload) {
+        // Always preload unsubsetted font files, they might be any format, so can't be clever here
+        const preloadRelation: Relation = htmlOrSvgAsset.addRelation(
+          {
+            type: 'HtmlPreloadLink',
+            hrefType,
+            to: fontUsage.fontUrl,
+            as: 'font',
+          },
+          insertionPoint ? 'before' : 'firstInHead',
+          insertionPoint
+        );
+        insertionPoint = insertionPoint || preloadRelation;
+      }
+    }
+
+    if (subsetFontUsages.length === 0) {
+      continue;
+    }
+    numFontUsagesWithSubset += subsetFontUsages.length;
+
+    let cssTextParts = subsetCssTextCache.get(accumulatedFontFaceDeclarations);
+    if (!cssTextParts) {
+      cssTextParts = {
+        subset: getFontUsageStylesheet(subsetFontUsages),
+        unused: getUnusedVariantsStylesheet(
+          fontUsages,
+          accumulatedFontFaceDeclarations
+        ),
+      };
+      subsetCssTextCache.set(accumulatedFontFaceDeclarations, cssTextParts);
+    }
+    let subsetCssText = cssTextParts.subset;
+    const unusedVariantsCss = cssTextParts.unused;
+    if (!inlineCss && !omitFallbacks) {
+      // This can go into the same stylesheet because we won't reload all __subset suffixed families in the JS preload fallback
+      subsetCssText += unusedVariantsCss;
+    }
+
+    const cssAsset = await getOrCreateSubsetCssAsset({
+      assetGraph,
+      subsetCssText,
+      subsetFontUsages,
+      formats,
+      subsetUrl,
+      hrefType,
+      inlineCss,
+      fontUrlsUsedOnEveryPage,
+      numPages: pages.length,
+      subsetCssAssetCache,
+    });
+
+    insertionPoint = addSubsetFontPreloads({
+      cssAsset,
+      fontUsages,
+      htmlOrSvgAsset,
+      subsetUrl,
+      hrefType,
+      insertionPoint,
+    });
+    const cssRelation = htmlOrSvgAsset.addRelation(
+      {
+        type: `${htmlOrSvgAsset.type}Style`,
+        hrefType:
+          inlineCss || htmlOrSvgAsset.type === 'Svg' ? 'inline' : hrefType,
+        to: cssAsset,
+      },
+      insertionPoint ? 'before' : 'firstInHead',
+      insertionPoint
+    );
+    insertionPoint = insertionPoint || cssRelation;
+
+    if (!omitFallbacks && inlineCss && unusedVariantsCss) {
+      // The fallback CSS for unused variants needs to go into its own stylesheet after the crude version of the JS-based preload "polyfill"
+      const cssAsset = htmlOrSvgAsset.addRelation(
+        {
+          type: 'HtmlStyle',
+          to: {
+            type: 'Css',
+            text: unusedVariantsCss,
+          },
+        },
+        'after',
+        cssRelation
+      ).to;
+      for (const relation of cssAsset.outgoingRelations) {
+        relation.hrefType = hrefType;
+      }
+    }
+  }
+
+  return { numFontUsagesWithSubset };
+}
+
 interface SubsetFontsOptions {
   formats?: string[];
   subsetPath?: string;
@@ -1004,213 +1232,17 @@ async function subsetFonts(
   timings.warnAboutMissingGlyphs = warnGlyphsPhase.end();
 
   // Insert subsets:
-
-  // Pre-compute which fontUrls are used (with text) on every page.
-  // Set intersection: O(pages × fonts_per_page) vs the old every+some approach.
-  const fontUrlsUsedOnEveryPage = new Set<string>();
-  if (pages.length > 0) {
-    for (const fu of pages[0].fontUsages) {
-      if (fu.pageText && fu.fontUrl) fontUrlsUsedOnEveryPage.add(fu.fontUrl);
-    }
-    for (let i = 1; i < pages.length; i++) {
-      if (fontUrlsUsedOnEveryPage.size === 0) break;
-      const pageFontUrls = new Set<string>();
-      for (const fu of pages[i].fontUsages) {
-        if (fu.pageText && fu.fontUrl) pageFontUrls.add(fu.fontUrl);
-      }
-      for (const fontUrl of fontUrlsUsedOnEveryPage) {
-        if (!pageFontUrls.has(fontUrl)) {
-          fontUrlsUsedOnEveryPage.delete(fontUrl);
-        }
-      }
-    }
-  }
-
-  // Cache subset CSS assets by their source text to avoid redundant
-  // addAsset/minify/removeAsset cycles for pages sharing identical CSS.
-  const subsetCssAssetCache = new Map<string, Asset>();
-
-  // Cache the heavy CSS-text assembly (including base64-encoded font data)
-  // keyed by the shared accumulatedFontFaceDeclarations array. Pages grouped
-  // under the same stylesheet config produce byte-identical output, so this
-  // collapses the per-page string build from O(pages) to O(unique configs).
-  const subsetCssTextCache = new WeakMap<
-    AccumulatedFontFaceDeclaration[],
-    { subset: string; unused: string }
-  >();
-
-  // Pre-index relations by source asset to avoid O(allRelations) scans
-  // in the per-page injection loop below. Build indices once, then use
-  // O(1) lookups per page instead of repeated assetGraph.findRelations.
-  const styleRelsByAsset = new Map<Asset, Relation[]>();
-  const noscriptRelsByAsset = new Map<Asset, Relation[]>();
-  const preloadRelsByAsset = new Map<Asset, Relation[]>();
-  const relTypeToIndex: Record<string, Map<Asset, Relation[]>> = {
-    HtmlStyle: styleRelsByAsset,
-    SvgStyle: styleRelsByAsset,
-    HtmlNoscript: noscriptRelsByAsset,
-    HtmlPrefetchLink: preloadRelsByAsset,
-    HtmlPreloadLink: preloadRelsByAsset,
-  };
-  for (const relation of assetGraph.findRelations({
-    type: { $in: Object.keys(relTypeToIndex) },
-  })) {
-    const index = relTypeToIndex[relation.type];
-    const from = relation.from;
-    if (!index.has(from)) index.set(from, []);
-    index.get(from)!.push(relation);
-  }
-
   const insertPhase = trackPhase(`insert subsets loop (${pages.length} pages)`);
-  let numFontUsagesWithSubset = 0;
-  for (const {
-    htmlOrSvgAsset,
-    fontUsages,
-    accumulatedFontFaceDeclarations,
-  } of pages) {
-    const styleRels = styleRelsByAsset.get(htmlOrSvgAsset) || [];
-    let insertionPoint: Relation | undefined = styleRels[0];
-
-    // Fall back to inserting before a <noscript> that contains a stylesheet
-    // when no direct stylesheet relation exists (assetgraph#1251)
-    if (!insertionPoint && htmlOrSvgAsset.type === 'Html') {
-      for (const htmlNoScript of noscriptRelsByAsset.get(htmlOrSvgAsset) ||
-        []) {
-        const noscriptStyleRels = styleRelsByAsset.get(htmlNoScript.to) || [];
-        if (noscriptStyleRels.length > 0) {
-          insertionPoint = htmlNoScript;
-          break;
-        }
-      }
-    }
-    const subsetFontUsages = fontUsages.filter(
-      (fontUsage) => fontUsage.subsets
-    );
-    const subsetFontUsagesSet = new Set(subsetFontUsages);
-    const unsubsettedFontUsages = fontUsages.filter(
-      (fontUsage) => !subsetFontUsagesSet.has(fontUsage)
-    );
-
-    // Remove all existing preload hints to fonts that might have new subsets
-    const fontUrls = new Set<string | undefined>(
-      fontUsages.map((fu) => fu.fontUrl)
-    );
-    for (const relation of preloadRelsByAsset.get(htmlOrSvgAsset) || []) {
-      if (!relation.to || !fontUrls.has(relation.to.url)) continue;
-
-      if (relation.type === 'HtmlPrefetchLink') {
-        const err = new Error(
-          `Detached ${relation.node.outerHTML}. Will be replaced with preload with JS fallback.\nIf you feel this is wrong, open an issue at https://github.com/alexander-turner/subfont/issues`
-        ) as AssetGraphError;
-        err.asset = relation.from;
-        err.relation = relation;
-        assetGraph.info(err);
-      }
-      relation.detach();
-    }
-
-    const unsubsettedFontUsagesToPreload = unsubsettedFontUsages.filter(
-      (fontUsage) => fontUsage.preload
-    );
-
-    if (unsubsettedFontUsagesToPreload.length > 0) {
-      // Insert <link rel="preload">
-      for (const fontUsage of unsubsettedFontUsagesToPreload) {
-        // Always preload unsubsetted font files, they might be any format, so can't be clever here
-        const preloadRelation: Relation = htmlOrSvgAsset.addRelation(
-          {
-            type: 'HtmlPreloadLink',
-            hrefType,
-            to: fontUsage.fontUrl,
-            as: 'font',
-          },
-          insertionPoint ? 'before' : 'firstInHead',
-          insertionPoint
-        );
-        insertionPoint = insertionPoint || preloadRelation;
-      }
-    }
-
-    if (subsetFontUsages.length === 0) {
-      continue;
-    }
-    numFontUsagesWithSubset += subsetFontUsages.length;
-
-    let cssTextParts = subsetCssTextCache.get(accumulatedFontFaceDeclarations);
-    if (!cssTextParts) {
-      cssTextParts = {
-        subset: getFontUsageStylesheet(subsetFontUsages),
-        unused: getUnusedVariantsStylesheet(
-          fontUsages,
-          accumulatedFontFaceDeclarations
-        ),
-      };
-      subsetCssTextCache.set(accumulatedFontFaceDeclarations, cssTextParts);
-    }
-    let subsetCssText = cssTextParts.subset;
-    const unusedVariantsCss = cssTextParts.unused;
-    if (!inlineCss && !omitFallbacks) {
-      // This can go into the same stylesheet because we won't reload all __subset suffixed families in the JS preload fallback
-      subsetCssText += unusedVariantsCss;
-    }
-
-    const cssAsset = await getOrCreateSubsetCssAsset({
-      assetGraph,
-      subsetCssText,
-      subsetFontUsages,
-      formats,
-      subsetUrl,
-      hrefType,
-      inlineCss,
-      fontUrlsUsedOnEveryPage,
-      numPages: pages.length,
-      subsetCssAssetCache,
-    });
-
-    insertionPoint = addSubsetFontPreloads({
-      cssAsset,
-      fontUsages,
-      htmlOrSvgAsset,
-      subsetUrl,
-      hrefType,
-      insertionPoint,
-    });
-    const cssRelation = htmlOrSvgAsset.addRelation(
-      {
-        type: `${htmlOrSvgAsset.type}Style`,
-        hrefType:
-          inlineCss || htmlOrSvgAsset.type === 'Svg' ? 'inline' : hrefType,
-        to: cssAsset,
-      },
-      insertionPoint ? 'before' : 'firstInHead',
-      insertionPoint
-    );
-    insertionPoint = insertionPoint || cssRelation;
-
-    if (!omitFallbacks && inlineCss && unusedVariantsCss) {
-      // The fallback CSS for unused variants needs to go into its own stylesheet after the crude version of the JS-based preload "polyfill"
-      const cssAsset = htmlOrSvgAsset.addRelation(
-        {
-          type: 'HtmlStyle',
-          to: {
-            type: 'Css',
-            text: unusedVariantsCss,
-          },
-        },
-        'after',
-        cssRelation
-      ).to;
-      for (const relation of cssAsset.outgoingRelations) {
-        relation.hrefType = hrefType;
-      }
-    }
-  }
-
+  const { numFontUsagesWithSubset } = await insertSubsets({
+    assetGraph,
+    pages,
+    formats,
+    subsetUrl,
+    hrefType,
+    inlineCss,
+    omitFallbacks,
+  });
   timings['insert subsets loop'] = insertPhase.end();
-
-  // Cache keys are the full subset CSS text (with base64-encoded fonts);
-  // clear once injection is done so those strings are GC-eligible.
-  subsetCssAssetCache.clear();
 
   if (numFontUsagesWithSubset === 0) {
     return { fontInfo: [], timings };
