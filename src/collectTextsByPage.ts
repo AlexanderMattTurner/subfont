@@ -30,6 +30,7 @@ import {
 } from './fontFeatureHelpers';
 import allInitialValues = require('./initialValueByProp');
 import type { Asset, AssetGraph, Relation, PostCssNode } from 'assetgraph';
+import type { FontFaceDeclaration } from 'font-snapper';
 import type { TracedFontUsage } from './types/shared';
 
 const fontRelevantCssRegex =
@@ -57,23 +58,6 @@ const initialValueByProp: Record<string, string> = {
   'font-weight': allInitialValues['font-weight'],
   'font-stretch': allInitialValues['font-stretch'],
 };
-
-// FontFaceDeclaration is an open record: it merges initialValueByProp,
-// the live `relations` list, and every CSS descriptor walkDecls hands back.
-// The shape is dynamic by design (CSS @font-face accepts arbitrary
-// descriptor names), so the index signature stays wide. Required fields
-// (font-family, src) are only guaranteed *after* validateFontFaceCombo-
-// Coverage, so they're optional here.
-interface FontFaceDeclaration {
-  'font-family'?: string;
-  'font-style'?: string;
-  'font-weight'?: string;
-  'font-stretch'?: string;
-  src?: string;
-  '-subfont-text'?: string;
-  relations: Relation[];
-  [descriptor: string]: string | Relation[] | undefined;
-}
 
 // Stylesheet entries are produced by gatherStylesheetsWithPredicates and
 // consumed by font-tracer (which walks asset.parseTree directly) plus the
