@@ -1,4 +1,5 @@
 import getFontInfo = require('./getFontInfo');
+import { FontConverterPool } from './fontConverter';
 import parseFontVariationSettings = require('./parseFontVariationSettings');
 
 // CSS oblique without an explicit <angle> defaults to 14deg. The OpenType slnt
@@ -151,7 +152,8 @@ export interface VariationAxisBounds {
 export async function getVariationAxisBounds(
   fontAssetsByUrl: Map<string, FontAssetLike>,
   fontUrl: string,
-  seenAxisValuesByFontUrlAndAxisName: Map<string, Map<string, Set<number>>>
+  seenAxisValuesByFontUrlAndAxisName: Map<string, Map<string, Set<number>>>,
+  fontConverter: FontConverterPool
 ): Promise<VariationAxisBounds> {
   let fontInfo;
   try {
@@ -164,7 +166,7 @@ export async function getVariationAxisBounds(
         variationAxes: {},
       };
     }
-    fontInfo = await getFontInfo(asset.rawSrc);
+    fontInfo = await getFontInfo(asset.rawSrc, fontConverter);
   } catch {
     // Invalid font -- skip instancing, return safe defaults
     return {

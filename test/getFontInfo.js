@@ -4,6 +4,9 @@ const fs = require('fs');
 const pathModule = require('path');
 const proxyquire = require('proxyquire').noCallThru();
 const realGetFontInfo = require('../lib/getFontInfo');
+const { FontConverterPool } = require('../lib/fontConverter');
+
+const stubFontConverter = { convert: () => Promise.resolve(Buffer.alloc(0)) };
 
 describe('getFontInfo', function () {
   let getFontInfo;
@@ -42,7 +45,7 @@ describe('getFontInfo', function () {
 
   it('should extract characterSet and variationAxes from a font buffer', async function () {
     const buffer = Buffer.from('fake-font');
-    const result = await getFontInfo(buffer);
+    const result = await getFontInfo(buffer, stubFontConverter);
 
     expect(result, 'to equal', {
       characterSet: [0x41, 0x42, 0x43],
@@ -52,8 +55,8 @@ describe('getFontInfo', function () {
 
   it('should return cached results for the same buffer', async function () {
     const buffer = Buffer.from('fake-font');
-    const promise1 = getFontInfo(buffer);
-    const promise2 = getFontInfo(buffer);
+    const promise1 = getFontInfo(buffer, stubFontConverter);
+    const promise2 = getFontInfo(buffer, stubFontConverter);
 
     expect(promise1, 'to be', promise2);
   });
@@ -62,8 +65,8 @@ describe('getFontInfo', function () {
     const buffer1 = Buffer.from('font-1');
     const buffer2 = Buffer.from('font-2');
 
-    const result1 = await getFontInfo(buffer1);
-    const result2 = await getFontInfo(buffer2);
+    const result1 = await getFontInfo(buffer1, stubFontConverter);
+    const result2 = await getFontInfo(buffer2, stubFontConverter);
 
     // Both should succeed with the same mock data
     expect(result1, 'to equal', {
@@ -88,7 +91,10 @@ describe('getFontInfo', function () {
     const buf2 = Buffer.from('font-b');
 
     // Launch both concurrently
-    const [r1, r2] = await Promise.all([getFontInfo(buf1), getFontInfo(buf2)]);
+    const [r1, r2] = await Promise.all([
+      getFontInfo(buf1, stubFontConverter),
+      getFontInfo(buf2, stubFontConverter),
+    ]);
 
     // Both should resolve successfully
     expect(r1.characterSet, 'to equal', [0x41, 0x42, 0x43]);
@@ -100,7 +106,7 @@ describe('getFontInfo', function () {
 
   it('should clean up face and blob after extraction', async function () {
     const buffer = Buffer.from('fake-font');
-    await getFontInfo(buffer);
+    await getFontInfo(buffer, stubFontConverter);
 
     expect(mockFace.destroy, 'was called once');
     expect(mockBlob.destroy, 'was called once');
@@ -114,7 +120,7 @@ describe('getFontInfo', function () {
     mockFace.getAxisInfos.returns(axes);
 
     const buffer = Buffer.from('variable-font');
-    const result = await getFontInfo(buffer);
+    const result = await getFontInfo(buffer, stubFontConverter);
 
     expect(result.variationAxes, 'to equal', axes);
   });
@@ -125,7 +131,7 @@ describe('getFontInfo', function () {
 
       const buffer = Buffer.from('corrupt-font');
       await expect(
-        getFontInfo(buffer),
+        getFontInfo(buffer, stubFontConverter),
         'to be rejected with',
         'Invalid font data'
       );
@@ -140,10 +146,10 @@ describe('getFontInfo', function () {
       const buf1 = Buffer.from('bad-font');
       const buf2 = Buffer.from('good-font');
 
-      await expect(getFontInfo(buf1), 'to be rejected');
+      await expect(getFontInfo(buf1, stubFontConverter), 'to be rejected');
 
       // The queue should recover and process the next call
-      const result = await getFontInfo(buf2);
+      const result = await getFontInfo(buf2, stubFontConverter);
       expect(result.characterSet, 'to equal', [0x41, 0x42, 0x43]);
     });
 
@@ -154,7 +160,7 @@ describe('getFontInfo', function () {
 
       const emptyBuffer = Buffer.alloc(0);
       await expect(
-        getFontInfo(emptyBuffer),
+        getFontInfo(emptyBuffer, stubFontConverter),
         'to be rejected with',
         'Empty buffer is not a supported font format'
       );
@@ -165,7 +171,7 @@ describe('getFontInfo', function () {
 
       const garbage = Buffer.from([0xde, 0xad, 0xbe, 0xef, 0x00, 0xff]);
       await expect(
-        getFontInfo(garbage),
+        getFontInfo(garbage, stubFontConverter),
         'to be rejected with',
         'Not a supported font format'
       );
@@ -178,11 +184,15 @@ describe('getFontInfo', function () {
       fontverterStub.convert
         .onFirstCall()
         .rejects(new Error('transient error'));
-      await expect(getFontInfo(buf), 'to be rejected with', 'transient error');
+      await expect(
+        getFontInfo(buf, stubFontConverter),
+        'to be rejected with',
+        'transient error'
+      );
 
       // Second attempt with the same buffer should work (not return cached rejection)
       fontverterStub.convert.onSecondCall().resolves(Buffer.from('ok'));
-      const result = await getFontInfo(buf);
+      const result = await getFontInfo(buf, stubFontConverter);
       expect(result.characterSet, 'to equal', [0x41, 0x42, 0x43]);
     });
 
@@ -196,9 +206,9 @@ describe('getFontInfo', function () {
       const good2 = Buffer.from('good2');
 
       // Queue all three concurrently — the first fails, the rest should succeed
-      const p1 = getFontInfo(bad);
-      const p2 = getFontInfo(good1);
-      const p3 = getFontInfo(good2);
+      const p1 = getFontInfo(bad, stubFontConverter);
+      const p2 = getFontInfo(good1, stubFontConverter);
+      const p3 = getFontInfo(good2, stubFontConverter);
 
       await expect(p1, 'to be rejected with', 'boom');
 
@@ -213,6 +223,14 @@ describe('getFontInfo', function () {
   describe('real font integration', function () {
     this.timeout(30000);
 
+    let realFontConverter;
+    before(function () {
+      realFontConverter = new FontConverterPool();
+    });
+    after(async function () {
+      await realFontConverter.destroy();
+    });
+
     it('should extract a non-empty character set from a real TTF', async function () {
       const buffer = fs.readFileSync(
         pathModule.resolve(
@@ -220,7 +238,7 @@ describe('getFontInfo', function () {
           '../testdata/subsetFonts/OpenSans-400.ttf'
         )
       );
-      const info = await realGetFontInfo(buffer);
+      const info = await realGetFontInfo(buffer, realFontConverter);
 
       // Verify structure: real fonts return code points (numbers), not mock values.
       expect(info.characterSet, 'to be an array');
@@ -238,7 +256,7 @@ describe('getFontInfo', function () {
           '../testdata/subsetFonts/variable-font-unused-axes/RobotoFlex-VariableFont_GRAD,XTRA,YOPQ,YTAS,YTDE,YTFI,YTLC,YTUC,opsz,slnt,wdth,wght.ttf'
         )
       );
-      const info = await realGetFontInfo(buffer);
+      const info = await realGetFontInfo(buffer, realFontConverter);
 
       expect(info.variationAxes, 'to have keys', ['wght', 'wdth', 'opsz']);
       expect(info.variationAxes.wght, 'to satisfy', {

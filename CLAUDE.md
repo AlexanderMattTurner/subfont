@@ -43,6 +43,36 @@ pnpm run check-coverage  # Verify coverage thresholds
 - `src/subsetGeneration.ts` — Subset generation with disk caching
 - `src/FontTracerPool.ts` — Worker thread pool for parallel font tracing
 
+## Pool lifecycle
+
+Font conversion and subsetting use lifecycle objects, not module-level
+singletons. There is no default pool — every caller constructs and destroys
+its own.
+
+- `FontConverterPool` (`src/fontConverter.ts`) — worker-thread pool that
+  routes woff2 encode/decode through `fontConverterWorker.js`. Construct
+  with `new FontConverterPool()`; tear down with `await pool.destroy()`.
+- `SubsetterPool` (`src/subsetFontWithGlyphs.ts`) — pool of harfbuzz WASM
+  instances for parallel subsetting. Constructor requires a
+  `FontConverterPool` (woff2 still goes through it). The compiled
+  `WebAssembly.Module` itself is module-level (immutable, expensive to
+  recompile). Tear down with `pool.destroy()` (synchronous).
+
+`subsetFonts` (the public entry point) creates both pools, calls
+`runSubsetFonts`, and destroys them in `finally` so a long-running
+process can call `subfont()` repeatedly without leaking workers or WASM
+instances. Helpers that need the pools (`toSfnt`, `getFontInfo`,
+`collectFeatureGlyphIds`, `getVariationAxisBounds`, `warnAboutMissingGlyphs`,
+`getSubsetsForFontUsage`) take the pool as an explicit parameter — there
+is no module-level fallback. Tests construct their own pools (see
+`test/subsetFonts-helpers.js` `getTestFontConverter`, or per-`describe`
+`before/after` hooks in `test/subsetFontWithGlyphs.js`).
+
+When adding a new caller of `getFontInfo`/`toSfnt`/etc., thread the
+existing `fontConverter` parameter through; do not construct a pool ad
+hoc inside helper functions — pool ownership belongs at the entry point
+that can also destroy it.
+
 ## Testing Notes
 
 - Tests have a 5-minute timeout (configured in `.mocharc.yml`)

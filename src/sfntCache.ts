@@ -1,11 +1,14 @@
 import * as fontverter from 'fontverter';
-import { convert } from './fontConverter';
+import { FontConverterPool } from './fontConverter';
 
 type FontBuffer = Buffer | Uint8Array;
 
 const sfntPromiseByBuffer = new WeakMap<object, Promise<FontBuffer>>();
 
-export function toSfnt(buffer: FontBuffer): Promise<FontBuffer> {
+export function toSfnt(
+  buffer: FontBuffer,
+  fontConverter: FontConverterPool
+): Promise<FontBuffer> {
   const key = buffer as object;
   const cached = sfntPromiseByBuffer.get(key);
   if (cached) return cached;
@@ -16,12 +19,12 @@ export function toSfnt(buffer: FontBuffer): Promise<FontBuffer> {
     if (format === 'sfnt') {
       promise = Promise.resolve(buffer);
     } else if (format === 'woff2') {
-      promise = convert(buffer, 'sfnt');
+      promise = fontConverter.convert(buffer, 'sfnt');
     } else {
       promise = fontverter.convert(buffer, 'sfnt');
     }
   } catch {
-    promise = convert(buffer, 'sfnt');
+    promise = fontConverter.convert(buffer, 'sfnt');
   }
   // Evict on rejection so retries with the same buffer aren't stuck.
   // Only delete if the map still points to this exact promise — a concurrent

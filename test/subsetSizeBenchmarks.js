@@ -4,7 +4,8 @@
 const expect = require('unexpected');
 const fs = require('fs');
 const pathModule = require('path');
-const subsetFontWithGlyphs = require('../lib/subsetFontWithGlyphs');
+const { SubsetterPool } = require('../lib/subsetFontWithGlyphs');
+const { FontConverterPool } = require('../lib/fontConverter');
 
 const PANGRAM = 'The quick brown fox jumps over the lazy dog 0123456789';
 
@@ -28,6 +29,19 @@ const IBM_PLEX_SANS = pathModule.resolve(
 
 describe('subset size benchmarks', function () {
   this.timeout(60000);
+
+  let pool;
+  let fontConverter;
+  before(function () {
+    fontConverter = new FontConverterPool();
+    pool = new SubsetterPool({ fontConverter });
+  });
+  after(async function () {
+    pool.destroy();
+    await fontConverter.destroy();
+  });
+  const subsetFontWithGlyphs = (font, text, opts) =>
+    pool.subset(font, text, opts);
 
   it('Roboto-400 truetype subset drops gasp after the enum fix', async function () {
     const buf = fs.readFileSync(ROBOTO);

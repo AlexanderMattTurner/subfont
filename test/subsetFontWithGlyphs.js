@@ -1,7 +1,14 @@
 const expect = require('unexpected');
 const fs = require('fs');
 const pathModule = require('path');
-const subsetFontWithGlyphs = require('../lib/subsetFontWithGlyphs');
+const { SubsetterPool } = require('../lib/subsetFontWithGlyphs');
+const { FontConverterPool } = require('../lib/fontConverter');
+
+let pool;
+let fontConverter;
+function subsetFontWithGlyphs(font, text, opts) {
+  return pool.subset(font, text, opts);
+}
 
 const ttfPath = pathModule.resolve(
   __dirname,
@@ -55,6 +62,12 @@ describe('subsetFontWithGlyphs', function () {
   before(function () {
     ttfBuffer = fs.readFileSync(ttfPath);
     variableFontBuffer = fs.readFileSync(variableFontPath);
+    fontConverter = new FontConverterPool();
+    pool = new SubsetterPool({ fontConverter });
+  });
+  after(async function () {
+    pool.destroy();
+    await fontConverter.destroy();
   });
 
   it('should produce a smaller woff2 subset for a few characters', async function () {

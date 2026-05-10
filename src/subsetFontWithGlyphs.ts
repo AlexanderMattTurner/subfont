@@ -2,7 +2,7 @@ import os = require('os');
 import { readFile } from 'fs/promises';
 import * as fontverter from 'fontverter';
 import { toSfnt } from './sfntCache';
-import { convert as convertInWorker } from './fontConverter';
+import { FontConverterPool } from './fontConverter';
 
 // hb_subset_sets_t enum values — https://github.com/harfbuzz/harfbuzz/blob/main/src/hb-subset.h
 const HB_SUBSET_SETS_GLYPH_INDEX = 0;
@@ -115,19 +115,29 @@ const DEFAULT_POOL_SIZE = Math.max(1, Math.min(os.cpus().length, 8));
 const ACQUIRE_TIMEOUT_MS = 120_000;
 
 interface SubsetterPoolOptions {
+  fontConverter: FontConverterPool;
   poolSize?: number;
 }
 
 // Each WASM instance owns its own linear memory, so concurrent subsetting
 // across instances is safe. Default poolSize = CPU count, capped at 8.
-class SubsetterPool {
+//
+// Holds a reference to a FontConverterPool — woff2 encode/decode runs in
+// fontConverterWorker (each thread loads its own wawoff2 instance), since
+// wawoff2's shared module corrupts memory under concurrent main-thread use.
+export class SubsetterPool {
   private readonly poolSize: number;
+  private readonly fontConverter: FontConverterPool;
   private readonly _pool: PoolInstance[] = [];
   private readonly _waiters: Array<(inst: PoolInstance) => void> = [];
   private _poolReady: Promise<void> | undefined;
   private _destroyed = false;
 
-  constructor({ poolSize = DEFAULT_POOL_SIZE }: SubsetterPoolOptions = {}) {
+  constructor({
+    fontConverter,
+    poolSize = DEFAULT_POOL_SIZE,
+  }: SubsetterPoolOptions) {
+    this.fontConverter = fontConverter;
     this.poolSize = Math.max(1, poolSize);
   }
 
@@ -135,6 +145,22 @@ class SubsetterPool {
     return this.initPool();
   }
 
+  subset(
+    originalFont: Buffer | Uint8Array,
+    text: string,
+    options?: SubsetFontWithGlyphsOptions
+  ): Promise<Buffer> {
+    return runSubset(this, originalFont, text, options);
+  }
+
+  destroy(): void {
+    this._destroyed = true;
+    this._waiters.length = 0;
+    this._pool.length = 0;
+    this._poolReady = undefined;
+  }
+
+  /** @internal */
   async acquireInstance(): Promise<PoolInstance> {
     if (this._destroyed) {
       throw new Error('SubsetterPool has been destroyed');
@@ -165,6 +191,7 @@ class SubsetterPool {
     });
   }
 
+  /** @internal */
   releaseInstance(inst: PoolInstance): void {
     inst.busy = false;
     if (this._waiters.length > 0) {
@@ -174,11 +201,9 @@ class SubsetterPool {
     }
   }
 
-  destroy(): void {
-    this._destroyed = true;
-    this._waiters.length = 0;
-    this._pool.length = 0;
-    this._poolReady = undefined;
+  /** @internal */
+  getFontConverter(): FontConverterPool {
+    return this.fontConverter;
   }
 
   private initPool(): Promise<void> {
@@ -205,21 +230,6 @@ class SubsetterPool {
     return this._poolReady;
   }
 }
-
-let _defaultPool: SubsetterPool | undefined;
-
-function getDefaultPool(): SubsetterPool {
-  if (!_defaultPool) {
-    _defaultPool = new SubsetterPool();
-  }
-  return _defaultPool;
-}
-
-// woff2 encode/decode uses wawoff2's WASM module, which has a shared
-// instance that corrupts memory under concurrent use.  Instead of
-// serializing to p-limit(1) in the main thread, we route woff2
-// operations through fontConverterPool — each worker thread loads its
-// own wawoff2 instance, enabling safe parallel compression.
 
 // Re-create on every call — WASM memory.buffer is detached when memory grows,
 // so a cached Uint8Array would silently read/write stale data.
@@ -453,18 +463,8 @@ function extractSubsetFont(exports: HarfbuzzExports, subset: number): Buffer {
   return subsetFont;
 }
 
-interface SubsetFontWithGlyphsFn {
-  (
-    originalFont: Buffer | Uint8Array,
-    text: string,
-    options?: SubsetFontWithGlyphsOptions
-  ): Promise<Buffer>;
-  warmup(): Promise<void>;
-  destroyPool(): void;
-  SubsetterPool: typeof SubsetterPool;
-}
-
-async function subsetFontWithGlyphs(
+async function runSubset(
+  pool: SubsetterPool,
   originalFont: Buffer | Uint8Array,
   text: string,
   {
@@ -477,12 +477,12 @@ async function subsetFontWithGlyphs(
     scriptTags,
   }: SubsetFontWithGlyphsOptions = {}
 ): Promise<Buffer> {
+  const fontConverter = pool.getFontConverter();
   // Reuse cached sfnt conversion when available (same buffer may have
   // been converted by getFontInfo or collectFeatureGlyphIds already).
   // sfntCache routes woff2 decompression through the worker pool.
-  const ttf = await toSfnt(originalFont);
+  const ttf = await toSfnt(originalFont, fontConverter);
 
-  const pool = getDefaultPool();
   const inst = await pool.acquireInstance();
   const { exports } = inst;
   let released = false;
@@ -541,25 +541,9 @@ async function subsetFontWithGlyphs(
     // wawoff2 WASM instance).  Non-woff2 formats use JS-based converters
     // that are safe to call concurrently in the main thread.
     return targetFormat === 'woff2'
-      ? convertInWorker(subsetFont as Buffer, targetFormat, 'truetype')
+      ? fontConverter.convert(subsetFont as Buffer, targetFormat, 'truetype')
       : fontverter.convert(subsetFont as Buffer, targetFormat, 'truetype');
   } finally {
     if (!released) pool.releaseInstance(inst);
   }
 }
-
-const exported = subsetFontWithGlyphs as SubsetFontWithGlyphsFn;
-
-exported.warmup = () => getDefaultPool().warmup();
-
-exported.destroyPool = () => {
-  if (_defaultPool) {
-    const pool = _defaultPool;
-    _defaultPool = undefined;
-    pool.destroy();
-  }
-};
-
-exported.SubsetterPool = SubsetterPool;
-
-export = exported;

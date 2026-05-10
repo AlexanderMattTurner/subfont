@@ -1,5 +1,6 @@
 import { LinesAndColumns } from 'lines-and-columns';
 import getFontInfo = require('./getFontInfo');
+import { FontConverterPool } from './fontConverter';
 import unicodeRange = require('./unicodeRange');
 
 interface AtRuleLike {
@@ -40,7 +41,8 @@ interface AssetGraphLike {
 
 async function warnAboutMissingGlyphs(
   htmlOrSvgAssetTextsWithProps: AssetTextEntry[],
-  assetGraph: AssetGraphLike
+  assetGraph: AssetGraphLike,
+  fontConverter: FontConverterPool
 ): Promise<void> {
   const missingGlyphsErrors: Array<{
     codePoint: number | undefined;
@@ -66,7 +68,7 @@ async function warnAboutMissingGlyphs(
       if (!uniqueSubsetBuffers.has(subsetBuffer)) {
         uniqueSubsetBuffers.set(
           subsetBuffer,
-          getFontInfo(subsetBuffer)
+          getFontInfo(subsetBuffer, fontConverter)
             .then((info) => new Set(info.characterSet))
             // eslint-disable-next-line no-restricted-syntax
             .catch((rawErr: unknown) => {

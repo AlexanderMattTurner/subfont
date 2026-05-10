@@ -1,5 +1,5 @@
 const expect = require('unexpected');
-const { convert } = require('../lib/fontConverter');
+const { FontConverterPool } = require('../lib/fontConverter');
 const fs = require('fs');
 const pathModule = require('path');
 
@@ -11,22 +11,29 @@ const woff2Path = pathModule.resolve(
   'Roboto-400.woff2'
 );
 
-describe('fontConverter', function () {
+describe('FontConverterPool', function () {
   let woff2Font;
+  let pool;
   before(function () {
     woff2Font = fs.readFileSync(woff2Path);
   });
+  beforeEach(function () {
+    pool = new FontConverterPool();
+  });
+  afterEach(async function () {
+    await pool.destroy();
+  });
 
   it('should convert a woff2 font to sfnt', async function () {
-    const result = await convert(woff2Font, 'sfnt');
+    const result = await pool.convert(woff2Font, 'sfnt');
     expect(result, 'to be a', Buffer);
     expect(result.length, 'to be greater than', 0);
   });
 
   it('should handle multiple concurrent conversions', async function () {
     const results = await Promise.all([
-      convert(woff2Font, 'sfnt'),
-      convert(woff2Font, 'sfnt'),
+      pool.convert(woff2Font, 'sfnt'),
+      pool.convert(woff2Font, 'sfnt'),
     ]);
     for (const result of results) {
       expect(result, 'to be a', Buffer);
@@ -36,8 +43,17 @@ describe('fontConverter', function () {
 
   it('should reject on invalid input', async function () {
     await expect(
-      convert(Buffer.from('not a valid font'), 'sfnt'),
+      pool.convert(Buffer.from('not a valid font'), 'sfnt'),
       'to be rejected'
+    );
+  });
+
+  it('should reject convert() after destroy()', async function () {
+    await pool.destroy();
+    await expect(
+      pool.convert(woff2Font, 'sfnt'),
+      'to be rejected with',
+      'FontConverterPool has been destroyed'
     );
   });
 });

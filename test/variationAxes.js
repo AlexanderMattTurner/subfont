@@ -4,6 +4,8 @@ const {
   renderNumberRange,
   getVariationAxisUsage,
 } = require('../lib/variationAxes');
+
+const stubFontConverter = { convert: () => Promise.resolve(Buffer.alloc(0)) };
 const {
   parseFontWeightRange,
   parseFontStretchRange,
@@ -245,7 +247,8 @@ describe('variationAxes', function () {
       const result = await getVariationAxisBounds(
         fontAssetsByUrl,
         'font://test',
-        makeSeenAxes([['wght', [400, 700]]])
+        makeSeenAxes([['wght', [400, 700]]]),
+        stubFontConverter
       );
 
       expect(result.variationAxes.wght.min, 'to equal', 400);
@@ -264,7 +267,8 @@ describe('variationAxes', function () {
       const result = await getVariationAxisBounds(
         fontAssetsByUrl,
         'font://test',
-        makeSeenAxes([['wght', [50, 500]]])
+        makeSeenAxes([['wght', [50, 500]]]),
+        stubFontConverter
       );
 
       expect(result.variationAxes.wght.min, 'to equal', 100);
@@ -278,7 +282,8 @@ describe('variationAxes', function () {
       const result = await getVariationAxisBounds(
         fontAssetsByUrl,
         'font://test',
-        makeSeenAxes([['wght', [400]]])
+        makeSeenAxes([['wght', [400]]]),
+        stubFontConverter
       );
 
       // Single value should be pinned (scalar, not range)
@@ -308,7 +313,8 @@ describe('variationAxes', function () {
         const result = await getVariationAxisBoundsWithOpsz(
           fontAssetsByUrl,
           'font://test',
-          makeSeenAxes([['wght', [400]]])
+          makeSeenAxes([['wght', [400]]]),
+          stubFontConverter
         );
 
         // opsz should be pinned to default (14), not preserved as full range
@@ -325,7 +331,8 @@ describe('variationAxes', function () {
           makeSeenAxes([
             ['wght', [400]],
             ['opsz', [12, 48]],
-          ])
+          ]),
+          stubFontConverter
         );
 
         // opsz should be narrowed to the seen range

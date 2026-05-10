@@ -1,4 +1,5 @@
 import { toSfnt } from './sfntCache';
+import { FontConverterPool } from './fontConverter';
 import enqueueWasm = require('./wasmQueue');
 
 interface FontInfo {
@@ -7,12 +8,13 @@ interface FontInfo {
 }
 
 async function getFontInfoFromBuffer(
-  buffer: Buffer | Uint8Array
+  buffer: Buffer | Uint8Array,
+  fontConverter: FontConverterPool
 ): Promise<FontInfo> {
   // harfbuzzjs is itself thenable; awaiting its require yields the API.
   const harfbuzzJs = await require('harfbuzzjs');
 
-  const blob = harfbuzzJs.createBlob(await toSfnt(buffer));
+  const blob = harfbuzzJs.createBlob(await toSfnt(buffer, fontConverter));
   const face = harfbuzzJs.createFace(blob, 0);
 
   const fontInfo: FontInfo = {
@@ -28,11 +30,16 @@ async function getFontInfoFromBuffer(
 
 const fontInfoPromiseByBuffer = new WeakMap<object, Promise<FontInfo>>();
 
-function getFontInfo(buffer: Buffer | Uint8Array): Promise<FontInfo> {
+function getFontInfo(
+  buffer: Buffer | Uint8Array,
+  fontConverter: FontConverterPool
+): Promise<FontInfo> {
   const key = buffer as object;
   let cached = fontInfoPromiseByBuffer.get(key);
   if (!cached) {
-    const promise = enqueueWasm(() => getFontInfoFromBuffer(buffer));
+    const promise = enqueueWasm(() =>
+      getFontInfoFromBuffer(buffer, fontConverter)
+    );
     // Only evict if the map still points to this exact promise — a concurrent
     // caller may have already replaced it with a fresh retry.
     cached = promise.catch(

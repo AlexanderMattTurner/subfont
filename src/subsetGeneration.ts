@@ -6,7 +6,8 @@ import type { VariationAxes, FontUsage } from './types/shared';
 import { wrapAssetGraphError } from './types/shared';
 import { getVariationAxisBounds } from './variationAxes';
 import collectFeatureGlyphIds = require('./collectFeatureGlyphIds');
-import subsetFontWithGlyphs = require('./subsetFontWithGlyphs');
+import { SubsetterPool } from './subsetFontWithGlyphs';
+import { FontConverterPool } from './fontConverter';
 import {
   pageNeedsMathTable,
   pageNeedsColorTables,
@@ -162,6 +163,8 @@ export async function getSubsetsForFontUsage(
   htmlOrSvgAssetTextsWithProps: AssetTextWithProps[],
   formats: string[],
   seenAxisValuesByFontUrlAndAxisName: Map<string, Map<string, Set<number>>>,
+  subsetterPool: SubsetterPool,
+  fontConverter: FontConverterPool,
   cacheDir: string | null = null,
   console: Console | null = null,
   debug = false
@@ -213,7 +216,8 @@ export async function getSubsetsForFontUsage(
       getVariationAxisBounds(
         fontAssetsByUrl,
         fontUrl,
-        seenAxisValuesByFontUrlAndAxisName
+        seenAxisValuesByFontUrlAndAxisName,
+        fontConverter
       )
     )
   );
@@ -259,7 +263,8 @@ export async function getSubsetsForFontUsage(
           featureGlyphIds = await collectFeatureGlyphIds(
             fontBuffer,
             text,
-            fontUsage.fontFeatureTags
+            fontUsage.fontFeatureTags,
+            fontConverter
           );
         } catch (rawErr) {
           // Feature glyph collection failed — continue without feature
@@ -322,7 +327,7 @@ export async function getSubsetsForFontUsage(
             subsetPromiseMap.set(promiseId, Promise.resolve(cachedResult));
           } else {
             if (cacheStats) cacheStats.misses++;
-            const subsetCall = subsetFontWithGlyphs(fontBuffer, text, {
+            const subsetCall = subsetterPool.subset(fontBuffer, text, {
               targetFormat,
               glyphIds: featureGlyphIds,
               variationAxes: subsetInfo.variationAxes,

@@ -75,6 +75,11 @@ describe('subsetGeneration', function () {
   });
 
   describe('getSubsetsForFontUsage', function () {
+    function makeMockSubsetterPool(subsetFn) {
+      return { subset: subsetFn };
+    }
+    const mockFontConverter = { convert: () => Promise.resolve() };
+
     it('should select the smallest format even when a larger format resolves first', async function () {
       const smallBuffer = Buffer.alloc(100, 0x41);
       const largeBuffer = Buffer.alloc(500, 0x42);
@@ -84,13 +89,12 @@ describe('subsetGeneration', function () {
           getVariationAxisBounds: () => Promise.resolve(null),
         },
         './collectFeatureGlyphIds': () => Promise.resolve([]),
-        './subsetFontWithGlyphs': (_buffer, _text, opts) =>
-          opts.targetFormat === 'woff2'
-            ? new Promise((resolve) =>
-                setTimeout(() => resolve(smallBuffer), 50)
-              )
-            : Promise.resolve(largeBuffer),
       });
+      const subsetterPool = makeMockSubsetterPool((_buffer, _text, opts) =>
+        opts.targetFormat === 'woff2'
+          ? new Promise((resolve) => setTimeout(() => resolve(smallBuffer), 50))
+          : Promise.resolve(largeBuffer)
+      );
 
       const fontUrl = 'https://example.com/test.ttf';
       const fontUsage = { text: 'abc', fontUrl };
@@ -107,6 +111,8 @@ describe('subsetGeneration', function () {
         [{ fontUsages: [fontUsage] }],
         ['woff', 'woff2'],
         new Map(),
+        subsetterPool,
+        mockFontConverter,
         false
       );
 
@@ -115,7 +121,7 @@ describe('subsetGeneration', function () {
       expect(fontUsage.subsets, 'to have keys', ['woff', 'woff2']);
     });
 
-    it('should skip a format when subsetFontWithGlyphs rejects and warn via assetGraph', async function () {
+    it('should skip a format when subset rejects and warn via assetGraph', async function () {
       const goodBuffer = Buffer.alloc(200, 0x43);
       const warnCalls = [];
 
@@ -124,11 +130,12 @@ describe('subsetGeneration', function () {
           getVariationAxisBounds: () => Promise.resolve(null),
         },
         './collectFeatureGlyphIds': () => Promise.resolve([]),
-        './subsetFontWithGlyphs': (_buffer, _text, opts) =>
-          opts.targetFormat === 'woff2'
-            ? Promise.reject(new Error('simulated woff2 failure'))
-            : Promise.resolve(goodBuffer),
       });
+      const subsetterPool = makeMockSubsetterPool((_buffer, _text, opts) =>
+        opts.targetFormat === 'woff2'
+          ? Promise.reject(new Error('simulated woff2 failure'))
+          : Promise.resolve(goodBuffer)
+      );
 
       const fontUrl = 'https://example.com/partial.ttf';
       const fontUsage = { text: 'abc', fontUrl };
@@ -148,6 +155,8 @@ describe('subsetGeneration', function () {
         [{ fontUsages: [fontUsage] }],
         ['woff', 'woff2'],
         new Map(),
+        subsetterPool,
+        mockFontConverter,
         false
       );
 

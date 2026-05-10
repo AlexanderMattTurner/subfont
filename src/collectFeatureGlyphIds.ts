@@ -1,4 +1,5 @@
 import { toSfnt } from './sfntCache';
+import { FontConverterPool } from './fontConverter';
 import enqueueWasm = require('./wasmQueue');
 
 // GSUB feature tags that can produce alternate glyphs.  Used as the
@@ -73,10 +74,11 @@ const GSUB_FEATURE_TAGS = new Set<string>([
 async function collectFeatureGlyphIdsImpl(
   fontBuffer: Buffer | Uint8Array,
   text: string,
-  cssFeatureTags: Iterable<string> | null | undefined
+  cssFeatureTags: Iterable<string> | null | undefined,
+  fontConverter: FontConverterPool
 ): Promise<number[]> {
   const harfbuzzJs = await require('harfbuzzjs');
-  const sfnt = await toSfnt(fontBuffer);
+  const sfnt = await toSfnt(fontBuffer, fontConverter);
 
   const blob = harfbuzzJs.createBlob(sfnt);
   const face = harfbuzzJs.createFace(blob, 0);
@@ -146,10 +148,11 @@ async function collectFeatureGlyphIdsImpl(
 function collectFeatureGlyphIds(
   fontBuffer: Buffer | Uint8Array,
   text: string,
-  cssFeatureTags: Iterable<string> | null | undefined
+  cssFeatureTags: Iterable<string> | null | undefined,
+  fontConverter: FontConverterPool
 ): Promise<number[]> {
   return enqueueWasm(() =>
-    collectFeatureGlyphIdsImpl(fontBuffer, text, cssFeatureTags)
+    collectFeatureGlyphIdsImpl(fontBuffer, text, cssFeatureTags, fontConverter)
   );
 }
 

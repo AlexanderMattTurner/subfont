@@ -12,7 +12,20 @@ const httpception = require('httpception');
 const sinon = require('sinon');
 const fs = require('fs');
 const subsetFonts = require('../lib/subsetFonts');
-const getFontInfo = require('../lib/getFontInfo');
+const getFontInfoImpl = require('../lib/getFontInfo');
+const { FontConverterPool } = require('../lib/fontConverter');
+
+// Tests share a single FontConverterPool — the worker pool is meant to live
+// for the duration of the process anyway, and creating one per test would
+// spin up dozens of worker threads.
+let _testFontConverter;
+function getTestFontConverter() {
+  if (!_testFontConverter) _testFontConverter = new FontConverterPool();
+  return _testFontConverter;
+}
+function getFontInfo(buffer) {
+  return getFontInfoImpl(buffer, getTestFontConverter());
+}
 
 const defaultLocalSubsetMock = [
   {
@@ -170,6 +183,7 @@ module.exports = {
   subsetFonts,
   subsetFontsWithTestDefaults,
   getFontInfo,
+  getTestFontConverter,
   defaultLocalSubsetMock,
   createGoogleFontMock,
   setupCleanup,

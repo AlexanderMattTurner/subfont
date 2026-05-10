@@ -22,8 +22,7 @@ export class FontConverterPool {
   private readonly _waiters: Array<(entry: PoolEntry) => void> = [];
   private _destroyed = false;
 
-  // Eagerly create all workers so the cost of spawning them does not land
-  // on the first convert() calls. Optional — convert() also lazy-spawns.
+  // Eagerly fill the pool. Optional — convert() lazy-spawns on demand.
   init(): void {
     if (this._destroyed) {
       throw new Error('FontConverterPool has been destroyed');
@@ -191,30 +190,5 @@ export class FontConverterPool {
         reject(err);
       }
     });
-  }
-}
-
-let _defaultPool: FontConverterPool | undefined;
-
-function getDefaultPool(): FontConverterPool {
-  if (!_defaultPool) {
-    _defaultPool = new FontConverterPool();
-  }
-  return _defaultPool;
-}
-
-export function convert(
-  buffer: Buffer | Uint8Array,
-  targetFormat: string,
-  sourceFormat?: string
-): Promise<Buffer> {
-  return getDefaultPool().convert(buffer, targetFormat, sourceFormat);
-}
-
-export async function destroyDefaultPool(): Promise<void> {
-  if (_defaultPool) {
-    const pool = _defaultPool;
-    _defaultPool = undefined;
-    await pool.destroy();
   }
 }

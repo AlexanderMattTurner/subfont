@@ -8,24 +8,22 @@ describe('sfntCache', function () {
     const convertStub = sinon.stub();
     const { toSfnt } = proxyquire('../lib/sfntCache', {
       fontverter: { detectFormat: sinon.stub().returns('sfnt') },
-      './fontConverter': { convert: convertStub },
     });
 
-    const result = await toSfnt(buffer);
+    const result = await toSfnt(buffer, { convert: convertStub });
     expect(result, 'to be', buffer);
     expect(convertStub, 'was not called');
   });
 
-  it('should route woff2 through a worker', async function () {
+  it('should route woff2 through the FontConverterPool', async function () {
     const buffer = Buffer.from('test');
     const converted = Buffer.from('converted');
     const convertStub = sinon.stub().resolves(converted);
     const { toSfnt } = proxyquire('../lib/sfntCache', {
       fontverter: { detectFormat: sinon.stub().returns('woff2') },
-      './fontConverter': { convert: convertStub },
     });
 
-    const result = await toSfnt(buffer);
+    const result = await toSfnt(buffer, { convert: convertStub });
     expect(result, 'to be', converted);
   });
 
@@ -38,15 +36,14 @@ describe('sfntCache', function () {
         detectFormat: sinon.stub().returns('woff'),
         convert: sinon.stub().resolves(converted),
       },
-      './fontConverter': { convert: convertStub },
     });
 
-    const result = await toSfnt(buffer);
+    const result = await toSfnt(buffer, { convert: convertStub });
     expect(result, 'to be', converted);
     expect(convertStub, 'was not called');
   });
 
-  it('should fall back to worker when detectFormat throws', async function () {
+  it('should fall back to the pool when detectFormat throws', async function () {
     const buffer = Buffer.from('garbage');
     const converted = Buffer.from('converted');
     const convertStub = sinon.stub().resolves(converted);
@@ -54,10 +51,9 @@ describe('sfntCache', function () {
       fontverter: {
         detectFormat: sinon.stub().throws(new Error('Unknown format')),
       },
-      './fontConverter': { convert: convertStub },
     });
 
-    const result = await toSfnt(buffer);
+    const result = await toSfnt(buffer, { convert: convertStub });
     expect(result, 'to be', converted);
   });
 
@@ -67,11 +63,10 @@ describe('sfntCache', function () {
     const convertStub = sinon.stub().resolves(converted);
     const { toSfnt } = proxyquire('../lib/sfntCache', {
       fontverter: { detectFormat: sinon.stub().returns('woff2') },
-      './fontConverter': { convert: convertStub },
     });
 
-    await toSfnt(buffer);
-    await toSfnt(buffer);
+    await toSfnt(buffer, { convert: convertStub });
+    await toSfnt(buffer, { convert: convertStub });
     expect(convertStub, 'was called once');
   });
 
@@ -87,11 +82,14 @@ describe('sfntCache', function () {
     });
     const { toSfnt } = proxyquire('../lib/sfntCache', {
       fontverter: { detectFormat: sinon.stub().returns('woff2') },
-      './fontConverter': { convert: convertStub },
     });
 
-    await expect(toSfnt(buffer), 'to be rejected with', 'fail');
-    const result = await toSfnt(buffer);
+    await expect(
+      toSfnt(buffer, { convert: convertStub }),
+      'to be rejected with',
+      'fail'
+    );
+    const result = await toSfnt(buffer, { convert: convertStub });
     expect(result, 'to equal', Buffer.from('ok'));
   });
 });

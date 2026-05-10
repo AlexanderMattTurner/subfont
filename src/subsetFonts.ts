@@ -37,7 +37,8 @@ import {
 } from './fontFaceHelpers';
 import { getVariationAxisUsage } from './variationAxes';
 import { getSubsetsForFontUsage } from './subsetGeneration';
-import subsetFontWithGlyphs = require('./subsetFontWithGlyphs');
+import { SubsetterPool } from './subsetFontWithGlyphs';
+import { FontConverterPool } from './fontConverter';
 import warnAboutMissingGlyphs = require('./warnAboutMissingGlyphs');
 
 const googleFontsCssUrlRegex = /^(?:https?:)?\/\/fonts\.googleapis\.com\/css/;
@@ -161,7 +162,8 @@ async function createSelfHostedGoogleFontsCssAsset(
   googleFontsCssAsset: Asset,
   formats: string[],
   hrefType: string,
-  subsetUrl: string
+  subsetUrl: string,
+  fontConverter: FontConverterPool
 ): Promise<Asset> {
   const lines: string[] = [];
   for (const cssFontFaceSrc of assetGraph.findRelations({
@@ -207,7 +209,8 @@ async function createSelfHostedGoogleFontsCssAsset(
     lines.push(`  src: ${srcFragments.join(', ')};`);
     lines.push(
       `  unicode-range: ${unicodeRange(
-        (await getFontInfo(cssFontFaceSrc.to.rawSrc)).characterSet
+        (await getFontInfo(cssFontFaceSrc.to.rawSrc, fontConverter))
+          .characterSet
       )};`
     );
     lines.push('}');
@@ -527,7 +530,8 @@ function buildFontInfoReport(
 async function computeCodepoints(
   assetGraph: AssetGraph,
   htmlOrSvgAssetTextsWithProps: AssetTextWithProps[],
-  fontDisplay: string | undefined
+  fontDisplay: string | undefined,
+  fontConverter: FontConverterPool
 ): Promise<void> {
   if (fontDisplay) {
     for (const { fontUsages } of htmlOrSvgAssetTextsWithProps) {
@@ -562,11 +566,13 @@ async function computeCodepoints(
     if (fontAsset.isLoaded) {
       fontInfoPromises.set(
         fontUrl,
-        // eslint-disable-next-line no-restricted-syntax
-        getFontInfo(fontAsset.rawSrc).catch((rawErr: unknown) => {
-          assetGraph.warn(wrapAssetGraphError(rawErr, fontAsset));
-          return null;
-        })
+        getFontInfo(fontAsset.rawSrc, fontConverter).catch(
+          // eslint-disable-next-line no-restricted-syntax
+          (rawErr: unknown) => {
+            assetGraph.warn(wrapAssetGraphError(rawErr, fontAsset));
+            return null;
+          }
+        )
       );
     }
   }
@@ -814,6 +820,25 @@ interface SubsetFontsResult {
 
 async function subsetFonts(
   assetGraph: AssetGraph,
+  options: SubsetFontsOptions = {}
+): Promise<SubsetFontsResult> {
+  const fontConverter = new FontConverterPool();
+  const subsetterPool = new SubsetterPool({ fontConverter });
+  try {
+    return await runSubsetFonts(
+      assetGraph,
+      options,
+      fontConverter,
+      subsetterPool
+    );
+  } finally {
+    subsetterPool.destroy();
+    await fontConverter.destroy();
+  }
+}
+
+async function runSubsetFonts(
+  assetGraph: AssetGraph,
   {
     formats = ['woff2'],
     subsetPath = 'subfont/',
@@ -830,7 +855,9 @@ async function subsetFonts(
     concurrency,
     chromeArgs = [],
     cacheDir = null,
-  }: SubsetFontsOptions = {}
+  }: SubsetFontsOptions,
+  fontConverter: FontConverterPool,
+  subsetterPool: SubsetterPool
 ): Promise<SubsetFontsResult> {
   if (fontDisplay && !validFontDisplayValues.includes(fontDisplay)) {
     fontDisplay = undefined;
@@ -839,7 +866,7 @@ async function subsetFonts(
   // Pre-warm the WASM pool: start compiling harfbuzz WASM while
   // collectTextsByPage traces fonts. Compilation (~50-200ms) overlaps
   // with tracing work rather than appearing on the critical path.
-  subsetFontWithGlyphs.warmup().catch((err) => {
+  subsetterPool.warmup().catch((err) => {
     if (debug) {
       console.warn(
         'WASM warmup failed (will retry on first subset call):',
@@ -919,7 +946,8 @@ async function subsetFonts(
   await computeCodepoints(
     assetGraph,
     htmlOrSvgAssetTextsWithProps as AssetTextWithProps[],
-    fontDisplay
+    fontDisplay,
+    fontConverter
   );
   timings['codepoint generation'] = codepointPhase.end();
 
@@ -955,6 +983,8 @@ async function subsetFonts(
     htmlOrSvgAssetTextsWithProps,
     formats,
     seenAxisValuesByFontUrlAndAxisName,
+    subsetterPool,
+    fontConverter,
     cacheDir,
     console,
     debug
@@ -962,7 +992,11 @@ async function subsetFonts(
   timings.getSubsetsForFontUsage = subsetPhase.end();
 
   const warnGlyphsPhase = trackPhase('warnAboutMissingGlyphs');
-  await warnAboutMissingGlyphs(htmlOrSvgAssetTextsWithProps, assetGraph);
+  await warnAboutMissingGlyphs(
+    htmlOrSvgAssetTextsWithProps,
+    assetGraph,
+    fontConverter
+  );
   timings.warnAboutMissingGlyphs = warnGlyphsPhase.end();
 
   // Insert subsets:
@@ -1362,7 +1396,8 @@ async function subsetFonts(
               googleFontStylesheetRelation.to,
               formats,
               hrefType,
-              subsetUrl
+              subsetUrl,
+              fontConverter
             );
           await selfHostedGoogleFontsCssAsset.minify();
           selfHostedGoogleCssByUrl.set(

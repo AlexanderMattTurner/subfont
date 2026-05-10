@@ -2,6 +2,8 @@ const expect = require('unexpected').clone().use(require('unexpected-sinon'));
 const sinon = require('sinon');
 const proxyquire = require('proxyquire').noCallThru();
 
+const stubFontConverter = { convert: () => Promise.resolve(Buffer.alloc(0)) };
+
 describe('warnAboutMissingGlyphs', function () {
   let warnAboutMissingGlyphs;
   let getFontInfoStub;
@@ -70,7 +72,7 @@ describe('warnAboutMissingGlyphs', function () {
     getFontInfoStub.resolves({ characterSet: [0x41, 0x42, 0x43] });
 
     const input = makeInput({ text: 'ABC', sourceText: '<p>ABC</p>' });
-    await warnAboutMissingGlyphs([input], assetGraph);
+    await warnAboutMissingGlyphs([input], assetGraph, stubFontConverter);
 
     expect(assetGraph.info, 'was not called');
   });
@@ -80,7 +82,7 @@ describe('warnAboutMissingGlyphs', function () {
     getFontInfoStub.resolves({ characterSet: [0x41, 0x42] });
 
     const input = makeInput({ text: 'ABC', sourceText: '<p>ABC</p>' });
-    await warnAboutMissingGlyphs([input], assetGraph);
+    await warnAboutMissingGlyphs([input], assetGraph, stubFontConverter);
 
     expect(assetGraph.info, 'was called once');
     const err = assetGraph.info.firstCall.args[0];
@@ -96,7 +98,7 @@ describe('warnAboutMissingGlyphs', function () {
       text: 'A\t\n',
       sourceText: '<p>A</p>',
     });
-    await warnAboutMissingGlyphs([input], assetGraph);
+    await warnAboutMissingGlyphs([input], assetGraph, stubFontConverter);
 
     expect(assetGraph.info, 'was not called');
   });
@@ -105,7 +107,7 @@ describe('warnAboutMissingGlyphs', function () {
     getFontInfoStub.resolves({ characterSet: [0x41] });
 
     const input = makeInput({ text: 'AB', hasSubsets: false });
-    await warnAboutMissingGlyphs([input], assetGraph);
+    await warnAboutMissingGlyphs([input], assetGraph, stubFontConverter);
 
     expect(assetGraph.info, 'was not called');
     expect(getFontInfoStub, 'was not called');
@@ -115,7 +117,7 @@ describe('warnAboutMissingGlyphs', function () {
     getFontInfoStub.rejects(new Error('corrupt font'));
 
     const input = makeInput({ text: 'A' });
-    await warnAboutMissingGlyphs([input], assetGraph);
+    await warnAboutMissingGlyphs([input], assetGraph, stubFontConverter);
 
     // Should warn about the corrupt font but not crash
     expect(assetGraph.warn, 'was called once');
@@ -131,7 +133,7 @@ describe('warnAboutMissingGlyphs', function () {
       text: 'AZ',
       sourceText: '<p>A</p>',
     });
-    await warnAboutMissingGlyphs([input], assetGraph);
+    await warnAboutMissingGlyphs([input], assetGraph, stubFontConverter);
 
     expect(assetGraph.info, 'was called once');
     const err = assetGraph.info.firstCall.args[0];
@@ -145,7 +147,7 @@ describe('warnAboutMissingGlyphs', function () {
       text: 'AZ',
       sourceText: 'line1\nAZ',
     });
-    await warnAboutMissingGlyphs([input], assetGraph);
+    await warnAboutMissingGlyphs([input], assetGraph, stubFontConverter);
 
     expect(assetGraph.info, 'was called once');
     const err = assetGraph.info.firstCall.args[0];
@@ -161,7 +163,7 @@ describe('warnAboutMissingGlyphs', function () {
       text: 'AZ',
       sourceText: 'A\nZ Z\nZ Z',
     });
-    await warnAboutMissingGlyphs([input], assetGraph);
+    await warnAboutMissingGlyphs([input], assetGraph, stubFontConverter);
 
     expect(assetGraph.info, 'was called once');
     const { message } = assetGraph.info.firstCall.args[0];
@@ -180,7 +182,11 @@ describe('warnAboutMissingGlyphs', function () {
     // Make both use the same subset buffer
     input2.fontUsages[0].subsets = input1.fontUsages[0].subsets;
 
-    await warnAboutMissingGlyphs([input1, input2], assetGraph);
+    await warnAboutMissingGlyphs(
+      [input1, input2],
+      assetGraph,
+      stubFontConverter
+    );
 
     // getFontInfo should only be called once for the shared buffer
     expect(getFontInfoStub, 'was called once');
@@ -190,7 +196,7 @@ describe('warnAboutMissingGlyphs', function () {
     getFontInfoStub.resolves({ characterSet: [0x41] });
 
     const input = makeInput({ text: 'AB' });
-    await warnAboutMissingGlyphs([input], assetGraph);
+    await warnAboutMissingGlyphs([input], assetGraph, stubFontConverter);
 
     const fontFaceNode =
       input.accumulatedFontFaceDeclarations[0].relations[0].node;
@@ -241,7 +247,7 @@ describe('warnAboutMissingGlyphs', function () {
       accumulatedFontFaceDeclarations: [fontFaceDecl],
     };
 
-    await warnAboutMissingGlyphs([input], assetGraph);
+    await warnAboutMissingGlyphs([input], assetGraph, stubFontConverter);
 
     expect(fontFaceNode.append, 'was called once');
     const value = fontFaceNode.append.firstCall.args[0].value;
@@ -260,7 +266,7 @@ describe('warnAboutMissingGlyphs', function () {
     fontFaceNode.some = (predicate) =>
       predicate({ prop: 'unicode-range' }) === true;
 
-    await warnAboutMissingGlyphs([input], assetGraph);
+    await warnAboutMissingGlyphs([input], assetGraph, stubFontConverter);
 
     expect(fontFaceNode.append, 'was not called');
     expect(cssAsset.markDirty, 'was not called');
