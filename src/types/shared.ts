@@ -6,43 +6,52 @@ export type VariationAxes =
 
 export type AssetGraphError = Error & { asset?: Asset; relation?: Relation };
 
-// FontUsage is built incrementally: collectTextsByPage creates the base
-// fields, then subsetFonts enriches with codepoints / subsets / sizes.
-// All fields that subsetFonts adds are optional so the type is valid at
-// every stage of the pipeline.
-export interface FontUsage {
+// Stage 1: the shape buildPerPageFontUsages emits. Every field is set
+// for every entry, so downstream code can use these without guards.
+// `smallestOriginalFormat` and `fontFeatureTags` stay optional because
+// the upstream font asset / CSS may genuinely not supply them.
+export interface TracedFontUsage {
   text: string;
-  pageText?: string;
-  fontUrl?: string;
-  preload?: boolean;
-  subsets?: Record<string, Buffer>;
+  pageText: string;
+  fontUrl: string;
+  preload: boolean;
   fontFamilies: Set<string>;
   props: Record<string, string>;
-
-  // Created by collectTextsByPage
-  texts?: string[];
-  smallestOriginalSize?: number;
+  texts: string[];
+  smallestOriginalSize: number;
   smallestOriginalFormat?: string;
-  fontStyles?: Set<string | number | undefined>;
-  fontStretches?: Set<string | number | undefined>;
-  fontWeights?: Set<string | number | undefined>;
-  fontVariationSettings?: Set<string>;
-  hasFontFeatureSettings?: boolean;
+  fontStyles: Set<string | number | undefined>;
+  fontStretches: Set<string | number | undefined>;
+  fontWeights: Set<string | number | undefined>;
+  fontVariationSettings: Set<string>;
+  hasFontFeatureSettings: boolean;
   fontFeatureTags?: Iterable<string>;
+}
 
-  // Enriched by subsetFonts
-  codepoints?: {
-    original: number[];
-    used: number[];
-    unused: number[];
-    page: number[];
-  };
+// Stage 2: getSubsetsForFontUsage decorates each entry with the subset
+// bytes plus the variation-axis decisions it made. Subsetting can be
+// skipped per entry (no asset for the URL, subset call failed, etc.),
+// so the fields are optional — but they're always written as a group.
+export interface SubsettedFontUsage extends TracedFontUsage {
+  subsets?: Record<string, Buffer>;
   smallestSubsetSize?: number;
   smallestSubsetFormat?: string;
   fullyInstanced?: boolean;
   numAxesPinned?: number;
   numAxesReduced?: number;
   variationAxes?: VariationAxes;
+}
+
+// Stage 3: computeCodepoints always populates `codepoints` (empty arrays
+// when the original font couldn't be parsed), so consumers can index it
+// unconditionally.
+export interface ReportFontUsage extends SubsettedFontUsage {
+  codepoints: {
+    original: number[];
+    used: number[];
+    unused: number[];
+    page: number[];
+  };
 }
 
 export function wrapAssetGraphError(

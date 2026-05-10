@@ -7,7 +7,11 @@ import type {
   PostCssNode,
   Relation,
 } from 'assetgraph';
-import type { AssetGraphError, FontUsage } from './types/shared';
+import type {
+  AssetGraphError,
+  ReportFontUsage,
+  SubsettedFontUsage,
+} from './types/shared';
 import { wrapAssetGraphError } from './types/shared';
 import compileQuery = require('assetgraph/lib/compileQuery');
 
@@ -42,15 +46,33 @@ import warnAboutMissingGlyphs = require('./warnAboutMissingGlyphs');
 
 const googleFontsCssUrlRegex = /^(?:https?:)?\/\/fonts\.googleapis\.com\/css/;
 
+// Matches collectTextsByPage's FontFaceDeclaration shape: an open record
+// over arbitrary CSS @font-face descriptors with `relations` always set.
+// The downstream consumers (removeOriginalFontFaceRules, getUnusedVariants-
+// Stylesheet) read both `relations` and named descriptors, so the index
+// signature has to stay wide.
 interface AccumulatedFontFaceDeclaration {
   relations: Relation[];
+  [descriptor: string]: string | Relation[] | undefined;
 }
 
+// fontUsages enter this module as TracedFontUsage[] (from collectTextsByPage)
+// and are upgraded in place by getSubsetsForFontUsage (stage 2 subset bytes)
+// and computeCodepoints (stage 3 codepoints). Once both stages have run,
+// every fontUsage carries `codepoints`; the buildFontInfoReport boundary
+// downcasts to ReportFontUsage[] at that point.
 interface AssetTextWithProps {
   htmlOrSvgAsset: Asset;
-  fontUsages: FontUsage[];
+  fontUsages: SubsettedFontUsage[];
   accumulatedFontFaceDeclarations: AccumulatedFontFaceDeclaration[];
 }
+
+// Stage-3 view used at the buildFontInfoReport boundary: same container,
+// but fontUsages are guaranteed to carry `codepoints` because computeCode-
+// points has run.
+type ReportFontUsageEntry = Omit<AssetTextWithProps, 'fontUsages'> & {
+  fontUsages: ReportFontUsage[];
+};
 
 function getParents(asset: Asset, assetQuery: AssetQuery): Asset[] {
   const assetMatcher = compileQuery(assetQuery);
@@ -235,7 +257,7 @@ const validFontDisplayValues = [
 interface GetOrCreateSubsetCssAssetArgs {
   assetGraph: AssetGraph;
   subsetCssText: string;
-  subsetFontUsages: FontUsage[];
+  subsetFontUsages: SubsettedFontUsage[];
   formats: string[];
   subsetUrl: string;
   hrefType: string;
@@ -347,7 +369,7 @@ async function getOrCreateSubsetCssAsset({
 
 interface AddSubsetFontPreloadsArgs {
   cssAsset: Asset;
-  fontUsages: FontUsage[];
+  fontUsages: SubsettedFontUsage[];
   htmlOrSvgAsset: Asset;
   subsetUrl: string;
   hrefType: string;
@@ -509,24 +531,34 @@ function removeOrphanedAssets(
 // Shape the per-page fontUsages into the external fontInfo report: strip
 // internal bookkeeping (subsets buffer, feature-tag scratch) and flatten
 // each page to { assetFileName, fontUsages }.
+// Each entry in the input array must already carry `codepoints` (stage 3);
+// the per-fontUsage strip removes the internal-only fields and what remains
+// is structurally a ReportFontUsage minus the stripped keys.
 function buildFontInfoReport(
-  htmlOrSvgAssetTextsWithProps: AssetTextWithProps[]
-): Array<{ assetFileName: string; fontUsages: Partial<FontUsage>[] }> {
+  htmlOrSvgAssetTextsWithProps: Array<{
+    htmlOrSvgAsset: Asset;
+    fontUsages: ReportFontUsage[];
+  }>
+): Array<{ assetFileName: string; fontUsages: ReportFontUsage[] }> {
   return htmlOrSvgAssetTextsWithProps.map(({ fontUsages, htmlOrSvgAsset }) => ({
     assetFileName: htmlOrSvgAsset.nonInlineAncestor.urlOrDescription,
-    fontUsages: fontUsages.map((fontUsage) =>
-      (({ subsets, hasFontFeatureSettings, fontFeatureTags, ...rest }) => rest)(
-        fontUsage
-      )
+    fontUsages: fontUsages.map(
+      (fontUsage) =>
+        (({ subsets, hasFontFeatureSettings, fontFeatureTags, ...rest }) =>
+          rest)(fontUsage) as ReportFontUsage
     ),
   }));
 }
 
 // Compute codepoint sets (original, used, unused, page) for every fontUsage
 // and attach them to the fontUsage objects. Also applies fontDisplay if set.
+// Each entry is mutated from SubsettedFontUsage into ReportFontUsage: after
+// this call returns, `codepoints` is guaranteed for every fontUsage.
 async function computeCodepoints(
   assetGraph: AssetGraph,
-  htmlOrSvgAssetTextsWithProps: AssetTextWithProps[],
+  htmlOrSvgAssetTextsWithProps: Array<{
+    fontUsages: SubsettedFontUsage[];
+  }>,
   fontDisplay: string | undefined
 ): Promise<void> {
   if (fontDisplay) {
@@ -588,7 +620,10 @@ async function computeCodepoints(
   >();
   const codepointsCache = new Map<string, number[]>();
   for (const { fontUsages } of htmlOrSvgAssetTextsWithProps) {
-    for (const fontUsage of fontUsages) {
+    for (const subsettedFontUsage of fontUsages) {
+      // Mutating in place to stage 3. The cast records the transition;
+      // `codepoints` is always assigned before the loop body exits.
+      const fontUsage = subsettedFontUsage as ReportFontUsage;
       let cached = globalCodepointsByFontUrl.get(fontUsage.fontUrl);
       if (!cached) {
         cached = { originalCodepoints: null };
@@ -609,7 +644,7 @@ async function computeCodepoints(
       }
 
       if (cached.originalCodepoints) {
-        const pageText = fontUsage.pageText ?? '';
+        const pageText = fontUsage.pageText;
         let pageCodepoints = codepointsCache.get(pageText);
         if (!pageCodepoints) {
           pageCodepoints = getCodepoints(pageText);
@@ -808,7 +843,7 @@ type SubsetFontsTimings = Record<
 >;
 
 interface SubsetFontsResult {
-  fontInfo: Array<{ assetFileName: string; fontUsages: Partial<FontUsage>[] }>;
+  fontInfo: Array<{ assetFileName: string; fontUsages: ReportFontUsage[] }>;
   timings: SubsetFontsTimings;
 }
 
@@ -915,26 +950,29 @@ async function subsetFonts(
   }
   timings['omitFallbacks processing'] = omitFallbacksPhase.end();
 
+  // Stage 1 → 2 placeholder: SubsettedFontUsage only adds optional fields
+  // on top of TracedFontUsage, so this upcast is structurally valid even
+  // before getSubsetsForFontUsage runs.
+  const pages: AssetTextWithProps[] = htmlOrSvgAssetTextsWithProps;
+
   const codepointPhase = trackPhase('codepoint generation');
-  await computeCodepoints(
-    assetGraph,
-    htmlOrSvgAssetTextsWithProps as AssetTextWithProps[],
-    fontDisplay
-  );
+  await computeCodepoints(assetGraph, pages, fontDisplay);
   timings['codepoint generation'] = codepointPhase.end();
 
   if (onlyInfo) {
+    // Stage 2 hasn't run, but buildFontInfoReport's input only requires
+    // `codepoints` (stage 3) — already attached above. Subset fields are
+    // optional and simply absent here, matching how the report describes
+    // a "no subset created" entry.
     return {
-      fontInfo: buildFontInfoReport(
-        htmlOrSvgAssetTextsWithProps as AssetTextWithProps[]
-      ),
+      fontInfo: buildFontInfoReport(pages as ReportFontUsageEntry[]),
       timings,
     };
   }
 
   const variationPhase = trackPhase('variation axis usage');
   const { seenAxisValuesByFontUrlAndAxisName } = getVariationAxisUsage(
-    htmlOrSvgAssetTextsWithProps,
+    pages,
     parseFontWeightRange,
     parseFontStretchRange
   );
@@ -942,7 +980,7 @@ async function subsetFonts(
 
   // Generate subsets:
   if (console) {
-    const uniqueFontUrls = countUniqueFontUrls(htmlOrSvgAssetTextsWithProps);
+    const uniqueFontUrls = countUniqueFontUrls(pages);
     if (uniqueFontUrls > 0) {
       console.log(
         `  Subsetting ${uniqueFontUrls} unique font file${uniqueFontUrls === 1 ? '' : 's'}...`
@@ -952,7 +990,7 @@ async function subsetFonts(
   const subsetPhase = trackPhase('getSubsetsForFontUsage');
   await getSubsetsForFontUsage(
     assetGraph,
-    htmlOrSvgAssetTextsWithProps,
+    pages,
     formats,
     seenAxisValuesByFontUrlAndAxisName,
     cacheDir,
@@ -962,7 +1000,7 @@ async function subsetFonts(
   timings.getSubsetsForFontUsage = subsetPhase.end();
 
   const warnGlyphsPhase = trackPhase('warnAboutMissingGlyphs');
-  await warnAboutMissingGlyphs(htmlOrSvgAssetTextsWithProps, assetGraph);
+  await warnAboutMissingGlyphs(pages, assetGraph);
   timings.warnAboutMissingGlyphs = warnGlyphsPhase.end();
 
   // Insert subsets:
@@ -970,7 +1008,6 @@ async function subsetFonts(
   // Pre-compute which fontUrls are used (with text) on every page.
   // Set intersection: O(pages × fonts_per_page) vs the old every+some approach.
   const fontUrlsUsedOnEveryPage = new Set<string>();
-  const pages = htmlOrSvgAssetTextsWithProps as AssetTextWithProps[];
   if (pages.length > 0) {
     for (const fu of pages[0].fontUsages) {
       if (fu.pageText && fu.fontUrl) fontUrlsUsedOnEveryPage.add(fu.fontUrl);
@@ -1024,15 +1061,13 @@ async function subsetFonts(
     index.get(from)!.push(relation);
   }
 
-  const insertPhase = trackPhase(
-    `insert subsets loop (${htmlOrSvgAssetTextsWithProps.length} pages)`
-  );
+  const insertPhase = trackPhase(`insert subsets loop (${pages.length} pages)`);
   let numFontUsagesWithSubset = 0;
   for (const {
     htmlOrSvgAsset,
     fontUsages,
     accumulatedFontFaceDeclarations,
-  } of htmlOrSvgAssetTextsWithProps) {
+  } of pages) {
     const styleRels = styleRelsByAsset.get(htmlOrSvgAsset) || [];
     let insertionPoint: Relation | undefined = styleRels[0];
 
@@ -1128,7 +1163,7 @@ async function subsetFonts(
       hrefType,
       inlineCss,
       fontUrlsUsedOnEveryPage,
-      numPages: htmlOrSvgAssetTextsWithProps.length,
+      numPages: pages.length,
       subsetCssAssetCache,
     });
 
@@ -1403,11 +1438,7 @@ async function subsetFonts(
   timings['Google Fonts + cleanup'] = googleCleanupPhase.end();
 
   const injectPhase = trackPhase('inject subset font-family into CSS/SVG');
-  injectSubsetFontFamilies(
-    assetGraph,
-    htmlOrSvgAssetTextsWithProps as AssetTextWithProps[],
-    omitFallbacks
-  );
+  injectSubsetFontFamilies(assetGraph, pages, omitFallbacks);
   timings['inject subset font-family'] = injectPhase.end();
 
   const orphanCleanupPhase = trackPhase('source maps + orphan cleanup');
@@ -1418,7 +1449,7 @@ async function subsetFonts(
   timings['source maps + orphan cleanup'] = orphanCleanupPhase.end();
 
   return {
-    fontInfo: buildFontInfoReport(htmlOrSvgAssetTextsWithProps),
+    fontInfo: buildFontInfoReport(pages as ReportFontUsageEntry[]),
     timings,
   };
 }
