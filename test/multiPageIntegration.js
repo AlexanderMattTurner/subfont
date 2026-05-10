@@ -65,14 +65,6 @@ describe('subfont multi-page integration', function () {
       ({ assetGraph, log } = await run(FIVE_PAGES));
     });
 
-    it('loads all 5 input pages without crashing', function () {
-      expect(
-        assetGraph.findAssets({ type: 'Html', isInitial: true }),
-        'to have length',
-        5
-      );
-    });
-
     it('produces exactly one subset CSS file (dedup across pages)', function () {
       expect(
         assetGraph.findAssets({
@@ -117,22 +109,17 @@ describe('subfont multi-page integration', function () {
       expect(dirtyHtml, 'to have length', 5);
     });
 
-    it('emits no duplicate @font-face rules within the subset CSS', function () {
+    it('emits exactly one @font-face per (family,style,weight) in the subset CSS', function () {
       const [css] = assetGraph.findAssets({
         type: 'Css',
         url: (url) => url && subsetCssRe.test(url),
       });
-      const ruleSignatures = [];
-      for (const m of css.text.matchAll(
-        /@font-face\s*{[^}]*?font-family\s*:\s*([^;]+);[^}]*?font-style\s*:\s*([^;]+);[^}]*?font-weight\s*:\s*([^;}]+)/gi
-      )) {
-        ruleSignatures.push(`${m[1]}|${m[2]}|${m[3]}`.trim());
-      }
-      expect(ruleSignatures.length, 'to be greater than', 0);
-      expect(new Set(ruleSignatures).size, 'to equal', ruleSignatures.length);
+      // One shared @font-face for one Roboto-400-normal across all 5 pages.
+      const count = (css.text.match(/@font-face\b/g) || []).length;
+      expect(count, 'to equal', 1);
     });
 
-    it('narrows unicode-range below the full font range', function () {
+    it('narrows unicode-range to far fewer codepoints than the full font', function () {
       const [css] = assetGraph.findAssets({
         type: 'Css',
         url: (url) => url && subsetCssRe.test(url),
@@ -141,12 +128,28 @@ describe('subfont multi-page integration', function () {
         ...css.text.matchAll(/unicode-range\s*:\s*([^;}]+)/gi),
       ].map((m) => m[1].trim());
       expect(ranges.length, 'to be greater than', 0);
-      // A subset spanning the full BMP would be one comma-free U+0-FFFF range.
-      // Real subsets list discrete ranges or a much narrower span.
-      for (const r of ranges) {
-        expect(r, 'not to equal', 'U+0-FFFF');
-        expect(r, 'not to equal', 'U+0000-FFFF');
-      }
+      // unicode-range syntax: comma-separated entries, each "u+HEX" or "u+HEX-HEX".
+      const totalCodepoints = ranges
+        .flatMap((r) => r.split(','))
+        .reduce((acc, entry) => {
+          const m = entry.trim().match(/^u\+([0-9a-f]+)(?:-([0-9a-f]+))?$/i);
+          if (!m) return acc;
+          const lo = parseInt(m[1], 16);
+          const hi = m[2] !== undefined ? parseInt(m[2], 16) : lo;
+          return acc + (hi - lo + 1);
+        }, 0);
+      // The original Roboto-400.woff2 in this fixture covers 213 codepoints;
+      // a real subset of 5 pages of plain ASCII text should be far smaller.
+      expect(totalCodepoints, 'to be greater than', 0);
+      expect(totalCodepoints, 'to be less than', 100);
+    });
+
+    it('logs no warnings or errors', function () {
+      expect(
+        log.filter((l) => l.startsWith('warn ') || l.startsWith('error ')),
+        'to equal',
+        []
+      );
     });
   });
 
@@ -172,15 +175,16 @@ describe('subfont multi-page integration', function () {
         type: 'Css',
         url: (url) => url && subsetCssRe.test(url),
       });
-      const families = subsetCssAssets.map((css) => ({
-        hasRoboto: /Roboto/.test(css.text),
-        hasOpenSans: /Open Sans/.test(css.text),
-      }));
-      for (const f of families) {
-        expect(f.hasRoboto !== f.hasOpenSans, 'to be true');
-      }
-      expect(families.filter((f) => f.hasRoboto).length, 'to equal', 1);
-      expect(families.filter((f) => f.hasOpenSans).length, 'to equal', 1);
+      const robotoCss = subsetCssAssets.filter((c) => /Roboto/.test(c.text));
+      const openSansCss = subsetCssAssets.filter((c) =>
+        /Open Sans/.test(c.text)
+      );
+      expect(robotoCss, 'to have length', 1);
+      expect(openSansCss, 'to have length', 1);
+      expect(robotoCss[0], 'not to equal', openSansCss[0]);
+      // Neither group's subset CSS should mention the other family.
+      expect(robotoCss[0].text, 'not to contain', 'Open Sans');
+      expect(openSansCss[0].text, 'not to contain', 'Roboto');
     });
   });
 
