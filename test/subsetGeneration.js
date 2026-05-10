@@ -212,6 +212,33 @@ describe('subsetGeneration', function () {
       });
     });
 
+    it('should produce stable keys when called multiple times with the same buffer', function () {
+      const fontBuf = Buffer.from('same-font-data-repeated');
+      const key1 = subsetCacheKey(fontBuf, 'abc', 'woff2', null, null);
+      const key2 = subsetCacheKey(fontBuf, 'def', 'woff2', null, null);
+      const key3 = subsetCacheKey(fontBuf, 'abc', 'woff2', null, null);
+      // Same inputs must produce same key (tests digest caching correctness)
+      expect(key1, 'to equal', key3);
+      // Different text must produce different key
+      expect(key1, 'not to equal', key2);
+      // Call again to verify the cached digest is reusable after multiple digests
+      const key4 = subsetCacheKey(
+        fontBuf,
+        'ghi',
+        'truetype',
+        { wght: 400 },
+        [1]
+      );
+      expect(key4, 'not to equal', key1);
+      expect(key4, 'not to equal', key2);
+      // Verify the original key still works after all the above calls
+      expect(
+        subsetCacheKey(fontBuf, 'abc', 'woff2', null, null),
+        'to equal',
+        key1
+      );
+    });
+
     it('should produce different keys for different featureTags values', function () {
       const fontBuf = Buffer.from('font');
       const withSmcp = subsetCacheKey(fontBuf, 'abc', 'woff2', null, null, {

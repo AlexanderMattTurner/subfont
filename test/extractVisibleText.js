@@ -194,4 +194,18 @@ describe('extractVisibleText', function () {
     expect(result, 'to contain', '&#xFFFFFFFF;');
     expect(result, 'to contain', '&#99999999;');
   });
+
+  it('should strip deeply nested invisible blocks on repeated calls', function () {
+    // Ensures global regex state (lastIndex) is properly reset between calls.
+    // If invisibleBlockRe.lastIndex leaks, the second call may not strip the
+    // <script> block because the regex resumes from a non-zero position.
+    for (let i = 0; i < 5; i++) {
+      const result = extractVisibleText(
+        `<div>visible${i}</div><script>hidden${i}</script><p>after${i}</p>`
+      );
+      expect(result, 'to contain', `visible${i}`);
+      expect(result, 'to contain', `after${i}`);
+      expect(result, 'not to contain', `hidden${i}`);
+    }
+  });
 });

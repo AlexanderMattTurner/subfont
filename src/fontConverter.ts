@@ -23,7 +23,13 @@ const _waiters: Array<(entry: PoolEntry) => void> = [];
 function createEntry(): PoolEntry {
   const worker = new Worker(workerPath);
   worker.unref();
-  return { worker, busy: false };
+  const entry: PoolEntry = { worker, busy: false };
+  worker.on('exit', () => {
+    if (!entry.busy) {
+      replaceEntry(entry);
+    }
+  });
+  return entry;
 }
 
 function acquire(): PoolEntry | null {
@@ -53,12 +59,19 @@ function release(entry: PoolEntry): void {
 function replaceEntry(entry: PoolEntry): void {
   const idx = _pool.indexOf(entry);
   if (idx === -1) return;
-  const replacement = createEntry();
-  _pool[idx] = replacement;
-  if (_waiters.length > 0) {
-    replacement.busy = true;
-    const waiter = _waiters.shift()!;
-    waiter(replacement);
+  try {
+    const replacement = createEntry();
+    _pool[idx] = replacement;
+    if (_waiters.length > 0) {
+      replacement.busy = true;
+      const waiter = _waiters.shift()!;
+      waiter(replacement);
+    }
+  } catch {
+    // Worker creation failed — shrink the pool. In the degenerate case
+    // where all workers are unspawnable, the pool empties and pending
+    // waiters will hang until the caller's own timeout fires.
+    _pool.splice(idx, 1);
   }
 }
 
