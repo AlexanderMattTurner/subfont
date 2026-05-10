@@ -106,28 +106,30 @@ export function getFontFaceDeclarationText(
 
 const fontOrder = ['woff2', 'woff', 'truetype'];
 
-// Cache base64-encoded data URIs keyed by the underlying Buffer. Subset
-// buffers are shared across pages (propagated from the canonical fontUsage),
-// so without this every page re-encodes the same multi-hundred-KB buffer.
-const subsetDataUrlCache = new WeakMap<
-  object,
-  Array<{ format: string; url: string }>
->();
+// Cache base64-encoded data URIs keyed by the individual Buffer. Subset
+// buffers are the same objects across pages (propagated from the canonical
+// fontUsage), but the containing subsetsObj may be a shallow copy (new
+// object identity). Keying on the Buffer directly ensures cache hits
+// regardless of how the subsets record was created.
+const bufferDataUrlCache = new WeakMap<Buffer, string>();
+function getBufferDataUrl(buffer: Buffer, format: string): string {
+  let cached = bufferDataUrlCache.get(buffer);
+  if (!cached) {
+    cached = `data:${contentTypeByFontFormat[format]};base64,${buffer.toString('base64')}`;
+    bufferDataUrlCache.set(buffer, cached);
+  }
+  return cached;
+}
+
 function getSubsetDataUrls(
   subsetsObj: Record<string, Buffer>
 ): Array<{ format: string; url: string }> {
-  const cached = subsetDataUrlCache.get(subsetsObj);
-  if (cached) return cached;
-  const result = fontOrder
+  return fontOrder
     .filter((format) => subsetsObj[format])
     .map((format) => ({
       format,
-      url: `data:${contentTypeByFontFormat[format]};base64,${subsetsObj[
-        format
-      ].toString('base64')}`,
+      url: getBufferDataUrl(subsetsObj[format], format),
     }));
-  subsetDataUrlCache.set(subsetsObj, result);
-  return result;
 }
 
 interface FontUsageLike {

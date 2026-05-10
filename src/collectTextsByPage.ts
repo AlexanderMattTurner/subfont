@@ -719,6 +719,20 @@ function indexStylesheetRelations(
 // pages collapse to the same key. The id-based variant preserves per-page
 // identity needed for the precompute cache (whose results carry mutable
 // PostCSS relations); the content-hashed variant powers fast-path grouping.
+const inlineAssetHashCache = new WeakMap<Asset, string>();
+function getInlineAssetHash(asset: Asset): string {
+  let cached = inlineAssetHashCache.get(asset);
+  if (!cached) {
+    cached = `h:${crypto
+      .createHash('sha1')
+      .update(asset.text || '')
+      .digest('hex')
+      .slice(0, 16)}`;
+    inlineAssetHashCache.set(asset, cached);
+  }
+  return cached;
+}
+
 function buildStylesheetKey(
   htmlOrSvgAsset: Asset,
   skipNonFontInlineCss: boolean,
@@ -750,11 +764,7 @@ function buildStylesheetKey(
         const media = relation.media || '';
         const ident =
           useContentHash && target.isInline
-            ? `h:${crypto
-                .createHash('sha1')
-                .update(target.text || '')
-                .digest('hex')
-                .slice(0, 16)}`
+            ? getInlineAssetHash(target)
             : String(target.id);
         keyParts.push(`${ident}:${media}:${isNoscript ? 'ns' : ''}`);
         traverse(target, isNoscript);

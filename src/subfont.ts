@@ -120,12 +120,6 @@ const subfont = async function subfont(
   ) {
     throw new UsageError('--concurrency must be a positive integer');
   }
-  const maxConcurrency = getMaxConcurrency();
-  if (concurrency !== undefined && concurrency > maxConcurrency) {
-    throw new UsageError(
-      `--concurrency must not exceed ${maxConcurrency} (each worker uses ~50 MB; ${Math.round(os.freemem() / (1024 * 1024 * 1024))} GB free, ${os.cpus().length} CPUs)`
-    );
-  }
 
   // Prevent postcss plugins (colormin, convert-values, etc.) invoked by
   // cssnano from walking the filesystem for a "browserslist" config.
@@ -153,6 +147,13 @@ const subfont = async function subfont(
     logToConsole('warn', ...args);
   }
   /* eslint-enable no-restricted-syntax */
+
+  const maxConcurrency = getMaxConcurrency();
+  if (concurrency !== undefined && concurrency > maxConcurrency) {
+    warn(
+      `--concurrency ${concurrency} exceeds estimated safe limit of ${maxConcurrency} (each worker uses ~50 MB; ${Math.round(os.freemem() / (1024 * 1024 * 1024))} GB free, ${os.cpus().length} CPUs). Proceeding anyway — reduce if you hit OOM.`
+    );
+  }
 
   let rootUrl: string | undefined =
     root && urlTools.urlOrFsPathToUrl(root, true);
@@ -541,14 +542,16 @@ const subfont = async function subfont(
     for (const fontUsage of fontUsages) {
       sumSmallestSubsetSize += fontUsage.smallestSubsetSize || 0;
       sumSmallestOriginalSize += fontUsage.smallestOriginalSize ?? 0;
-      maxUsedCodePoints = Math.max(
-        fontUsage.codepoints.used.length,
-        maxUsedCodePoints
-      );
-      maxOriginalCodePoints = Math.max(
-        fontUsage.codepoints.original.length,
-        maxOriginalCodePoints
-      );
+      if (fontUsage.codepoints) {
+        maxUsedCodePoints = Math.max(
+          fontUsage.codepoints.used.length,
+          maxUsedCodePoints
+        );
+        maxOriginalCodePoints = Math.max(
+          fontUsage.codepoints.original.length,
+          maxOriginalCodePoints
+        );
+      }
     }
     const fontUsagesByFontFamily: Record<string, ReportFontUsage[]> = {};
     for (const fontUsage of fontUsages) {
@@ -569,6 +572,7 @@ const subfont = async function subfont(
     for (const fontFamily of Object.keys(fontUsagesByFontFamily).sort()) {
       log(`  ${fontFamily}:`);
       for (const fontUsage of fontUsagesByFontFamily[fontFamily]) {
+        if (!fontUsage.codepoints) continue;
         const variantShortName = `${fontUsage.props['font-weight']}${
           fontUsage.props['font-style'] === 'italic' ? 'i' : ' '
         }`;

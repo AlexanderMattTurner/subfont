@@ -30,17 +30,19 @@ interface SubsetInfo {
   numAxesReduced: number;
 }
 
-// Cache the SHA-256 hash state after feeding SUBSET_CACHE_VERSION + fontBuffer.
-// For a font with 2 target formats this halves the hashing work on large buffers.
-// Uses WeakMap so entries are garbage-collected when the buffer is released.
-const fontBufferHashPrefixes = new WeakMap<FontBuffer, crypto.Hash>();
-function getFontBufferHashPrefix(fontBuffer: FontBuffer): crypto.Hash {
-  let cached = fontBufferHashPrefixes.get(fontBuffer);
+// Cache the SHA-256 digest of (SUBSET_CACHE_VERSION + fontBuffer) so repeated
+// cache-key computations for the same font (one per target format) don't
+// re-hash the entire buffer. Uses WeakMap for automatic GC on buffer release.
+const fontBufferDigests = new WeakMap<FontBuffer, Buffer>();
+function getFontBufferDigest(fontBuffer: FontBuffer): Buffer {
+  let cached = fontBufferDigests.get(fontBuffer);
   if (!cached) {
-    cached = crypto.createHash('sha256');
-    cached.update(SUBSET_CACHE_VERSION);
-    cached.update(fontBuffer);
-    fontBufferHashPrefixes.set(fontBuffer, cached);
+    cached = crypto
+      .createHash('sha256')
+      .update(SUBSET_CACHE_VERSION)
+      .update(fontBuffer)
+      .digest();
+    fontBufferDigests.set(fontBuffer, cached);
   }
   return cached;
 }
@@ -58,10 +60,12 @@ function subsetCacheKey(
   featureGlyphIds: number[] | undefined,
   extraOptions: ExtraSubsetCacheOptions | undefined = undefined
 ): string {
-  // Clone the pre-computed prefix (version + font buffer) and append
-  // the remaining fields. hash.copy() is O(1) — just copies the
-  // internal digest state, avoiding re-hashing the entire font buffer.
-  const hash = getFontBufferHashPrefix(fontBuffer).copy();
+  // Start from the cached digest of (version + font buffer), then hash
+  // the remaining per-subset fields. This avoids re-hashing the full
+  // font binary on each call while remaining safe across Node versions
+  // (crypto.Hash objects are single-use after digest()).
+  const hash = crypto.createHash('sha256');
+  hash.update(getFontBufferDigest(fontBuffer));
   hash.update(text);
   hash.update(targetFormat);
   if (variationAxes) hash.update(JSON.stringify(variationAxes));

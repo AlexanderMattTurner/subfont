@@ -734,11 +734,14 @@ describe('subfont', function () {
       );
     });
 
-    it('should reject --concurrency above memory-based limit', async function () {
+    it('should warn when --concurrency exceeds memory-based limit', async function () {
       const { getMaxConcurrency } = require('../lib/concurrencyLimit');
       const maxConcurrency = getMaxConcurrency();
-      await expect(
-        subfont(
+      // The function should not reject, just warn and proceed.
+      // It will fail for other reasons (no actual input files), but the
+      // warning should have been emitted before that.
+      try {
+        await subfont(
           {
             root: '/tmp',
             inputFiles: ['index.html'],
@@ -746,9 +749,16 @@ describe('subfont', function () {
             dryRun: true,
           },
           mockConsole
+        );
+      } catch {
+        // Expected: the call will fail because /tmp/index.html doesn't exist,
+        // but the concurrency warning should still have been emitted.
+      }
+      expect(
+        mockConsole.warn.args.some(
+          (args) => typeof args[0] === 'string' && /--concurrency/.test(args[0])
         ),
-        'to be rejected with',
-        /--concurrency must not exceed/
+        'to be true'
       );
     });
   });

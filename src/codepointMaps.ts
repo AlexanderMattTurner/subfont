@@ -48,6 +48,7 @@ const SCRIPT_RANGES: ScriptRange[] = [
   { min: 0x0980, max: 0x09ff, tag: 'beng' }, // Bengali
   { min: 0x0a00, max: 0x0a7f, tag: 'guru' }, // Gurmukhi (Punjabi)
   { min: 0x0a80, max: 0x0aff, tag: 'gujr' }, // Gujarati
+  { min: 0x0b00, max: 0x0b7f, tag: 'orya' }, // Oriya (Odia)
   { min: 0x0b80, max: 0x0bff, tag: 'taml' }, // Tamil
   { min: 0x0c00, max: 0x0c7f, tag: 'telu' }, // Telugu
   { min: 0x0c80, max: 0x0cff, tag: 'knda' }, // Kannada

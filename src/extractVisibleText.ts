@@ -104,6 +104,7 @@ function extractVisibleText(html: string): string {
 
   // Reset lastIndex on global regexes — a prior call that threw
   // mid-function would leave them in an indeterminate state.
+  invisibleBlockRe.lastIndex = 0;
   hiddenInputRe.lastIndex = 0;
   attrRe.lastIndex = 0;
 
