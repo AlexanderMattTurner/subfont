@@ -70,6 +70,7 @@ describe('codepointMaps', function () {
       { name: 'Armenian', text: 'Բարև', expected: 'armn' },
       { name: 'Devanagari', text: 'नमस्ते', expected: 'deva' },
       { name: 'Bengali', text: 'হ্যালো', expected: 'beng' },
+      { name: 'Oriya (Odia)', text: 'ନମସ୍କାର', expected: 'orya' },
       { name: 'Sinhala', text: 'ආයුබෝවන්', expected: 'sinh' },
       { name: 'Tamil', text: 'வணக்கம்', expected: 'taml' },
       { name: 'Thai', text: 'สวัสดี', expected: 'thai' },
