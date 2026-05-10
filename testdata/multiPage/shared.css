@@ -2,7 +2,7 @@
   font-family: 'Roboto';
   font-style: normal;
   font-weight: 400;
-  src: url(Roboto-400.woff2) format('woff2');
+  src: url(../subsetFonts/Roboto-400.woff2) format('woff2');
 }
 
 div.shared {
