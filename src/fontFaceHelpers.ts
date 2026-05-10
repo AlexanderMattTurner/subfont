@@ -111,6 +111,9 @@ const fontOrder = ['woff2', 'woff', 'truetype'];
 // fontUsage), but the containing subsetsObj may be a shallow copy (new
 // object identity). Keying on the Buffer directly ensures cache hits
 // regardless of how the subsets record was created.
+// Safe to ignore `format` in the key: each Buffer is produced by a single
+// subsetFontWithGlyphs call for one target format, so the same Buffer
+// object never appears for two different MIME types.
 const bufferDataUrlCache = new WeakMap<Buffer, string>();
 function getBufferDataUrl(buffer: Buffer, format: string): string {
   let cached = bufferDataUrlCache.get(buffer);

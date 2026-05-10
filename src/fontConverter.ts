@@ -68,6 +68,9 @@ function replaceEntry(entry: PoolEntry): void {
       waiter(replacement);
     }
   } catch {
+    // Worker creation failed — shrink the pool. In the degenerate case
+    // where all workers are unspawnable, the pool empties and pending
+    // waiters will hang until the caller's own timeout fires.
     _pool.splice(idx, 1);
   }
 }
