@@ -97,9 +97,8 @@ interface SubsetFontWithGlyphsOptions {
   scriptTags?: string[];
 }
 
-// Pool of WASM instances for parallel subsetting.  Each instance has its
-// own linear memory so concurrent calls are safe.  The module is compiled
-// once and instantiated N times (N = CPU count, capped at 8).
+// WebAssembly.Module compilation is expensive (~50-200ms) and immutable —
+// safe to share across all SubsetterPool instances. Cached at module level.
 let _compilePromise: Promise<WebAssembly.Module> | undefined;
 function compileModule(): Promise<WebAssembly.Module> {
   if (!_compilePromise) {
@@ -112,72 +111,110 @@ function compileModule(): Promise<WebAssembly.Module> {
   return _compilePromise;
 }
 
-const _pool: PoolInstance[] = [];
-let _poolReady: Promise<void> | undefined;
-const POOL_SIZE = Math.max(1, Math.min(os.cpus().length, 8));
-
-async function initPool(): Promise<void> {
-  if (!_poolReady) {
-    _poolReady = (async () => {
-      const mod = await compileModule();
-      const instantiations: Array<Promise<void>> = [];
-      for (let i = 0; i < POOL_SIZE; i++) {
-        instantiations.push(
-          WebAssembly.instantiate(mod).then((inst) => {
-            _pool.push({
-              // WebAssembly.Exports is opaque (Record<string, ExportValue>);
-              // bridge it to our typed surface in one place.
-              // eslint-disable-next-line no-restricted-syntax
-              exports: inst.exports as unknown as HarfbuzzExports,
-              busy: false,
-            });
-          })
-        );
-      }
-      await Promise.all(instantiations);
-    })();
-  }
-  return _poolReady;
-}
-
-// Waiters queue: callers waiting for an idle WASM instance.
-const _waiters: Array<(inst: PoolInstance) => void> = [];
+const DEFAULT_POOL_SIZE = Math.max(1, Math.min(os.cpus().length, 8));
 const ACQUIRE_TIMEOUT_MS = 120_000;
 
-async function acquireInstance(): Promise<PoolInstance> {
-  await initPool();
-  const idle = _pool.find((inst) => !inst.busy);
-  if (idle) {
-    idle.busy = true;
-    return idle;
-  }
-  // All instances busy — wait for one to be released.
-  return new Promise<PoolInstance>((resolve, reject) => {
-    const entry = (inst: PoolInstance) => {
-      clearTimeout(timer);
-      resolve(inst);
-    };
-    const timer = setTimeout(() => {
-      const idx = _waiters.indexOf(entry);
-      if (idx !== -1) _waiters.splice(idx, 1);
-      reject(
-        new Error(
-          `Timed out waiting for a WASM subsetting instance after ${ACQUIRE_TIMEOUT_MS}ms`
-        )
-      );
-    }, ACQUIRE_TIMEOUT_MS);
-    timer.unref();
-    _waiters.push(entry);
-  });
+interface SubsetterPoolOptions {
+  poolSize?: number;
 }
 
-function releaseInstance(inst: PoolInstance): void {
-  inst.busy = false;
-  if (_waiters.length > 0) {
-    inst.busy = true;
-    const waiter = _waiters.shift();
-    if (waiter) waiter(inst);
+// Pool of WASM instances for parallel subsetting. Each instance has its
+// own linear memory so concurrent calls are safe. The compiled module is
+// shared across pools (see compileModule above) and instantiated N times
+// per pool (N = poolSize, default = CPU count capped at 8).
+class SubsetterPool {
+  private readonly poolSize: number;
+  private readonly _pool: PoolInstance[] = [];
+  private readonly _waiters: Array<(inst: PoolInstance) => void> = [];
+  private _poolReady: Promise<void> | undefined;
+  private _destroyed = false;
+
+  constructor({ poolSize = DEFAULT_POOL_SIZE }: SubsetterPoolOptions = {}) {
+    this.poolSize = Math.max(1, poolSize);
   }
+
+  warmup(): Promise<void> {
+    return this.initPool();
+  }
+
+  async acquireInstance(): Promise<PoolInstance> {
+    if (this._destroyed) {
+      throw new Error('SubsetterPool has been destroyed');
+    }
+    await this.initPool();
+    const idle = this._pool.find((inst) => !inst.busy);
+    if (idle) {
+      idle.busy = true;
+      return idle;
+    }
+    // All instances busy — wait for one to be released.
+    return new Promise<PoolInstance>((resolve, reject) => {
+      const entry = (inst: PoolInstance) => {
+        clearTimeout(timer);
+        resolve(inst);
+      };
+      const timer = setTimeout(() => {
+        const idx = this._waiters.indexOf(entry);
+        if (idx !== -1) this._waiters.splice(idx, 1);
+        reject(
+          new Error(
+            `Timed out waiting for a WASM subsetting instance after ${ACQUIRE_TIMEOUT_MS}ms`
+          )
+        );
+      }, ACQUIRE_TIMEOUT_MS);
+      timer.unref();
+      this._waiters.push(entry);
+    });
+  }
+
+  releaseInstance(inst: PoolInstance): void {
+    inst.busy = false;
+    if (this._waiters.length > 0) {
+      inst.busy = true;
+      const waiter = this._waiters.shift();
+      if (waiter) waiter(inst);
+    }
+  }
+
+  destroy(): void {
+    this._destroyed = true;
+    this._waiters.length = 0;
+    this._pool.length = 0;
+    this._poolReady = undefined;
+  }
+
+  private initPool(): Promise<void> {
+    if (!this._poolReady) {
+      this._poolReady = (async () => {
+        const mod = await compileModule();
+        const instantiations: Array<Promise<void>> = [];
+        for (let i = 0; i < this.poolSize; i++) {
+          instantiations.push(
+            WebAssembly.instantiate(mod).then((inst) => {
+              this._pool.push({
+                // WebAssembly.Exports is opaque (Record<string, ExportValue>);
+                // bridge it to our typed surface in one place.
+                // eslint-disable-next-line no-restricted-syntax
+                exports: inst.exports as unknown as HarfbuzzExports,
+                busy: false,
+              });
+            })
+          );
+        }
+        await Promise.all(instantiations);
+      })();
+    }
+    return this._poolReady;
+  }
+}
+
+let _defaultPool: SubsetterPool | undefined;
+
+function getDefaultPool(): SubsetterPool {
+  if (!_defaultPool) {
+    _defaultPool = new SubsetterPool();
+  }
+  return _defaultPool;
 }
 
 // woff2 encode/decode uses wawoff2's WASM module, which has a shared
@@ -425,6 +462,8 @@ interface SubsetFontWithGlyphsFn {
     options?: SubsetFontWithGlyphsOptions
   ): Promise<Buffer>;
   warmup(): Promise<void>;
+  destroyPool(): void;
+  SubsetterPool: typeof SubsetterPool;
 }
 
 async function subsetFontWithGlyphs(
@@ -445,7 +484,8 @@ async function subsetFontWithGlyphs(
   // sfntCache routes woff2 decompression through the worker pool.
   const ttf = await toSfnt(originalFont);
 
-  const inst = await acquireInstance();
+  const pool = getDefaultPool();
+  const inst = await pool.acquireInstance();
   const { exports } = inst;
   let released = false;
   try {
@@ -497,7 +537,7 @@ async function subsetFontWithGlyphs(
     // Instance is fully cleaned up — release it so other subsetting
     // calls can proceed while we wait for the serialized WOFF2 step.
     released = true;
-    releaseInstance(inst);
+    pool.releaseInstance(inst);
 
     // Route woff2 compression to a worker thread (each spawns its own
     // wawoff2 WASM instance).  Non-woff2 formats use JS-based converters
@@ -506,11 +546,28 @@ async function subsetFontWithGlyphs(
       ? convertInWorker(subsetFont as Buffer, targetFormat, 'truetype')
       : fontverter.convert(subsetFont as Buffer, targetFormat, 'truetype');
   } finally {
-    if (!released) releaseInstance(inst);
+    if (!released) pool.releaseInstance(inst);
   }
 }
 
-// Pre-warm the WASM pool: call early to overlap compilation with other work.
-(subsetFontWithGlyphs as SubsetFontWithGlyphsFn).warmup = () => initPool();
+const exported = subsetFontWithGlyphs as SubsetFontWithGlyphsFn;
 
-export = subsetFontWithGlyphs as SubsetFontWithGlyphsFn;
+// Pre-warm the default WASM pool: call early to overlap compilation with
+// other work.
+exported.warmup = () => getDefaultPool().warmup();
+
+// Drop the default pool's instances. Useful in long-running processes that
+// want to reclaim memory between subfont() invocations or in tests that
+// need pool-state isolation. The compiled WebAssembly.Module stays cached.
+exported.destroyPool = () => {
+  if (_defaultPool) {
+    const pool = _defaultPool;
+    _defaultPool = undefined;
+    pool.destroy();
+  }
+};
+
+// Class export for callers that want explicit lifecycle control.
+exported.SubsetterPool = SubsetterPool;
+
+export = exported;
