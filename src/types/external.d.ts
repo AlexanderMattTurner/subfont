@@ -3,9 +3,16 @@
 // these are pragmatic shims, not exhaustive contracts.
 
 declare module 'assetgraph' {
-  // Loose stand-ins for the postcss / DOM trees AssetGraph exposes —
-  // each one is consumed by walk-callbacks where the runtime shape
-  // is enforced by the upstream library.
+  export interface PostCssDecl {
+    prop: string;
+    value: string;
+  }
+
+  // Shape of a non-decl child node accessed by cssAssetIsEmpty.
+  type ParseTreeChild = { type: string; text?: string };
+
+  // Loose postcss/DOM node shim. Optional fields cover both branches —
+  // postcss uses `parent`, jsdom-backed DOM relations use `parentNode`.
   export interface PostCssNode {
     type?: string;
     prop?: string;
@@ -18,77 +25,51 @@ declare module 'assetgraph' {
     outerHTML?: string;
     walkDecls(cb: (decl: PostCssDecl) => void): void;
     removeChild(child: PostCssNode): void;
-    // PostCSS Container methods exposed on at-rules. Only the slice we use:
     some(predicate: (node: PostCssNode) => boolean): boolean;
-    append(decl: { prop: string; value: string }): void;
+    append(decl: PostCssDecl): void;
     remove?(): void;
   }
 
-  export interface PostCssDecl {
-    prop: string;
-    value: string;
-  }
-
-  // CssFontFaceSrc relations point at the @font-face at-rule whose body is
-  // a list of postcss Declaration children. Tightened beyond PostCssNode to
-  // expose the at-rule-specific fields (name/params) and to narrow
-  // `nodes` to the declarations we actually walk.
+  // CssFontFaceSrc relations point at @font-face at-rules whose children
+  // are all postcss Declarations — tighter than the generic PostCssNode.
   export interface CssFontFaceAtRule extends PostCssNode {
     type: 'atrule';
     name: string;
     params: string;
     nodes?: Array<PostCssNode & PostCssDecl>;
     walkDecls(cb: (decl: PostCssDecl) => void): void;
-    append(decl: { prop: string; value: string }): void;
+    append(decl: PostCssDecl): void;
     remove(): void;
   }
 
-  // The parseTree exposed by CSS assets — a postcss Root with the walk
-  // methods the codebase touches. Kept structural so it stays assignable
-  // from both the real postcss.Root and our looser walker shapes.
+  // CSS asset parseTree — postcss Root surface used by the codebase.
   export interface PostCssRootLike {
     type: 'root';
-    nodes?: Array<{ type: string; text?: string }>;
+    nodes?: ParseTreeChild[];
     walkRules(cb: (rule: PostCssNode) => void): void;
-    walkDecls(cb: (decl: PostCssDecl) => void): void;
-    walkAtRules(
-      nameOrCb: string | RegExp | ((rule: CssFontFaceAtRule) => boolean | void),
-      cb?: (rule: CssFontFaceAtRule) => boolean | void
-    ): void;
-    toString(): string;
   }
 
+  // HTML/SVG asset parseTree — jsdom-style DOM root. Walk methods stay
+  // optional so AssetParseTree is structurally assignable to the duck-typed
+  // {parseTree?: {walkRules?: ...}} shapes a few helpers consume.
   export interface AssetParseTree {
     querySelectorAll(selector: string): ArrayLike<SvgElement>;
     walkRules?(cb: (rule: PostCssNode) => void): void;
     walkDecls?(cb: (decl: PostCssDecl) => void): void;
-    nodes?: Array<{
-      type: string;
-      text?: string;
-      prop?: string;
-      value?: string;
-    }>;
+    nodes?: ParseTreeChild[];
   }
 
-  // Asset types observed in this codebase. Not exhaustive of assetgraph's
-  // catalogue, but covers everything we discriminate on at compile time.
+  // Asset types we discriminate on or query for. Unknown types from
+  // assetgraph fall outside this union — TS won't narrow on them, but no
+  // call site relies on those.
   export type AssetType =
     | 'Css'
     | 'Html'
     | 'Svg'
     | 'JavaScript'
     | 'JavaScriptStaticUrl'
-    | 'Json'
-    | 'Font'
-    | 'Image'
     | 'HttpRedirect'
-    | 'SourceMapSource'
-    | 'StaticUrl'
-    | 'AsyncStaticUrl'
-    | 'Atom'
-    | 'Rss'
-    | 'Text'
-    | 'Xml';
+    | 'SourceMapSource';
 
   interface BaseAsset {
     id: string | number;
@@ -127,40 +108,28 @@ declare module 'assetgraph' {
     parseTree: PostCssRootLike;
   }
 
-  // Html and Svg assets share the same DOM-like parseTree shape (the only
-  // querySelectorAll caller is svg-specific, but jsdom-backed Html assets
-  // expose the same surface).
-  export interface HtmlAsset extends BaseAsset {
-    type: 'Html';
+  export interface NonCssAsset extends BaseAsset {
+    type: Exclude<AssetType, 'Css'>;
     parseTree: AssetParseTree;
   }
 
-  export interface SvgAsset extends BaseAsset {
-    type: 'Svg';
-    parseTree: AssetParseTree;
-  }
+  export type Asset = CssAsset | NonCssAsset;
 
-  export interface OtherAsset extends BaseAsset {
-    type: Exclude<AssetType, 'Css' | 'Html' | 'Svg'>;
-    parseTree: AssetParseTree;
-  }
-
-  export type Asset = CssAsset | HtmlAsset | SvgAsset | OtherAsset;
-
-  // Relation type strings observed in the codebase.
+  // Relation types we discriminate on or query for.
   export type RelationType =
     | 'CssFontFaceSrc'
+    | 'CssImport'
     | 'CssSourceMappingUrl'
+    | 'HtmlConditionalComment'
+    | 'HtmlNoscript'
     | 'HtmlPrefetchLink'
     | 'HtmlPreloadLink'
-    | 'HtmlNoscript'
-    | 'HtmlConditionalComment'
     | 'HtmlScript'
     | 'HtmlStyle'
-    | 'HtmlAnchor'
     | 'HttpRedirect'
     | 'JavaScriptStaticUrl'
-    | 'SourceMapSource';
+    | 'SourceMapSource'
+    | 'SvgStyle';
 
   interface BaseRelation {
     from: Asset;
@@ -170,8 +139,8 @@ declare module 'assetgraph' {
     crossorigin?: boolean;
     condition?: string;
     conditionalComments?: ReadonlyArray<unknown>;
-    // For CssFontFaceSrc relations: regex matching the original token in the
-    // @font-face src value, so callers can rewrite it.
+    // For CssFontFaceSrc relations: regex matching the original token in
+    // the @font-face src value, so callers can rewrite it.
     tokenRegExp?: RegExp;
     detach(): void;
     remove(): void;
@@ -185,7 +154,7 @@ declare module 'assetgraph' {
   }
 
   export interface NonCssFontFaceSrcRelation extends BaseRelation {
-    type: Exclude<RelationType, 'CssFontFaceSrc'> | (string & {});
+    type: Exclude<RelationType, 'CssFontFaceSrc'>;
     node: PostCssNode;
   }
 
@@ -226,8 +195,10 @@ declare module 'assetgraph' {
     constructor(config: AssetGraphConfig);
     root: string;
     findAssets(query: { type: 'Css'; [key: string]: unknown }): CssAsset[];
-    findAssets(query: { type: 'Html'; [key: string]: unknown }): HtmlAsset[];
-    findAssets(query: { type: 'Svg'; [key: string]: unknown }): SvgAsset[];
+    findAssets(query: {
+      type: Exclude<AssetType, 'Css'>;
+      [key: string]: unknown;
+    }): NonCssAsset[];
     findAssets(query?: AssetQuery): Asset[];
     findRelations(query: {
       type: 'CssFontFaceSrc';
@@ -363,8 +334,10 @@ declare module 'lines-and-columns' {
 declare module 'font-snapper' {
   import type { Relation } from 'assetgraph';
 
-  // Mirror of collectTextsByPage's FontFaceDeclaration: an open record of CSS
-  // descriptors plus the live relations list and the -subfont-text marker.
+  // An open record: CSS @font-face descriptors plus the live relations list
+  // (font-family + src are required by spec but only enforced post-validation,
+  // hence optional). The `-subfont-text` marker is injected by subfont's own
+  // CSS pre-pass before snapping.
   export interface FontFaceDeclaration {
     'font-family'?: string;
     'font-style'?: string;
