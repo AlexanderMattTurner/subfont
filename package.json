@@ -86,6 +86,7 @@
     "yargs": "^17.7.2"
   },
   "devDependencies": {
+    "@types/jsdom": "^28.0.1",
     "@types/node": "^20.0.0",
     "@types/yargs": "^17.0.0",
     "canvas": "npm:@napi-rs/canvas@^0.1.97",
@@ -94,8 +95,8 @@
     "css-generators": "^0.2.0",
     "eslint": "^9.0.0",
     "eslint-config-prettier": "^10.0.0",
-    "globals": "^16.0.0",
     "eslint-plugin-mocha": "^10.0.0",
+    "globals": "^16.0.0",
     "html-generators": "^1.0.3",
     "httpception": "^3.0.0",
     "husky": "^9.1.7",
