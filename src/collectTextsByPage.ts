@@ -31,7 +31,7 @@ import {
 import allInitialValues = require('./initialValueByProp');
 import type { Asset, AssetGraph, Relation, PostCssNode } from 'assetgraph';
 import type { FontFaceDeclaration } from 'font-snapper';
-import type { FontUsage } from './types/shared';
+import type { TracedFontUsage } from './types/shared';
 
 const fontRelevantCssRegex =
   /font-family|font-weight|font-style|font-stretch|font-display|@font-face|font-variation|font-feature/i;
@@ -960,9 +960,11 @@ interface AssetTextWithPropsEntry {
     typeof findFontFamiliesWithFeatureSettings
   >;
   featureTagsByFamily: Map<string, Set<string>>;
-  // Populated by buildPerPageFontUsages, then progressively enriched by
-  // subsetFonts (codepoints, subsets, etc.).
-  fontUsages: FontUsage[];
+  // Populated by buildPerPageFontUsages. Downstream stages mutate the
+  // same array in place (SubsettedFontUsage after getSubsetsForFontUsage,
+  // ReportFontUsage after computeCodepoints), but at this point it only
+  // carries the stage-1 fields.
+  fontUsages: TracedFontUsage[];
 }
 
 interface BuildPerPageTimings {

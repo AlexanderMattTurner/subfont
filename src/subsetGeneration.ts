@@ -2,7 +2,11 @@ import * as fs from 'fs/promises';
 import pathModule = require('path');
 import * as crypto from 'crypto';
 import type { Asset, AssetGraph } from 'assetgraph';
-import type { VariationAxes, FontUsage } from './types/shared';
+import type {
+  VariationAxes,
+  TracedFontUsage,
+  SubsettedFontUsage,
+} from './types/shared';
 import { wrapAssetGraphError } from './types/shared';
 import { getVariationAxisBounds } from './variationAxes';
 import collectFeatureGlyphIds = require('./collectFeatureGlyphIds');
@@ -20,7 +24,7 @@ const SUBSET_CACHE_VERSION = '6';
 type FontBuffer = Buffer | Uint8Array;
 
 interface AssetTextWithProps {
-  fontUsages: FontUsage[];
+  fontUsages: TracedFontUsage[];
 }
 
 interface SubsetInfo {
@@ -145,7 +149,7 @@ class SubsetDiskCache {
 // featureTags is not included because fontUrl uniquely determines the canonical
 // fontUsage (and thus its featureTags) within a single getSubsetsForFontUsage call.
 export function getSubsetPromiseId(
-  fontUsage: FontUsage,
+  fontUsage: TracedFontUsage,
   format: string,
   variationAxes: VariationAxes | null = null
 ): string {
@@ -170,7 +174,9 @@ export async function getSubsetsForFontUsage(
   const cacheStats = diskCache ? { hits: 0, misses: 0 } : null;
 
   // Collect one canonical fontUsage per font URL
-  const canonicalFontUsageByUrl = new Map<string, FontUsage>();
+  // Entries enter the map as TracedFontUsage and are upcast to
+  // SubsettedFontUsage when this function attaches subset bytes.
+  const canonicalFontUsageByUrl = new Map<string, SubsettedFontUsage>();
   for (const item of htmlOrSvgAssetTextsWithProps) {
     for (const fontUsage of item.fontUsages) {
       if (
@@ -374,7 +380,7 @@ export async function getSubsetsForFontUsage(
   // Assign subset results to canonical font usages. Drain subsetPromiseMap
   // as we go so each Promise wrapper is GC-eligible immediately.
   for (const [, fontUsage] of canonicalFontUsageByUrl) {
-    const info = subsetInfoByFontUrl.get(fontUsage.fontUrl as string);
+    const info = subsetInfoByFontUrl.get(fontUsage.fontUrl);
     if (!info) continue;
     for (const targetFormat of formats) {
       const promiseId = getSubsetPromiseId(
@@ -407,11 +413,14 @@ export async function getSubsetsForFontUsage(
     }
   }
 
-  // Propagate subsets to non-canonical font usages
+  // Propagate subsets to non-canonical font usages. Each mutation upgrades
+  // the entry from TracedFontUsage to SubsettedFontUsage in place; the
+  // local cast documents that stage transition.
   for (const item of htmlOrSvgAssetTextsWithProps) {
-    for (const fontUsage of item.fontUsages) {
-      if (!fontUsage.fontUrl) continue;
-      const canonical = canonicalFontUsageByUrl.get(fontUsage.fontUrl);
+    for (const tracedFontUsage of item.fontUsages) {
+      if (!tracedFontUsage.fontUrl) continue;
+      const canonical = canonicalFontUsageByUrl.get(tracedFontUsage.fontUrl);
+      const fontUsage = tracedFontUsage as SubsettedFontUsage;
       if (canonical && canonical !== fontUsage && canonical.subsets) {
         const info = subsetInfoByFontUrl.get(fontUsage.fontUrl);
         if (!info) continue;

@@ -1,0 +1,10 @@
+@font-face {
+  font-family: 'Roboto';
+  font-style: normal;
+  font-weight: 400;
+  src: url(../subsetFonts/Roboto-400.woff2) format('woff2');
+}
+
+div.shared {
+  font-family: 'Roboto';
+}
