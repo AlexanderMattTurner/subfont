@@ -58,6 +58,7 @@ pnpm run check-coverage  # Verify coverage thresholds
 - Use `const` by default; `let` only when reassignment is needed
 - Template literals preferred over string concatenation
 - **Never silence compiler/linter warnings** (e.g. `ignoreDeprecations`, `// @ts-ignore`, `eslint-disable`) without explicit user approval. Fix the root cause or leave the warning visible.
+- **No legacy aliases or backwards-compat shims without a verified caller.** Before keeping a `type Old = New`, re-exporting a renamed symbol, or adding a deprecated wrapper, grep for actual consumers. If nothing imports it, delete it — even when a task description hand-waves about "the few places that genuinely need it." Trust the search, not the hypothetical.
 
 ## Subset-size efficiency improvements
 

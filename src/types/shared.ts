@@ -54,11 +54,6 @@ export interface ReportFontUsage extends SubsettedFontUsage {
   };
 }
 
-// Legacy alias: a handful of helpers accept a fontUsage at any stage
-// (e.g. variationAxes.getVariationAxisUsage reads only stage-1 fields).
-// New code should pick the most specific stage type instead.
-export type FontUsage = TracedFontUsage;
-
 export function wrapAssetGraphError(
   // eslint-disable-next-line no-restricted-syntax
   rawErr: unknown,
