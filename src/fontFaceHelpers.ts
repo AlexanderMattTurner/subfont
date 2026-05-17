@@ -243,10 +243,11 @@ export function getUnusedVariantsStylesheet(
       const tokenRe = props.relations[0]?.tokenRegExp;
       if (props.relations.length > 0 && tokenRe) {
         const targets = props.relations.map((relation) => relation.to.url);
-        src = src.replace(
-          tokenRe,
-          () => `url('${(targets.shift() as string).replace(/'/g, "\\'")}')`
-        );
+        src = src.replace(tokenRe, () => {
+          const url = targets.shift();
+          if (url === undefined) return "url('')";
+          return `url('${url.replace(/'/g, "\\'")}')`;
+        });
       }
       let rule = `@font-face{font-family:${maybeCssQuote(`${props['font-family']}__subset`)};font-stretch:${props['font-stretch']};font-style:${props['font-style']};font-weight:${props['font-weight']};src:${src}`;
       if (props['unicode-range']) {

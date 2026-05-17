@@ -123,20 +123,22 @@ function extractVisibleText(html: string): string {
     }
   }
 
+  // Strip invisible blocks and comments first so attributes inside
+  // <script>/<style>/etc. are excluded from extraction.
+  let text = html;
+  text = text.replace(invisibleBlockRe, ' ');
+  text = text.replace(commentRe, ' ');
+
   // Extract text attributes before stripping tags.
+  attrRe.lastIndex = 0;
   let attrMatch: RegExpExecArray | null;
-  while ((attrMatch = attrRe.exec(html)) !== null) {
+  while ((attrMatch = attrRe.exec(text)) !== null) {
     const attrName = attrMatch[1].toLowerCase();
     const val = attrMatch[2] ?? attrMatch[3] ?? attrMatch[4];
     if (!val) continue;
     if (attrName === 'value' && hiddenInputValues.has(val)) continue;
     parts.push(decodeEntities(val));
   }
-
-  // Strip invisible blocks, comments, and tags to get text content.
-  let text = html;
-  text = text.replace(invisibleBlockRe, ' ');
-  text = text.replace(commentRe, ' ');
   text = text.replace(tagRe, ' ');
   text = decodeEntities(text);
   parts.push(text);
