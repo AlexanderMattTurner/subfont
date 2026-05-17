@@ -36,8 +36,21 @@ describe('subset size benchmarks', function () {
       featureTags: [],
     });
     // Pre-fix produced 1148 bytes (gasp survived); fix drops it to ≤ 1130.
+    // Lower bound guards against corrupted/truncated output.
+    expect(result.length, 'to be greater than or equal to', 500);
     expect(result.length, 'to be less than or equal to', 1130);
     expect(tableSet(result).has('gasp'), 'to be false');
+  });
+
+  it('Roboto-400 woff2 subset produces a sane-sized output', async function () {
+    const buf = fs.readFileSync(ROBOTO);
+    const result = await subsetFontWithGlyphs(buf, PANGRAM, {
+      targetFormat: 'woff2',
+      featureTags: [],
+    });
+    // woff2 of a Latin pangram should be compact but non-trivial
+    expect(result.length, 'to be greater than or equal to', 300);
+    expect(result.length, 'to be less than or equal to', 2000);
   });
 
   [
@@ -52,6 +65,7 @@ describe('subset size benchmarks', function () {
         ...baseOpts,
         scriptTags: ['DFLT', 'latn'],
       });
+      expect(latnOnly.length, 'to be greater than', 100);
       expect(latnOnly.length, 'to be less than', all.length);
     });
   });

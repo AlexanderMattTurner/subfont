@@ -694,8 +694,8 @@ function indexStylesheetRelations(
 }
 
 // Build a cache key by traversing stylesheet relations, capturing
-// both asset identity and relation context (media, conditionalComment,
-// noscript) that affect gatherStylesheetsWithPredicates output.
+// both asset identity and relation context (media, noscript) that
+// affect gatherStylesheetsWithPredicates output.
 // Build a key identifying the stylesheet graph reachable from an HTML/SVG
 // asset. With useContentHash=false, each stylesheet contributes its asset id
 // (per-asset identity); with useContentHash=true, inline assets contribute a
@@ -733,7 +733,6 @@ function buildStylesheetKey(
       if (relation.type === 'HtmlNoscript') {
         traverse(relation.to, true);
       } else if (relation.type === 'HtmlConditionalComment') {
-        keyParts.push(`cc:${relation.condition}`);
         traverse(relation.to, isNoscript);
       } else {
         const target = relation.to;
@@ -1197,7 +1196,10 @@ async function collectTextsByPage(
   const stylesheetRelsByFromAsset = indexStylesheetRelations(assetGraph);
 
   const headlessBrowser: HeadlessBrowser | null = dynamic
-    ? new HeadlessBrowser({ console: console as Console, chromeArgs })
+    ? new HeadlessBrowser({
+        console: console ?? globalThis.console,
+        chromeArgs,
+      })
     : null;
   const globalTextByProps: TextByPropsEntry[] = [];
   const subTimings: Record<string, number | undefined> = {};
