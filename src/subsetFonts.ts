@@ -312,7 +312,7 @@ async function getOrCreateSubsetCssAsset({
       continue;
     }
 
-    const extension = (fontAsset.contentType ?? '').split('/').pop();
+    const extension = (fontAsset.contentType ?? '').split('/').pop() || 'bin';
 
     const nameProps = ['font-family', 'font-weight', 'font-style']
       .map((prop) =>
@@ -791,7 +791,7 @@ function injectSubsetFontFamilies(
         const fontProperties = cssFontParser.parseFont(cssRule.value);
         const fontFamilies =
           fontProperties && fontProperties['font-family'].map(unquote);
-        if (!fontFamilies) return;
+        if (!fontFamilies || fontFamilies.length === 0) return;
 
         const subsetFontFamily = webfontNameMap[fontFamilies[0].toLowerCase()];
         if (!subsetFontFamily || fontFamilies.includes(subsetFontFamily))

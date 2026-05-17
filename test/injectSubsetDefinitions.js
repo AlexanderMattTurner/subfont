@@ -104,6 +104,28 @@ describe('injectSubsetDefinitions', function () {
     );
   });
 
+  it('should inject before a bareword font family that follows a quoted one not in the map', function () {
+    const map = {
+      'times new roman': 'times new roman__subset',
+    };
+    expect(
+      injectSubsetDefinitions('"Arial", times new roman', map),
+      'to equal',
+      '"Arial", \'times new roman__subset\', times new roman'
+    );
+  });
+
+  it('should inject into a font list where an unquoted family follows a quoted one', function () {
+    const map = {
+      roboto: 'roboto__subset',
+    };
+    expect(
+      injectSubsetDefinitions('"Open Sans", Roboto, sans-serif', map),
+      'to equal',
+      '"Open Sans", \'roboto__subset\', Roboto, sans-serif'
+    );
+  });
+
   describe('when replaceOriginal is true', function () {
     it('should replace a "bareword" font family name that is the last token', function () {
       expect(

@@ -101,8 +101,6 @@ function doConvert(
         returnToIdle(worker);
         resolve(Buffer.from(msg.buffer));
       } else {
-        // Application-level error: the worker reported a conversion
-        // failure. Discard it rather than risk reusing corrupted state.
         discard(worker);
         reject(
           new Error(msg.error || `Font conversion to ${targetFormat} failed`)

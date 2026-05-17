@@ -195,6 +195,24 @@ describe('extractVisibleText', function () {
     expect(result, 'to contain', '&#99999999;');
   });
 
+  it('should not extract attributes from inside invisible elements', function () {
+    const result = extractVisibleText(
+      '<p>visible</p><script>var x = "<img alt=\\"hidden-attr\\">";</script><img alt="real-alt">'
+    );
+    expect(result, 'to contain', 'visible');
+    expect(result, 'to contain', 'real-alt');
+    expect(result, 'not to contain', 'hidden-attr');
+  });
+
+  it('should not extract title attributes from inside style blocks', function () {
+    const result = extractVisibleText(
+      '<style title="style-title">body { color: red; }</style><p title="visible-title">text</p>'
+    );
+    expect(result, 'to contain', 'visible-title');
+    expect(result, 'to contain', 'text');
+    expect(result, 'not to contain', 'style-title');
+  });
+
   it('should strip deeply nested invisible blocks on repeated calls', function () {
     // Ensures global regex state (lastIndex) is properly reset between calls.
     // If invisibleBlockRe.lastIndex leaks, the second call may not strip the
