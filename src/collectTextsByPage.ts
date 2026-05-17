@@ -813,10 +813,15 @@ function collectFontFaceDeclarations(
   return accumulatedFontFaceDeclarations;
 }
 
-// Validate that @font-face declarations sharing family/style/weight carry
-// disjoint unicode-range values; throws on incomplete coverage.
-function validateFontFaceComboCoverage(
-  accumulatedFontFaceDeclarations: FontFaceDeclaration[]
+// Warn when @font-face declarations sharing family/style/weight have one or
+// more declarations missing unicode-range. The CSS spec defaults a missing
+// unicode-range to U+0-10FFFF (the full Unicode range), and browsers handle
+// overlap correctly — narrower-range faces win for codepoints they cover,
+// and the catch-all face covers the rest. The warning surfaces likely-buggy
+// copy-pasted @font-face rules without blocking the build.
+function warnAboutFontFaceComboCoverage(
+  accumulatedFontFaceDeclarations: FontFaceDeclaration[],
+  assetGraph: AssetGraph
 ): void {
   const comboGroups = new Map<string, FontFaceDeclaration[]>();
   for (const fontFace of accumulatedFontFaceDeclarations) {
@@ -830,8 +835,10 @@ function validateFontFaceComboCoverage(
       (d: FontFaceDeclaration) => !d['unicode-range']
     );
     if (withoutRange.length > 0) {
-      throw new Error(
-        `Multiple @font-face with the same font-family/font-style/font-weight combo but missing unicode-range on ${withoutRange.length} of ${group.length} declarations: ${comboKey}`
+      assetGraph.warn(
+        new Error(
+          `Multiple @font-face with the same font-family/font-style/font-weight combo but missing unicode-range on ${withoutRange.length} of ${group.length} declarations: ${comboKey}. Treating missing unicode-range as the default U+0-10FFFF.`
+        )
       );
     }
   }
@@ -861,7 +868,10 @@ function computeStylesheetResults(
     htmlOrSvgAsset,
     stylesheetRelsByFromAsset
   );
-  validateFontFaceComboCoverage(accumulatedFontFaceDeclarations);
+  warnAboutFontFaceComboCoverage(
+    accumulatedFontFaceDeclarations,
+    htmlOrSvgAsset.assetGraph
+  );
 
   const featureTagsByFamily = new Map<string, Set<string>>();
   const fontFamiliesWithFeatureSettings = findFontFamiliesWithFeatureSettings(
