@@ -25,9 +25,9 @@ interface TraceMessage {
   htmlText: string;
   stylesheetsWithPredicates: Array<{
     text: string;
-    // Predicates carry CSS-tracing context (mediaQuery, conditionalComment,
-    // script/scope flags). The pool serializes them across the worker
-    // boundary unchanged; the value union is wider than booleans alone.
+    // Predicates carry CSS-tracing context (mediaQuery, script/scope
+    // flags). The pool serializes them across the worker boundary
+    // unchanged; the value union is wider than booleans alone.
     predicates: Record<string, unknown>; // eslint-disable-line no-restricted-syntax
   }>;
 }

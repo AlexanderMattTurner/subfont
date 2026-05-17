@@ -12,8 +12,6 @@ interface RelationLike {
   type: string;
   to: AssetLike;
   media?: string;
-  condition?: string;
-  conditionalComments?: ReadonlyArray<unknown>; // eslint-disable-line no-restricted-syntax -- shape unused, only length is read
 }
 
 interface AssetGraphLike {
@@ -35,13 +33,8 @@ function gatherStylesheetsWithPredicates(
 ): StylesheetWithPredicates[] {
   const visiting = new Set<AssetLike>();
   const incomingMedia: string[] = [];
-  const conditionalCommentConditionStack: string[] = [];
   const result: StylesheetWithPredicates[] = [];
-  (function traverse(
-    asset: AssetLike,
-    isWithinNotIeConditionalComment: boolean,
-    isWithinNoscript: boolean
-  ): void {
+  (function traverse(asset: AssetLike, isWithinNoscript: boolean): void {
     if (visiting.has(asset)) {
       return;
     } else if (!asset.isLoaded) {
@@ -65,27 +58,15 @@ function gatherStylesheetsWithPredicates(
         });
     for (const relation of relations) {
       if (relation.type === 'HtmlNoscript') {
-        traverse(relation.to, isWithinNotIeConditionalComment, true);
+        traverse(relation.to, true);
       } else if (relation.type === 'HtmlConditionalComment') {
-        conditionalCommentConditionStack.push(relation.condition ?? '');
-        traverse(
-          relation.to,
-          isWithinNotIeConditionalComment ||
-            (relation.conditionalComments?.length ?? 0) > 0,
-          isWithinNoscript
-        );
-        conditionalCommentConditionStack.pop();
+        traverse(relation.to, isWithinNoscript);
       } else {
         const media = relation.media;
         if (media) {
           incomingMedia.push(media);
         }
-        traverse(
-          relation.to,
-          isWithinNotIeConditionalComment ||
-            (relation.conditionalComments?.length ?? 0) > 0,
-          isWithinNoscript
-        );
+        traverse(relation.to, isWithinNoscript);
         if (media) {
           incomingMedia.pop();
         }
@@ -97,14 +78,8 @@ function gatherStylesheetsWithPredicates(
       for (const incomingMedium of incomingMedia) {
         predicates[`mediaQuery:${incomingMedium}`] = true;
       }
-      for (const conditionalCommentCondition of conditionalCommentConditionStack) {
-        predicates[`conditionalComment:${conditionalCommentCondition}`] = true;
-      }
       if (isWithinNoscript) {
         predicates.script = false;
-      }
-      if (isWithinNotIeConditionalComment) {
-        predicates['conditionalComment:IE'] = false;
       }
       result.push({
         asset,
@@ -112,7 +87,7 @@ function gatherStylesheetsWithPredicates(
         predicates,
       });
     }
-  })(htmlAsset, false, false);
+  })(htmlAsset, false);
 
   return result;
 }
