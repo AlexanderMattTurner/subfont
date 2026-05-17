@@ -12,10 +12,15 @@ interface WorkerMessage {
   error?: string;
 }
 
+// Worker lifecycle: Created → Idle → Busy → Idle | Discarded
+// Only Idle workers may be handed to callers. Discarded workers are
+// terminated and never reused. This structure makes it impossible
+// to accidentally reuse a worker that encountered an error.
+const _idle: Worker[] = [];
+const _alive = new Set<Worker>();
+
 let _activeCount = 0;
 const _queue: Array<() => void> = [];
-const _idleWorkers: Worker[] = [];
-const _allWorkers = new Set<Worker>();
 
 function acquireSlot(): Promise<void> {
   if (_activeCount < POOL_SIZE) {
@@ -39,22 +44,23 @@ function releaseSlot(): void {
 function createWorker(): Worker {
   const worker = new Worker(workerPath);
   worker.unref();
-  _allWorkers.add(worker);
-  // Drop crashed idle workers from the cache so we never hand a zombie
-  // to a future caller. doConvert attaches its own short-lived exit
-  // handler for the in-flight case; both can fire harmlessly.
+  _alive.add(worker);
   worker.on('exit', () => {
-    _allWorkers.delete(worker);
-    const idx = _idleWorkers.indexOf(worker);
-    if (idx !== -1) _idleWorkers.splice(idx, 1);
+    _alive.delete(worker);
+    const idx = _idle.indexOf(worker);
+    if (idx !== -1) _idle.splice(idx, 1);
   });
   return worker;
 }
 
-function discardWorker(worker: Worker): void {
-  _allWorkers.delete(worker);
-  const idx = _idleWorkers.indexOf(worker);
-  if (idx !== -1) _idleWorkers.splice(idx, 1);
+function returnToIdle(worker: Worker): void {
+  _idle.push(worker);
+}
+
+function discard(worker: Worker): void {
+  _alive.delete(worker);
+  const idx = _idle.indexOf(worker);
+  if (idx !== -1) _idle.splice(idx, 1);
   worker.terminate().catch(() => {});
 }
 
@@ -71,7 +77,7 @@ function doConvert(
       if (settled) return;
       settled = true;
       cleanup();
-      discardWorker(worker);
+      discard(worker);
       reject(
         new Error(
           `Font conversion to ${targetFormat} timed out after ${CONVERT_TIMEOUT_MS}ms`
@@ -92,10 +98,10 @@ function doConvert(
       settled = true;
       cleanup();
       if (msg.type === 'result' && msg.buffer) {
-        _idleWorkers.push(worker);
+        returnToIdle(worker);
         resolve(Buffer.from(msg.buffer));
       } else {
-        discardWorker(worker);
+        discard(worker);
         reject(
           new Error(msg.error || `Font conversion to ${targetFormat} failed`)
         );
@@ -106,7 +112,7 @@ function doConvert(
       if (settled) return;
       settled = true;
       cleanup();
-      discardWorker(worker);
+      discard(worker);
       reject(err);
     };
 
@@ -114,7 +120,7 @@ function doConvert(
       if (settled) return;
       settled = true;
       cleanup();
-      discardWorker(worker);
+      discard(worker);
       reject(
         new Error(`Font converter worker exited unexpectedly with code ${code}`)
       );
@@ -128,7 +134,7 @@ function doConvert(
     } catch (err) {
       settled = true;
       cleanup();
-      discardWorker(worker);
+      discard(worker);
       reject(err);
     }
   });
@@ -141,7 +147,7 @@ export async function convert(
 ): Promise<Buffer> {
   await acquireSlot();
   try {
-    const worker = _idleWorkers.pop() ?? createWorker();
+    const worker = _idle.pop() ?? createWorker();
     return await doConvert(worker, buffer, targetFormat, sourceFormat);
   } finally {
     releaseSlot();
@@ -150,8 +156,8 @@ export async function convert(
 
 export async function destroy(): Promise<void> {
   _queue.length = 0;
-  _idleWorkers.length = 0;
-  const workers = Array.from(_allWorkers);
-  _allWorkers.clear();
+  _idle.length = 0;
+  const workers = Array.from(_alive);
+  _alive.clear();
   await Promise.all(workers.map((w) => w.terminate()));
 }

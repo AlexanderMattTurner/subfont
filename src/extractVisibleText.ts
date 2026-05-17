@@ -94,56 +94,92 @@ function decodeEntities(str: string): string {
   });
 }
 
-/**
- * Fast extraction of visible text content from HTML source.
- * Used as a lightweight alternative to full font-tracer for pages
- * that share the same CSS configuration as an already-traced page.
- */
-function extractVisibleText(html: string): string {
-  if (!html) return '';
+// --- Pipeline stages ---
+// Each stage takes an HTML string and returns a transformed string or
+// extracted data. Ordering is enforced by the pipeline structure: stages
+// that must run on "clean" HTML (invisible blocks removed) receive the
+// output of stripInvisible, not the original HTML.
 
-  // Reset lastIndex on global regexes — a prior call that threw
-  // mid-function would leave them in an indeterminate state.
+function resetGlobalRegexes(): void {
   invisibleBlockRe.lastIndex = 0;
   hiddenInputRe.lastIndex = 0;
   attrRe.lastIndex = 0;
+}
 
-  const parts: string[] = [];
-
-  // Collect hidden-input value attrs that should be excluded.
-  const hiddenInputValues = new Set<string>();
-  let hiddenMatch: RegExpExecArray | null;
-  while ((hiddenMatch = hiddenInputRe.exec(html)) !== null) {
-    const fragment = hiddenMatch[0];
+function collectHiddenInputValues(html: string): Set<string> {
+  hiddenInputRe.lastIndex = 0;
+  const values = new Set<string>();
+  let match: RegExpExecArray | null;
+  while ((match = hiddenInputRe.exec(html)) !== null) {
+    const fragment = match[0];
     let m: RegExpExecArray | null;
     const localAttrRe = /\bvalue\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]*))/gi;
     while ((m = localAttrRe.exec(fragment)) !== null) {
       const val = m[1] ?? m[2] ?? m[3];
-      if (val) hiddenInputValues.add(val);
+      if (val) values.add(val);
     }
   }
+  return values;
+}
 
-  // Strip invisible blocks and comments first so attributes inside
-  // <script>/<style>/etc. are excluded from extraction.
-  let text = html;
-  text = text.replace(invisibleBlockRe, ' ');
+function stripInvisible(html: string): string {
+  invisibleBlockRe.lastIndex = 0;
+  let text = html.replace(invisibleBlockRe, ' ');
   text = text.replace(commentRe, ' ');
+  return text;
+}
 
-  // Extract text attributes before stripping tags.
+function extractAttributes(
+  cleanedHtml: string,
+  hiddenInputValues: Set<string>
+): string[] {
   attrRe.lastIndex = 0;
-  let attrMatch: RegExpExecArray | null;
-  while ((attrMatch = attrRe.exec(text)) !== null) {
-    const attrName = attrMatch[1].toLowerCase();
-    const val = attrMatch[2] ?? attrMatch[3] ?? attrMatch[4];
+  const parts: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = attrRe.exec(cleanedHtml)) !== null) {
+    const attrName = match[1].toLowerCase();
+    const val = match[2] ?? match[3] ?? match[4];
     if (!val) continue;
     if (attrName === 'value' && hiddenInputValues.has(val)) continue;
     parts.push(decodeEntities(val));
   }
-  text = text.replace(tagRe, ' ');
-  text = decodeEntities(text);
-  parts.push(text);
+  return parts;
+}
 
-  return parts.join(' ');
+function stripTagsAndDecode(cleanedHtml: string): string {
+  const text = cleanedHtml.replace(tagRe, ' ');
+  return decodeEntities(text);
+}
+
+/**
+ * Fast extraction of visible text content from HTML source.
+ * Used as a lightweight alternative to full font-tracer for pages
+ * that share the same CSS configuration as an already-traced page.
+ *
+ * Pipeline:
+ *   1. Collect hidden-input values (for exclusion)
+ *   2. Strip invisible blocks + comments
+ *   3. Extract text-bearing attributes from cleaned HTML
+ *   4. Strip remaining tags and decode entities
+ */
+function extractVisibleText(html: string): string {
+  if (!html) return '';
+  resetGlobalRegexes();
+
+  // Stage 1: identify hidden-input values (on original HTML, since
+  // hidden inputs are visible elements whose values we want to exclude)
+  const hiddenInputValues = collectHiddenInputValues(html);
+
+  // Stage 2: remove invisible content
+  const cleaned = stripInvisible(html);
+
+  // Stage 3: extract attributes from cleaned HTML (not original!)
+  const attrTexts = extractAttributes(cleaned, hiddenInputValues);
+
+  // Stage 4: strip tags and decode remaining text content
+  const bodyText = stripTagsAndDecode(cleaned);
+
+  return [...attrTexts, bodyText].join(' ');
 }
 
 interface ExtractVisibleText {
