@@ -91,10 +91,11 @@ function doConvert(
       if (settled) return;
       settled = true;
       cleanup();
-      _idleWorkers.push(worker);
       if (msg.type === 'result' && msg.buffer) {
+        _idleWorkers.push(worker);
         resolve(Buffer.from(msg.buffer));
       } else {
+        discardWorker(worker);
         reject(
           new Error(msg.error || `Font conversion to ${targetFormat} failed`)
         );

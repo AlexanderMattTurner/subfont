@@ -15,6 +15,7 @@ function injectSubsetDefinitions(
     let lastFontFamilyTokenIndex = i;
     if (node.type === 'string') {
       possibleFontFamily = node.value;
+      isPrecededByWords = false;
     } else if (node.type === 'word' || node.type === 'space') {
       if (!isPrecededByWords) {
         const wordSequence: string[] = [];
