@@ -54,6 +54,28 @@ describe('subsetFonts core subsetting logic', function () {
     expect(fontInfo, 'to have length', 1);
   });
 
+  it('should warn (not throw) when @font-face declarations sharing family/style/weight have a missing unicode-range', async function () {
+    httpception();
+
+    const warnings = [];
+    const assetGraph = createGraph('font-face-missing-unicode-range');
+    assetGraph.on('warn', function (warning) {
+      warnings.push(warning);
+    });
+    await loadAndPopulate(assetGraph, 'index.html', { crossorigin: false });
+    const { fontInfo } = await subsetFontsWithTestDefaults(assetGraph);
+
+    expect(fontInfo, 'to have length', 1);
+    expect(
+      warnings.map((w) => w.message),
+      'to have an item satisfying',
+      expect
+        .it('to contain', 'missing unicode-range')
+        .and('to contain', 'Roboto Slab')
+        .and('to contain', 'U+0-10FFFF')
+    );
+  });
+
   it('should emit a warning when subsetting invalid fonts', async function () {
     httpception();
 
