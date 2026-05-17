@@ -140,7 +140,10 @@ async function initPool(): Promise<void> {
         );
       }
       await Promise.all(instantiations);
-    })();
+    })().catch((err: Error) => {
+      _poolReady = undefined;
+      throw err;
+    });
   }
   return _poolReady;
 }
