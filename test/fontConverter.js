@@ -1,5 +1,5 @@
 const expect = require('unexpected');
-const { convert } = require('../lib/fontConverter');
+const { convert, destroy } = require('../lib/fontConverter');
 const fs = require('fs');
 const pathModule = require('path');
 
@@ -51,5 +51,21 @@ describe('fontConverter', function () {
       expect(result, 'to be a', Buffer);
       expect(result.length, 'to equal', results[0].length);
     }
+  });
+
+  it('should produce deterministic output for the same input', async function () {
+    const result1 = await convert(woff2Font, 'sfnt');
+    const result2 = await convert(woff2Font, 'sfnt');
+    expect(result1.equals(result2), 'to be true');
+  });
+
+  describe('destroy', function () {
+    it('should terminate workers and allow subsequent conversions', async function () {
+      await convert(woff2Font, 'sfnt');
+      await destroy();
+      const result = await convert(woff2Font, 'sfnt');
+      expect(result, 'to be a', Buffer);
+      expect(result.length, 'to be greater than', 0);
+    });
   });
 });

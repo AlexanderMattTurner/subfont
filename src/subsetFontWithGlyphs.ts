@@ -105,9 +105,14 @@ function compileModule(): Promise<WebAssembly.Module> {
   if (!_compilePromise) {
     // Assign the promise synchronously so concurrent callers share it
     // (an async function would await readFile before the assignment).
-    _compilePromise = readFile(
-      require.resolve('harfbuzzjs/hb-subset.wasm')
-    ).then((buf) => WebAssembly.compile(buf));
+    // On failure, clear the cached promise so a retry can attempt
+    // compilation again rather than perpetually returning the rejection.
+    _compilePromise = readFile(require.resolve('harfbuzzjs/hb-subset.wasm'))
+      .then((buf) => WebAssembly.compile(buf))
+      .catch((err: Error) => {
+        _compilePromise = undefined;
+        throw err;
+      });
   }
   return _compilePromise;
 }

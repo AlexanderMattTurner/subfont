@@ -1197,7 +1197,10 @@ async function collectTextsByPage(
   const stylesheetRelsByFromAsset = indexStylesheetRelations(assetGraph);
 
   const headlessBrowser: HeadlessBrowser | null = dynamic
-    ? new HeadlessBrowser({ console: console as Console, chromeArgs })
+    ? new HeadlessBrowser({
+        console: console ?? globalThis.console,
+        chromeArgs,
+      })
     : null;
   const globalTextByProps: TextByPropsEntry[] = [];
   const subTimings: Record<string, number | undefined> = {};

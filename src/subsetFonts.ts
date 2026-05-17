@@ -318,15 +318,16 @@ async function getOrCreateSubsetCssAsset({
       .map((prop) =>
         fontRelation.node.nodes?.find((decl) => decl.prop === prop)
       )
-      .map((decl) => decl?.value as string);
+      .map((decl) => decl?.value ?? '');
 
-    const fontWeightRangeStr = nameProps[1]
+    const fontWeightRangeStr = (nameProps[1] || 'normal')
       .split(/\s+/)
       .map((token: string) => normalizeFontPropertyValue('font-weight', token))
       .join('_');
-    const fileNamePrefix = `${unquote(
-      cssFontParser.parseFontFamily(nameProps[0])[0]
-    )
+    const parsedFamily = cssFontParser.parseFontFamily(
+      nameProps[0] || 'unknown'
+    );
+    const fileNamePrefix = `${unquote(parsedFamily[0] ?? 'unknown')
       .replace(/__subset$/, '')
       .replace(/[^a-z0-9_-]/gi, '_')}-${fontWeightRangeStr}${
       nameProps[2] === 'italic' ? 'i' : ''
@@ -701,21 +702,24 @@ function injectSubsetFontFamilies(
       const fontFamilies = cssListHelpers.splitByCommas(
         element.getAttribute('font-family')
       );
-      for (let i = 0; i < fontFamilies.length; i += 1) {
-        const subsetFontFamily =
-          webfontNameMap[
-            cssFontParser.parseFontFamily(fontFamilies[i])[0].toLowerCase()
-          ];
+      const updatedFamilies: string[] = [];
+      let modified = false;
+      for (const family of fontFamilies) {
+        const parsed = cssFontParser.parseFontFamily(family)[0];
+        const subsetFontFamily = parsed
+          ? webfontNameMap[parsed.toLowerCase()]
+          : undefined;
         if (subsetFontFamily && !fontFamilies.includes(subsetFontFamily)) {
-          fontFamilies.splice(
-            i,
-            omitFallbacks ? 1 : 0,
-            maybeCssQuote(subsetFontFamily)
-          );
-          i += 1;
-          element.setAttribute('font-family', fontFamilies.join(', '));
-          changesMade = true;
+          updatedFamilies.push(maybeCssQuote(subsetFontFamily));
+          if (!omitFallbacks) updatedFamilies.push(family);
+          modified = true;
+        } else {
+          updatedFamilies.push(family);
         }
+      }
+      if (modified) {
+        element.setAttribute('font-family', updatedFamilies.join(', '));
+        changesMade = true;
       }
     }
     if (changesMade) {
@@ -764,21 +768,24 @@ function injectSubsetFontFamilies(
         }
       } else if (propName === 'font-family') {
         const fontFamilies = cssListHelpers.splitByCommas(cssRule.value);
-        for (let i = 0; i < fontFamilies.length; i += 1) {
-          const subsetFontFamily =
-            webfontNameMap[
-              cssFontParser.parseFontFamily(fontFamilies[i])[0].toLowerCase()
-            ];
+        const updatedFamilies: string[] = [];
+        let familyModified = false;
+        for (const family of fontFamilies) {
+          const parsed = cssFontParser.parseFontFamily(family)[0];
+          const subsetFontFamily = parsed
+            ? webfontNameMap[parsed.toLowerCase()]
+            : undefined;
           if (subsetFontFamily && !fontFamilies.includes(subsetFontFamily)) {
-            fontFamilies.splice(
-              i,
-              omitFallbacks ? 1 : 0,
-              maybeCssQuote(subsetFontFamily)
-            );
-            i += 1;
-            cssRule.value = fontFamilies.join(', ');
-            changesMade = true;
+            updatedFamilies.push(maybeCssQuote(subsetFontFamily));
+            if (!omitFallbacks) updatedFamilies.push(family);
+            familyModified = true;
+          } else {
+            updatedFamilies.push(family);
           }
+        }
+        if (familyModified) {
+          cssRule.value = updatedFamilies.join(', ');
+          changesMade = true;
         }
       } else if (propName === 'font') {
         const fontProperties = cssFontParser.parseFont(cssRule.value);
