@@ -21,6 +21,8 @@ export function toSfnt(buffer: FontBuffer): Promise<FontBuffer> {
       promise = fontverter.convert(buffer, 'sfnt');
     }
   } catch {
+    // detectFormat throws on corrupt/unrecognized buffers — fall back to
+    // the worker pool which has its own format detection.
     promise = convert(buffer, 'sfnt');
   }
   // Evict on rejection so retries with the same buffer aren't stuck.

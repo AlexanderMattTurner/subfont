@@ -25,9 +25,9 @@ function unquote(str: string): string {
       singleQuoted: string | undefined,
       doubleQuoted: string | undefined
     ) =>
-      typeof singleQuoted === 'string'
+      singleQuoted !== undefined
         ? unescapeCssString(singleQuoted.replace(/\\'/g, "'"))
-        : unescapeCssString((doubleQuoted as string).replace(/\\"/g, '"'))
+        : unescapeCssString((doubleQuoted ?? '').replace(/\\"/g, '"'))
   );
 }
 

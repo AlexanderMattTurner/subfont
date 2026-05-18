@@ -8,6 +8,7 @@ import fontSnapper = require('font-snapper');
 import HeadlessBrowser = require('./HeadlessBrowser');
 import FontTracerPool = require('./FontTracerPool');
 import gatherStylesheetsWithPredicates = require('./gatherStylesheetsWithPredicates');
+import { MAX_POOL_SIZE } from './concurrencyLimit';
 import * as cssFontParser from 'css-font-parser';
 import unquote = require('./unquote');
 import normalizeFontPropertyValue = require('./normalizeFontPropertyValue');
@@ -475,10 +476,12 @@ async function tracePages(
   });
 
   if (useWorkerPool) {
+    // Explicit --concurrency overrides the default cap (subfont.ts warns
+    // when it exceeds the memory-based estimate).
     const maxWorkers =
       concurrency && concurrency > 0
         ? concurrency
-        : Math.min(os.cpus().length, 8);
+        : Math.min(os.cpus().length, MAX_POOL_SIZE);
     const numWorkers = Math.min(maxWorkers, totalPages);
     const pool = new FontTracerPool(numWorkers);
     await pool.init();
@@ -613,11 +616,13 @@ function planFastPathPages(fastPathPages: PageData[]): FastPathPlan {
         entry.props['font-style'] || '',
         entry.props['font-stretch'] || ''
       );
-      if (!uniquePropsMap.has(propsKey)) {
+      let texts = textPerPropsKey.get(propsKey);
+      if (!texts) {
         uniquePropsMap.set(propsKey, entry.props);
-        textPerPropsKey.set(propsKey, []);
+        texts = [];
+        textPerPropsKey.set(propsKey, texts);
       }
-      (textPerPropsKey.get(propsKey) as string[]).push(entry.text);
+      texts.push(entry.text);
       if (family) {
         const weight = entry.props['font-weight'] || 'normal';
         const style = entry.props['font-style'] || 'normal';

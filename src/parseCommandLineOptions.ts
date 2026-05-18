@@ -1,10 +1,9 @@
-import os = require('os');
 // yargs is exported as a callable/chainable singleton; the typings only
 // expose half of that shape, so this union (and the cast below) keeps the
 // runtime API ergonomics without leaking `unknown` everywhere.
 import yargsModule = require('yargs');
 import type { Argv } from 'yargs';
-import { getMaxConcurrency } from './concurrencyLimit';
+import { getMaxConcurrency, MAX_POOL_SIZE } from './concurrencyLimit';
 
 interface YargsLib extends Argv {
   (argv: string[]): Argv;
@@ -135,18 +134,13 @@ function registerExecutionOptions(y: Argv, maxConcurrency: number): Argv {
       },
     })
     .options('concurrency', {
-      describe: `Maximum number of worker threads for parallel font tracing. Defaults to the number of CPU cores (max 8). Upper bound: ${maxConcurrency} (based on free memory and CPU count)`,
+      describe: `Maximum number of worker threads for parallel font tracing. Defaults to the number of CPU cores (max ${MAX_POOL_SIZE}). Values above the estimated safe limit (${maxConcurrency}) will produce a warning`,
       type: 'number',
     })
     .check((argv: { concurrency?: number }) => {
       if (argv.concurrency !== undefined) {
         if (!Number.isInteger(argv.concurrency) || argv.concurrency < 1) {
           throw new Error('--concurrency must be a positive integer');
-        }
-        if (argv.concurrency > maxConcurrency) {
-          throw new Error(
-            `--concurrency must not exceed ${maxConcurrency} (each worker uses ~50 MB; ${Math.round(os.freemem() / (1024 * 1024 * 1024))} GB free, ${os.cpus().length} CPUs)`
-          );
         }
       }
       return true;

@@ -3,6 +3,7 @@ import { readFile } from 'fs/promises';
 import * as fontverter from 'fontverter';
 import { toSfnt } from './sfntCache';
 import { convert as convertInWorker } from './fontConverter';
+import { MAX_POOL_SIZE } from './concurrencyLimit';
 
 // hb_subset_sets_t enum values — https://github.com/harfbuzz/harfbuzz/blob/main/src/hb-subset.h
 const HB_SUBSET_SETS_GLYPH_INDEX = 0;
@@ -119,7 +120,7 @@ function compileModule(): Promise<WebAssembly.Module> {
 
 const _pool: PoolInstance[] = [];
 let _poolReady: Promise<void> | undefined;
-const POOL_SIZE = Math.max(1, Math.min(os.cpus().length, 8));
+const POOL_SIZE = Math.max(1, Math.min(os.cpus().length, MAX_POOL_SIZE));
 
 async function initPool(): Promise<void> {
   if (!_poolReady) {
@@ -371,10 +372,10 @@ function configureUnicodeCodepoints(
   const nfc = text.normalize('NFC');
   const nfd = text.normalize('NFD');
   for (const c of nfc) {
-    exports.hb_set_add(inputUnicodes, c.codePointAt(0) as number);
+    exports.hb_set_add(inputUnicodes, c.codePointAt(0)!);
   }
   for (const c of nfd) {
-    exports.hb_set_add(inputUnicodes, c.codePointAt(0) as number);
+    exports.hb_set_add(inputUnicodes, c.codePointAt(0)!);
   }
 }
 

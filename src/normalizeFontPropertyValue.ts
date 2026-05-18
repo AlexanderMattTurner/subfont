@@ -40,7 +40,7 @@ function normalizeFontPropertyValue(
     return initialValueByProp[propNameLowerCase];
   }
   if (propNameLowerCase === 'font-family') {
-    return unquote(value as string);
+    return unquote(String(value));
   } else if (propNameLowerCase === 'font-weight') {
     let parsedValue: string | number = value;
     if (typeof parsedValue === 'string') {

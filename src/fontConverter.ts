@@ -1,10 +1,11 @@
 import pathModule = require('path');
 import os = require('os');
 import { Worker } from 'worker_threads';
+import { MAX_POOL_SIZE } from './concurrencyLimit';
 
 const workerPath = pathModule.join(__dirname, 'fontConverterWorker.js');
 const CONVERT_TIMEOUT_MS = 120_000;
-const POOL_SIZE = Math.max(1, Math.min(os.cpus().length, 8));
+const POOL_SIZE = Math.max(1, Math.min(os.cpus().length, MAX_POOL_SIZE));
 
 interface WorkerMessage {
   type: 'result' | 'error';
