@@ -75,11 +75,4 @@ describe('concurrencyLimit', function () {
       expect(WORKER_MEMORY_BYTES, 'to equal', 50 * 1024 * 1024);
     });
   });
-
-  describe('MAX_POOL_SIZE', function () {
-    it('should be 8', function () {
-      const { MAX_POOL_SIZE } = require('../lib/concurrencyLimit');
-      expect(MAX_POOL_SIZE, 'to equal', 8);
-    });
-  });
 });

@@ -476,6 +476,8 @@ async function tracePages(
   });
 
   if (useWorkerPool) {
+    // Explicit --concurrency overrides the default cap (subfont.ts warns
+    // when it exceeds the memory-based estimate).
     const maxWorkers =
       concurrency && concurrency > 0
         ? concurrency
