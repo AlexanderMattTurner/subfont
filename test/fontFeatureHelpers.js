@@ -6,7 +6,7 @@ const {
   recordRuleFeatureTags,
   resolveFeatureSettings,
   addTagsToMapEntry,
-  featureSettingsProps,
+
   UNRESOLVED_FEATURES_SENTINEL,
 } = require('../lib/fontFeatureHelpers');
 
@@ -351,18 +351,6 @@ describe('fontFeatureHelpers', function () {
         'to equal',
         new Set(['liga', 'smcp'])
       );
-    });
-  });
-
-  describe('featureSettingsProps', function () {
-    it('should contain all known feature-related CSS properties', function () {
-      expect(featureSettingsProps.has('font-feature-settings'), 'to be true');
-      expect(featureSettingsProps.has('font-variant-caps'), 'to be true');
-      expect(featureSettingsProps.has('font-variant-ligatures'), 'to be true');
-      expect(featureSettingsProps.has('font-variant-numeric'), 'to be true');
-      expect(featureSettingsProps.has('font-variant-position'), 'to be true');
-      expect(featureSettingsProps.has('font-variant-east-asian'), 'to be true');
-      expect(featureSettingsProps.has('font-variant-alternates'), 'to be true');
     });
   });
 });

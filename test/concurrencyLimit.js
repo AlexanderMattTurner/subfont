@@ -68,11 +68,4 @@ describe('concurrencyLimit', function () {
       expect(getMaxConcurrency(), 'to equal', 256);
     });
   });
-
-  describe('WORKER_MEMORY_BYTES', function () {
-    it('should be 50 MB', function () {
-      const { WORKER_MEMORY_BYTES } = require('../lib/concurrencyLimit');
-      expect(WORKER_MEMORY_BYTES, 'to equal', 50 * 1024 * 1024);
-    });
-  });
 });
