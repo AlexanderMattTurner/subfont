@@ -22,20 +22,8 @@ interface ParseResult {
   [key: string]: unknown;
 }
 
-function parseCommandLineOptions(argv?: string[]): ParseResult {
-  let y: Argv = yargsLib;
-  if (argv) {
-    y = yargsLib(argv);
-  }
-
-  const maxConcurrency = getMaxConcurrency();
-
-  const { version } = require('../package.json');
-
-  y.usage(
-    'Create optimal font subsets from your actual font usage.\n$0 [options] <htmlFile(s) | url(s)>'
-  )
-    .version(version)
+function registerPathOptions(y: Argv): Argv {
+  return y
     .options('root', {
       describe:
         'Path to your web root (will be deduced from your input files if not specified)',
@@ -55,7 +43,11 @@ function parseCommandLineOptions(argv?: string[]): ParseResult {
       describe:
         'Additional characters to include in the subset for every @font-face found on the page',
       type: 'string',
-    })
+    });
+}
+
+function registerBehaviorOptions(y: Argv): Argv {
+  return y
     .options('fallbacks', {
       describe:
         'Async-load the full original font as a fallback for dynamic content. Disable with --no-fallbacks',
@@ -96,7 +88,11 @@ function parseCommandLineOptions(argv?: string[]): ParseResult {
       describe: 'Issue relative urls instead of root-relative ones',
       type: 'boolean',
       default: false,
-    })
+    });
+}
+
+function registerLoggingOptions(y: Argv): Argv {
+  return y
     .options('silent', {
       alias: 's',
       describe: `Do not write anything to stdout`,
@@ -113,7 +109,11 @@ function parseCommandLineOptions(argv?: string[]): ParseResult {
       describe: `Don't write anything to disk. Shows a preview of files, sizes, and CSS changes that would be made`,
       type: 'boolean',
       default: false,
-    })
+    });
+}
+
+function registerExecutionOptions(y: Argv, maxConcurrency: number): Argv {
+  return y
     .options('cache', {
       describe:
         'Enable disk caching of subset font results between runs. Pass a directory path or use without a value for the default .subfont-cache directory',
@@ -161,12 +161,30 @@ function parseCommandLineOptions(argv?: string[]): ParseResult {
         'Exit with a non-zero status code if any warnings are emitted during the run',
       type: 'boolean',
       default: false,
-    })
-    .wrap(yargsLib.terminalWidth());
+    });
+}
+
+function parseCommandLineOptions(argv?: string[]): ParseResult {
+  let y: Argv = yargsLib;
+  if (argv) {
+    y = yargsLib(argv);
+  }
+
+  const maxConcurrency = getMaxConcurrency();
+  const { version } = require('../package.json');
+
+  y.usage(
+    'Create optimal font subsets from your actual font usage.\n$0 [options] <htmlFile(s) | url(s)>'
+  ).version(version);
+  registerPathOptions(y);
+  registerBehaviorOptions(y);
+  registerLoggingOptions(y);
+  registerExecutionOptions(y, maxConcurrency);
+  y.wrap(yargsLib.terminalWidth());
 
   // Yargs returns an opaque shape; the runtime payload is positionals plus
-  // arbitrary string-keyed flag values. eslint-disable-next-line —
-  // `unknown` is the right type for "anything yargs handed back".
+  // arbitrary string-keyed flag values. `unknown` is the right type for
+  // "anything yargs handed back".
   // eslint-disable-next-line no-restricted-syntax
   type ParsedArgv = { _: Array<string | number> } & Record<string, unknown>;
   const parsed = y.argv as ParsedArgv;

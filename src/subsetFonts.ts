@@ -669,56 +669,66 @@ async function computeCodepoints(
   }
 }
 
-// Inject __subset font-family names into CSS declarations and SVG attributes
-// so the browser picks up the subset fonts instead of the originals.
-function injectSubsetFontFamilies(
-  assetGraph: AssetGraph,
-  htmlOrSvgAssetTextsWithProps: AssetTextWithProps[],
-  omitFallbacks: boolean
-): void {
+function buildWebfontNameMap(
+  htmlOrSvgAssetTextsWithProps: AssetTextWithProps[]
+): Record<string, string> {
   const webfontNameMap: Record<string, string> = Object.create(null);
   for (const { fontUsages } of htmlOrSvgAssetTextsWithProps) {
     for (const { subsets, fontFamilies, props } of fontUsages) {
-      if (subsets) {
-        for (const fontFamily of fontFamilies) {
-          webfontNameMap[fontFamily.toLowerCase()] =
-            `${props['font-family']}__subset`;
-        }
+      if (!subsets) continue;
+      for (const fontFamily of fontFamilies) {
+        webfontNameMap[fontFamily.toLowerCase()] =
+          `${props['font-family']}__subset`;
       }
     }
   }
+  return webfontNameMap;
+}
 
-  let customPropertyDefinitions:
-    | ReturnType<typeof findCustomPropertyDefinitions>
-    | undefined;
-  const cssAssetsDirtiedByCustomProps = new Set<Asset>();
+// Rewrites a comma-separated font-family list to prepend the matching
+// __subset family. Returns null if no change was needed.
+function rewriteFontFamilyList(
+  value: string,
+  webfontNameMap: Record<string, string>,
+  omitFallbacks: boolean
+): string | null {
+  const fontFamilies = cssListHelpers.splitByCommas(value);
+  const updatedFamilies: string[] = [];
+  let modified = false;
+  for (const family of fontFamilies) {
+    const parsed = cssFontParser.parseFontFamily(family)[0];
+    const subsetFontFamily = parsed
+      ? webfontNameMap[parsed.toLowerCase()]
+      : undefined;
+    if (subsetFontFamily && !fontFamilies.includes(subsetFontFamily)) {
+      updatedFamilies.push(maybeCssQuote(subsetFontFamily));
+      if (!omitFallbacks) updatedFamilies.push(family);
+      modified = true;
+    } else {
+      updatedFamilies.push(family);
+    }
+  }
+  return modified ? updatedFamilies.join(', ') : null;
+}
 
+function injectSubsetIntoSvgAssets(
+  assetGraph: AssetGraph,
+  webfontNameMap: Record<string, string>,
+  omitFallbacks: boolean
+): void {
   for (const svgAsset of assetGraph.findAssets({ type: 'Svg' })) {
     if (!svgAsset.isLoaded) continue;
     let changesMade = false;
     for (const element of Array.from(
       svgAsset.parseTree.querySelectorAll('[font-family]')
     )) {
-      const fontFamilies = cssListHelpers.splitByCommas(
-        element.getAttribute('font-family')
+      const updated = rewriteFontFamilyList(
+        element.getAttribute('font-family'),
+        webfontNameMap,
+        omitFallbacks
       );
-      const updatedFamilies: string[] = [];
-      let modified = false;
-      for (const family of fontFamilies) {
-        const parsed = cssFontParser.parseFontFamily(family)[0];
-        const subsetFontFamily = parsed
-          ? webfontNameMap[parsed.toLowerCase()]
-          : undefined;
-        if (subsetFontFamily && !fontFamilies.includes(subsetFontFamily)) {
-          updatedFamilies.push(maybeCssQuote(subsetFontFamily));
-          if (!omitFallbacks) updatedFamilies.push(family);
-          modified = true;
-        } else {
-          updatedFamilies.push(family);
-        }
-      }
-      if (modified) {
-        element.setAttribute('font-family', updatedFamilies.join(', '));
+      if (updated !== null) {
+        element.setAttribute('font-family', updated);
         changesMade = true;
       }
     }
@@ -726,104 +736,136 @@ function injectSubsetFontFamilies(
       svgAsset.markDirty();
     }
   }
+}
 
+function rewriteFontShorthand(
+  value: string,
+  webfontNameMap: Record<string, string>,
+  omitFallbacks: boolean
+): string | null {
+  const fontProperties = cssFontParser.parseFont(value);
+  const fontFamilies =
+    fontProperties && fontProperties['font-family'].map(unquote);
+  if (!fontFamilies || fontFamilies.length === 0) return null;
+
+  const subsetFontFamily = webfontNameMap[fontFamilies[0].toLowerCase()];
+  if (!subsetFontFamily || fontFamilies.includes(subsetFontFamily)) {
+    return null;
+  }
+
+  if (omitFallbacks) {
+    fontFamilies.shift();
+  }
+  fontFamilies.unshift(subsetFontFamily);
+  const stylePrefix = fontProperties['font-style']
+    ? `${fontProperties['font-style']} `
+    : '';
+  const weightPrefix = fontProperties['font-weight']
+    ? `${fontProperties['font-weight']} `
+    : '';
+  const lineHeightSuffix = fontProperties['line-height']
+    ? `/${fontProperties['line-height']}`
+    : '';
+  return `${stylePrefix}${weightPrefix}${
+    fontProperties['font-size']
+  }${lineHeightSuffix} ${fontFamilies.map(maybeCssQuote).join(', ')}`;
+}
+
+function injectSubsetIntoCssAssets(
+  assetGraph: AssetGraph,
+  webfontNameMap: Record<string, string>,
+  omitFallbacks: boolean
+): void {
   const cssAssets = assetGraph.findAssets({ type: 'Css', isLoaded: true });
   const parseTreeToAsset = new Map<Asset['parseTree'], Asset>();
   for (const cssAsset of cssAssets) {
     parseTreeToAsset.set(cssAsset.parseTree, cssAsset);
   }
+  const cssAssetsDirtiedByCustomProps = new Set<Asset>();
+
+  // Lazy: findCustomPropertyDefinitions walks every CSS asset's parse tree.
+  // Skip the work entirely when no rule references var(); pay it once on the
+  // first hit.
+  let customPropertyDefinitions:
+    | ReturnType<typeof findCustomPropertyDefinitions>
+    | undefined;
+  const injectVarRule = (cssRule: {
+    value: string;
+    root(): Asset['parseTree'];
+  }): void => {
+    if (!customPropertyDefinitions) {
+      customPropertyDefinitions = findCustomPropertyDefinitions(cssAssets);
+    }
+    for (const customPropertyName of extractReferencedCustomPropertyNames(
+      cssRule.value
+    )) {
+      for (const relatedCssRule of [
+        cssRule,
+        ...(customPropertyDefinitions[customPropertyName] || []),
+      ]) {
+        const modifiedValue = injectSubsetDefinitions(
+          relatedCssRule.value,
+          webfontNameMap,
+          omitFallbacks
+        );
+        if (modifiedValue === relatedCssRule.value) continue;
+        relatedCssRule.value = modifiedValue;
+        const ownerAsset = parseTreeToAsset.get(relatedCssRule.root());
+        if (ownerAsset) cssAssetsDirtiedByCustomProps.add(ownerAsset);
+      }
+    }
+  };
+
   for (const cssAsset of cssAssets) {
     let changesMade = false;
     cssAsset.eachRuleInParseTree((cssRule) => {
       if (cssRule.parent.type !== 'rule' || cssRule.type !== 'decl') return;
-
       const propName = cssRule.prop.toLowerCase();
       if (
         (propName === 'font' || propName === 'font-family') &&
         cssRule.value.includes('var(')
       ) {
-        if (!customPropertyDefinitions) {
-          customPropertyDefinitions = findCustomPropertyDefinitions(cssAssets);
-        }
-        for (const customPropertyName of extractReferencedCustomPropertyNames(
-          cssRule.value
-        )) {
-          for (const relatedCssRule of [
-            cssRule,
-            ...(customPropertyDefinitions[customPropertyName] || []),
-          ]) {
-            const modifiedValue = injectSubsetDefinitions(
-              relatedCssRule.value,
-              webfontNameMap,
-              omitFallbacks
-            );
-            if (modifiedValue !== relatedCssRule.value) {
-              relatedCssRule.value = modifiedValue;
-              const ownerAsset = parseTreeToAsset.get(relatedCssRule.root());
-              if (ownerAsset) {
-                cssAssetsDirtiedByCustomProps.add(ownerAsset);
-              }
-            }
-          }
-        }
+        injectVarRule(cssRule);
       } else if (propName === 'font-family') {
-        const fontFamilies = cssListHelpers.splitByCommas(cssRule.value);
-        const updatedFamilies: string[] = [];
-        let familyModified = false;
-        for (const family of fontFamilies) {
-          const parsed = cssFontParser.parseFontFamily(family)[0];
-          const subsetFontFamily = parsed
-            ? webfontNameMap[parsed.toLowerCase()]
-            : undefined;
-          if (subsetFontFamily && !fontFamilies.includes(subsetFontFamily)) {
-            updatedFamilies.push(maybeCssQuote(subsetFontFamily));
-            if (!omitFallbacks) updatedFamilies.push(family);
-            familyModified = true;
-          } else {
-            updatedFamilies.push(family);
-          }
-        }
-        if (familyModified) {
-          cssRule.value = updatedFamilies.join(', ');
+        const updated = rewriteFontFamilyList(
+          cssRule.value,
+          webfontNameMap,
+          omitFallbacks
+        );
+        if (updated !== null) {
+          cssRule.value = updated;
           changesMade = true;
         }
       } else if (propName === 'font') {
-        const fontProperties = cssFontParser.parseFont(cssRule.value);
-        const fontFamilies =
-          fontProperties && fontProperties['font-family'].map(unquote);
-        if (!fontFamilies || fontFamilies.length === 0) return;
-
-        const subsetFontFamily = webfontNameMap[fontFamilies[0].toLowerCase()];
-        if (!subsetFontFamily || fontFamilies.includes(subsetFontFamily))
-          return;
-
-        if (omitFallbacks) {
-          fontFamilies.shift();
+        const updated = rewriteFontShorthand(
+          cssRule.value,
+          webfontNameMap,
+          omitFallbacks
+        );
+        if (updated !== null) {
+          cssRule.value = updated;
+          changesMade = true;
         }
-        fontFamilies.unshift(subsetFontFamily);
-        const stylePrefix = fontProperties['font-style']
-          ? `${fontProperties['font-style']} `
-          : '';
-        const weightPrefix = fontProperties['font-weight']
-          ? `${fontProperties['font-weight']} `
-          : '';
-        const lineHeightSuffix = fontProperties['line-height']
-          ? `/${fontProperties['line-height']}`
-          : '';
-        cssRule.value = `${stylePrefix}${weightPrefix}${
-          fontProperties['font-size']
-        }${lineHeightSuffix} ${fontFamilies.map(maybeCssQuote).join(', ')}`;
-        changesMade = true;
       }
     });
-    if (changesMade) {
-      cssAsset.markDirty();
-    }
+    if (changesMade) cssAsset.markDirty();
   }
 
   for (const dirtiedAsset of cssAssetsDirtiedByCustomProps) {
     dirtiedAsset.markDirty();
   }
+}
+
+// Inject __subset font-family names into CSS declarations and SVG attributes
+// so the browser picks up the subset fonts instead of the originals.
+function injectSubsetFontFamilies(
+  assetGraph: AssetGraph,
+  htmlOrSvgAssetTextsWithProps: AssetTextWithProps[],
+  omitFallbacks: boolean
+): void {
+  const webfontNameMap = buildWebfontNameMap(htmlOrSvgAssetTextsWithProps);
+  injectSubsetIntoSvgAssets(assetGraph, webfontNameMap, omitFallbacks);
+  injectSubsetIntoCssAssets(assetGraph, webfontNameMap, omitFallbacks);
 }
 
 interface InsertSubsetsArgs {
@@ -1082,208 +1124,108 @@ interface SubsetFontsResult {
   timings: SubsetFontsTimings;
 }
 
-async function subsetFonts(
-  assetGraph: AssetGraph,
-  {
-    formats = ['woff2'],
-    subsetPath = 'subfont/',
-    omitFallbacks = false,
-    inlineCss = false,
-    fontDisplay,
-    hrefType = 'rootRelative',
-    onlyInfo,
-    dynamic,
-    console = global.console,
-    text,
-    sourceMaps = false,
-    debug = false,
-    concurrency,
-    chromeArgs = [],
-    cacheDir = null,
-  }: SubsetFontsOptions = {}
-): Promise<SubsetFontsResult> {
-  if (fontDisplay && !validFontDisplayValues.includes(fontDisplay)) {
-    fontDisplay = undefined;
+// Walk up the postcss ancestor chain to find the @media query enclosing
+// a rule (if any). Returns the empty string for rules outside any @media.
+function findEnclosingMediaQuery(rule: PostCssNode): string {
+  let ancestor: PostCssNode | undefined = rule.parent;
+  while (ancestor) {
+    if (
+      ancestor.type === 'atrule' &&
+      ancestor.name?.toLowerCase() === 'media'
+    ) {
+      return ancestor.params ?? '';
+    }
+    ancestor = ancestor.parent;
   }
+  return '';
+}
 
-  // Pre-warm the WASM pool: start compiling harfbuzz WASM while
-  // collectTextsByPage traces fonts. Compilation (~50-200ms) overlaps
-  // with tracing work rather than appearing on the critical path.
-  subsetFontWithGlyphs.warmup().catch((err) => {
-    if (debug) {
-      console.warn(
-        'WASM warmup failed (will retry on first subset call):',
-        err
+// Group @font-face rules by their enclosing @media context so the fallback
+// CSS preserves the original media-conditional loading.
+function buildFallbackCssText(
+  containedRelationsByFontFaceRule: Map<PostCssNode, Relation[]>
+): string {
+  const rulesByMedia = new Map<string, string[]>();
+  for (const rule of containedRelationsByFontFaceRule.keys()) {
+    const mediaKey = findEnclosingMediaQuery(rule);
+    if (!rulesByMedia.has(mediaKey)) rulesByMedia.set(mediaKey, []);
+    rulesByMedia
+      .get(mediaKey)!
+      .push(
+        getFontFaceDeclarationText(
+          rule,
+          containedRelationsByFontFaceRule.get(rule) ?? []
+        )
+      );
+  }
+  let fallbackCssText = '';
+  for (const [media, texts] of rulesByMedia) {
+    if (media) {
+      fallbackCssText += `@media ${media}{${texts.join('')}}`;
+    } else {
+      fallbackCssText += texts.join('');
+    }
+  }
+  return fallbackCssText;
+}
+
+// Returns the map of @font-face rule node → sibling relations sharing that
+// rule. As a side effect, adds every retained relation to originalRelations
+// so the caller can later remove the original CSS in one pass.
+function collectFontFaceRelations(
+  accumulatedFontFaceDeclarations: AccumulatedFontFaceDeclaration[],
+  originalRelations: Set<Relation>
+): Map<PostCssNode, Relation[]> {
+  const containedRelationsByFontFaceRule = new Map<PostCssNode, Relation[]>();
+  for (const { relations } of accumulatedFontFaceDeclarations) {
+    for (const relation of relations) {
+      if (
+        // Google Web Fonts handled separately in handleGoogleFontStylesheets
+        (relation.from as Asset & { hostname?: string }).hostname ===
+          'fonts.googleapis.com' ||
+        containedRelationsByFontFaceRule.has(relation.node)
+      ) {
+        continue;
+      }
+      originalRelations.add(relation);
+      containedRelationsByFontFaceRule.set(
+        relation.node,
+        relation.from.outgoingRelations.filter(
+          (otherRelation: Relation) => otherRelation.node === relation.node
+        )
       );
     }
-  });
-
-  const subsetUrl = urltools.ensureTrailingSlash(assetGraph.root + subsetPath);
-
-  const timings: SubsetFontsTimings = {};
-  const trackPhase = makePhaseTracker(console, debug);
-
-  const applySourceMapsPhase = trackPhase('applySourceMaps');
-  if (sourceMaps) {
-    await assetGraph.applySourceMaps({ type: 'Css' });
   }
-  timings.applySourceMaps = applySourceMapsPhase.end();
+  return containedRelationsByFontFaceRule;
+}
 
-  const googlePopulatePhase = trackPhase('populate (google fonts)');
-  const hasGoogleFonts = await populateGoogleFontsIfPresent(assetGraph);
-  timings['populate (google fonts)'] = googlePopulatePhase.end(
-    hasGoogleFonts ? null : 'skipped, no Google Fonts found'
-  );
-
-  const htmlOrSvgAssets = assetGraph.findAssets({
-    $or: [
-      {
-        type: 'Html',
-        isInline: false,
-      },
-      {
-        type: 'Svg',
-      },
-    ],
-  });
-
-  const collectPhase = trackPhase(
-    `collectTextsByPage (${htmlOrSvgAssets.length} pages)`
-  );
+// Lazy load the original @font-face declarations of self-hosted fonts (unless
+// omitFallbacks), and collect references into originalRelations so subsetFonts
+// can remove them after the lazy fallback is in place.
+async function emitLazyFallbackCss(
+  ctx: SubsetCtx,
+  relationsToRemove: Set<Relation>,
+  originalRelations: Set<Relation>
+): Promise<void> {
   const {
-    htmlOrSvgAssetTextsWithProps,
+    assetGraph,
+    htmlOrSvgAssets,
     fontFaceDeclarationsByHtmlOrSvgAsset,
-    subTimings,
-  } = await collectTextsByPage(assetGraph, htmlOrSvgAssets, {
-    text,
-    console,
-    dynamic,
-    debug,
-    concurrency,
-    chromeArgs,
-  });
-  timings.collectTextsByPage = collectPhase.end();
-  timings.collectTextsByPageDetails = subTimings;
-
-  // textByProps is consumed inside collectTextsByPage (see buildPerPageFontUsages)
-  // and never read again by anything in the subsetFonts pipeline; the raw
-  // font-tracer text strings inside scale with #pages and are the largest
-  // per-page artefact at the 1800-page scale. Release them before
-  // computeCodepoints / subsetting / injection so they don't pin heap.
-  for (const entry of htmlOrSvgAssetTextsWithProps) {
-    entry.textByProps = [];
-  }
-
-  const omitFallbacksPhase = trackPhase('omitFallbacks processing');
-  const potentiallyOrphanedAssets = new Set<Asset>();
-  if (omitFallbacks) {
-    removeOriginalFontFaceRules(
-      htmlOrSvgAssets,
-      fontFaceDeclarationsByHtmlOrSvgAsset,
-      potentiallyOrphanedAssets
-    );
-  }
-  timings['omitFallbacks processing'] = omitFallbacksPhase.end();
-
-  // Stage 1 → 2 placeholder: SubsettedFontUsage only adds optional fields
-  // on top of TracedFontUsage, so this upcast is structurally valid even
-  // before getSubsetsForFontUsage runs.
-  const pages: AssetTextWithProps[] = htmlOrSvgAssetTextsWithProps;
-
-  const codepointPhase = trackPhase('codepoint generation');
-  await computeCodepoints(assetGraph, pages, fontDisplay);
-  timings['codepoint generation'] = codepointPhase.end();
-
-  if (onlyInfo) {
-    // Stage 2 hasn't run, but buildFontInfoReport's input only requires
-    // `codepoints` (stage 3) — already attached above. Subset fields are
-    // optional and simply absent here, matching how the report describes
-    // a "no subset created" entry.
-    return {
-      fontInfo: buildFontInfoReport(pages as ReportFontUsageEntry[]),
-      timings,
-    };
-  }
-
-  const variationPhase = trackPhase('variation axis usage');
-  const { seenAxisValuesByFontUrlAndAxisName } = getVariationAxisUsage(
-    pages,
-    parseFontWeightRange,
-    parseFontStretchRange
-  );
-  timings['variation axis usage'] = variationPhase.end();
-
-  // Generate subsets:
-  if (console) {
-    const uniqueFontUrls = countUniqueFontUrls(pages);
-    if (uniqueFontUrls > 0) {
-      console.log(
-        `  Subsetting ${uniqueFontUrls} unique font file${uniqueFontUrls === 1 ? '' : 's'}...`
-      );
-    }
-  }
-  const subsetPhase = trackPhase('getSubsetsForFontUsage');
-  await getSubsetsForFontUsage(
-    assetGraph,
-    pages,
-    formats,
-    seenAxisValuesByFontUrlAndAxisName,
-    cacheDir,
-    console,
-    debug
-  );
-  timings.getSubsetsForFontUsage = subsetPhase.end();
-
-  const warnGlyphsPhase = trackPhase('warnAboutMissingGlyphs');
-  await warnAboutMissingGlyphs(pages, assetGraph);
-  timings.warnAboutMissingGlyphs = warnGlyphsPhase.end();
-
-  // Insert subsets:
-  const insertPhase = trackPhase(`insert subsets loop (${pages.length} pages)`);
-  const { numFontUsagesWithSubset } = await insertSubsets({
-    assetGraph,
-    pages,
-    formats,
-    subsetUrl,
-    hrefType,
-    inlineCss,
     omitFallbacks,
-  });
-  timings['insert subsets loop'] = insertPhase.end();
+    hrefType,
+    subsetUrl,
+  } = ctx;
 
-  if (numFontUsagesWithSubset === 0) {
-    return { fontInfo: [], timings };
-  }
-
-  const lazyFallbackPhase = trackPhase('lazy load fallback CSS');
-  const relationsToRemove = new Set<Relation>();
-
-  // Lazy load the original @font-face declarations of self-hosted fonts (unless omitFallbacks)
-  const originalRelations = new Set<Relation>();
   const fallbackCssAssetCache = new Map<string, Asset>();
   for (const htmlOrSvgAsset of htmlOrSvgAssets) {
     const accumulatedFontFaceDeclarations =
       fontFaceDeclarationsByHtmlOrSvgAsset.get(htmlOrSvgAsset);
     if (!accumulatedFontFaceDeclarations) continue;
-    const containedRelationsByFontFaceRule = new Map<PostCssNode, Relation[]>();
-    for (const { relations } of accumulatedFontFaceDeclarations) {
-      for (const relation of relations) {
-        if (
-          (relation.from as Asset & { hostname?: string }).hostname ===
-            'fonts.googleapis.com' || // Google Web Fonts handled separately below
-          containedRelationsByFontFaceRule.has(relation.node)
-        ) {
-          continue;
-        }
-        originalRelations.add(relation);
-        containedRelationsByFontFaceRule.set(
-          relation.node,
-          relation.from.outgoingRelations.filter(
-            (otherRelation: Relation) => otherRelation.node === relation.node
-          )
-        );
-      }
-    }
+
+    const containedRelationsByFontFaceRule = collectFontFaceRelations(
+      accumulatedFontFaceDeclarations,
+      originalRelations
+    );
 
     if (
       containedRelationsByFontFaceRule.size === 0 ||
@@ -1293,49 +1235,13 @@ async function subsetFonts(
       continue;
     }
 
-    // Group @font-face rules by their enclosing @media context so the
-    // fallback CSS preserves the original media-conditional loading.
-    // Walk up the ancestor chain in case the rule is nested (e.g.
-    // inside @supports inside @media).
-    const rulesByMedia = new Map<string, string[]>();
-    for (const rule of containedRelationsByFontFaceRule.keys()) {
-      let mediaKey = '';
-      let ancestor: PostCssNode | undefined = rule.parent;
-      while (ancestor) {
-        if (
-          ancestor.type === 'atrule' &&
-          ancestor.name?.toLowerCase() === 'media'
-        ) {
-          mediaKey = ancestor.params ?? '';
-          break;
-        }
-        ancestor = ancestor.parent;
-      }
-      if (!rulesByMedia.has(mediaKey)) rulesByMedia.set(mediaKey, []);
-      rulesByMedia
-        .get(mediaKey)!
-        .push(
-          getFontFaceDeclarationText(
-            rule,
-            containedRelationsByFontFaceRule.get(rule) ?? []
-          )
-        );
-    }
-    let fallbackCssText = '';
-    for (const [media, texts] of rulesByMedia) {
-      if (media) {
-        fallbackCssText += `@media ${media}{${texts.join('')}}`;
-      } else {
-        fallbackCssText += texts.join('');
-      }
-    }
+    const fallbackCssText = buildFallbackCssText(
+      containedRelationsByFontFaceRule
+    );
 
     let cssAsset = fallbackCssAssetCache.get(fallbackCssText);
     if (!cssAsset) {
-      cssAsset = assetGraph.addAsset({
-        type: 'Css',
-        text: fallbackCssText,
-      });
+      cssAsset = assetGraph.addAsset({ type: 'Css', text: fallbackCssText });
       for (const relation of cssAsset.outgoingRelations) {
         relation.hrefType = hrefType;
       }
@@ -1344,7 +1250,8 @@ async function subsetFonts(
       fallbackCssAssetCache.set(fallbackCssText, cssAsset);
     }
 
-    // Create a <link rel="stylesheet"> that asyncLoadStyleRelationWithFallback can convert to async with noscript fallback:
+    // Create a <link rel="stylesheet"> that asyncLoadStyleRelationWithFallback
+    // can convert to async with noscript fallback.
     const fallbackHtmlStyle = htmlOrSvgAsset.addRelation({
       type: 'HtmlStyle',
       to: cssAsset,
@@ -1357,14 +1264,16 @@ async function subsetFonts(
     );
     relationsToRemove.add(fallbackHtmlStyle);
   }
-
-  timings['lazy load fallback CSS'] = lazyFallbackPhase.end();
   // Same reasoning as subsetCssAssetCache: keys are full CSS text.
   fallbackCssAssetCache.clear();
+}
 
-  const removeFontFacePhase = trackPhase('remove original @font-face');
-
-  // Remove the original @font-face blocks, and don't leave behind empty stylesheets:
+// Remove the original @font-face blocks, and don't leave behind empty
+// stylesheets.
+function removeOriginalFontFaceRelations(
+  assetGraph: AssetGraph,
+  originalRelations: Set<Relation>
+): void {
   const maybeEmptyCssAssets = new Set<Asset>();
   for (const relation of originalRelations) {
     const cssAsset = relation.from;
@@ -1384,15 +1293,39 @@ async function subsetFonts(
       assetGraph.removeAsset(cssAsset);
     }
   }
+}
 
-  timings['remove original @font-face'] = removeFontFacePhase.end();
+function getHtmlParentsForGoogleFontsRelation(
+  googleFontStylesheetRelation: Relation
+): Asset[] {
+  if (googleFontStylesheetRelation.type === 'CssImport') {
+    return getParents(googleFontStylesheetRelation.to, {
+      type: { $in: ['Html', 'Svg'] },
+      isInline: false,
+      isLoaded: true,
+    });
+  }
+  if (['Html', 'Svg'].includes(googleFontStylesheetRelation.from.type ?? '')) {
+    return [googleFontStylesheetRelation.from];
+  }
+  return [];
+}
 
-  const googleCleanupPhase = trackPhase('Google Fonts + cleanup');
+// Async load Google Web Fonts CSS. Skip the regex findAssets scan and the
+// surrounding loop entirely when no Google Fonts were detected up front.
+async function handleGoogleFontStylesheets(
+  ctx: SubsetCtx,
+  relationsToRemove: Set<Relation>
+): Promise<void> {
+  const {
+    assetGraph,
+    hasGoogleFonts,
+    omitFallbacks,
+    formats,
+    hrefType,
+    subsetUrl,
+  } = ctx;
 
-  // Async load Google Web Fonts CSS.  Skip the regex findAssets scan and
-  // the surrounding loop entirely when no Google Fonts were detected up
-  // front — the final detach loop below still runs because other phases
-  // (lazy fallback CSS) populate relationsToRemove.
   const googleFontStylesheets: Asset[] = hasGoogleFonts
     ? assetGraph.findAssets({
         type: 'Css',
@@ -1401,24 +1334,12 @@ async function subsetFonts(
     : [];
   const selfHostedGoogleCssByUrl = new Map<string, Asset>();
   for (const googleFontStylesheet of googleFontStylesheets) {
-    const seenPages = new Set<Asset>(); // Only do the work once for each font on each page
+    // Only do the work once for each font on each page
+    const seenPages = new Set<Asset>();
     for (const googleFontStylesheetRelation of googleFontStylesheet.incomingRelations) {
-      let htmlParents: Asset[];
-
-      if (googleFontStylesheetRelation.type === 'CssImport') {
-        // Gather Html parents. Relevant if we are dealing with CSS @import relations
-        htmlParents = getParents(googleFontStylesheetRelation.to, {
-          type: { $in: ['Html', 'Svg'] },
-          isInline: false,
-          isLoaded: true,
-        });
-      } else if (
-        ['Html', 'Svg'].includes(googleFontStylesheetRelation.from.type ?? '')
-      ) {
-        htmlParents = [googleFontStylesheetRelation.from];
-      } else {
-        htmlParents = [];
-      }
+      const htmlParents = getHtmlParentsForGoogleFontsRelation(
+        googleFontStylesheetRelation
+      );
       for (const htmlParent of htmlParents) {
         if (seenPages.has(htmlParent)) continue;
         seenPages.add(htmlParent);
@@ -1464,28 +1385,277 @@ async function subsetFonts(
     }
     googleFontStylesheet.unload();
   }
-
-  // Cache served its purpose; injectSubsetFontFamilies and the rest of the
-  // function don't need it. Free the URL keys before injection runs.
+  // Cache served its purpose. Free the URL keys before injection runs.
   selfHostedGoogleCssByUrl.clear();
+}
 
-  // Clean up, making sure not to detach the same relation twice, eg. when multiple pages use the same stylesheet that imports a font
+// Shared pipeline state. The pre-collect shape carries the inputs+config
+// every phase needs; the collect phase produces `pages` and the font-face
+// decl map, which join the ctx for downstream phases.
+interface PreCollectCtx {
+  assetGraph: AssetGraph;
+  htmlOrSvgAssets: Asset[];
+  console: Console;
+  debug: boolean;
+  text: string | undefined;
+  dynamic: boolean | undefined;
+  concurrency: number | undefined;
+  chromeArgs: string[];
+  formats: string[];
+  hrefType: string;
+  subsetUrl: string;
+  omitFallbacks: boolean;
+  sourceMaps: boolean;
+  cacheDir: string | null;
+  hasGoogleFonts: boolean;
+  potentiallyOrphanedAssets: Set<Asset>;
+  trackPhase: ReturnType<typeof makePhaseTracker>;
+  timings: SubsetFontsTimings;
+}
+
+interface SubsetCtx extends PreCollectCtx {
+  pages: AssetTextWithProps[];
+  fontFaceDeclarationsByHtmlOrSvgAsset: Map<
+    Asset,
+    AccumulatedFontFaceDeclaration[]
+  >;
+}
+
+async function runCollectAndPrepPagesPhase(ctx: PreCollectCtx): Promise<{
+  pages: AssetTextWithProps[];
+  fontFaceDeclarationsByHtmlOrSvgAsset: Map<
+    Asset,
+    AccumulatedFontFaceDeclaration[]
+  >;
+}> {
+  const collectPhase = ctx.trackPhase(
+    `collectTextsByPage (${ctx.htmlOrSvgAssets.length} pages)`
+  );
+  const {
+    htmlOrSvgAssetTextsWithProps,
+    fontFaceDeclarationsByHtmlOrSvgAsset,
+    subTimings,
+  } = await collectTextsByPage(ctx.assetGraph, ctx.htmlOrSvgAssets, {
+    text: ctx.text,
+    console: ctx.console,
+    dynamic: ctx.dynamic,
+    debug: ctx.debug,
+    concurrency: ctx.concurrency,
+    chromeArgs: ctx.chromeArgs,
+  });
+  ctx.timings.collectTextsByPage = collectPhase.end();
+  ctx.timings.collectTextsByPageDetails = subTimings;
+
+  // textByProps is consumed inside collectTextsByPage (see buildPerPageFont-
+  // Usages) and never read again by anything in the subsetFonts pipeline;
+  // the raw font-tracer text strings inside scale with #pages and are the
+  // largest per-page artefact at the 1800-page scale. Release them before
+  // computeCodepoints / subsetting / injection so they don't pin heap.
+  for (const entry of htmlOrSvgAssetTextsWithProps) {
+    entry.textByProps = [];
+  }
+
+  const omitFallbacksPhase = ctx.trackPhase('omitFallbacks processing');
+  if (ctx.omitFallbacks) {
+    removeOriginalFontFaceRules(
+      ctx.htmlOrSvgAssets,
+      fontFaceDeclarationsByHtmlOrSvgAsset,
+      ctx.potentiallyOrphanedAssets
+    );
+  }
+  ctx.timings['omitFallbacks processing'] = omitFallbacksPhase.end();
+
+  // Stage 1 → 2 placeholder: SubsettedFontUsage only adds optional fields
+  // on top of TracedFontUsage; this upcast happens implicitly in the
+  // returned AssetTextWithProps shape.
+  return {
+    pages: htmlOrSvgAssetTextsWithProps,
+    fontFaceDeclarationsByHtmlOrSvgAsset,
+  };
+}
+
+async function runSubsetPhase(ctx: SubsetCtx): Promise<void> {
+  const variationPhase = ctx.trackPhase('variation axis usage');
+  const { seenAxisValuesByFontUrlAndAxisName } = getVariationAxisUsage(
+    ctx.pages,
+    parseFontWeightRange,
+    parseFontStretchRange
+  );
+  ctx.timings['variation axis usage'] = variationPhase.end();
+
+  if (ctx.console) {
+    const uniqueFontUrls = countUniqueFontUrls(ctx.pages);
+    if (uniqueFontUrls > 0) {
+      ctx.console.log(
+        `  Subsetting ${uniqueFontUrls} unique font file${uniqueFontUrls === 1 ? '' : 's'}...`
+      );
+    }
+  }
+  const subsetPhase = ctx.trackPhase('getSubsetsForFontUsage');
+  await getSubsetsForFontUsage(
+    ctx.assetGraph,
+    ctx.pages,
+    ctx.formats,
+    seenAxisValuesByFontUrlAndAxisName,
+    ctx.cacheDir,
+    ctx.console,
+    ctx.debug
+  );
+  ctx.timings.getSubsetsForFontUsage = subsetPhase.end();
+
+  const warnGlyphsPhase = ctx.trackPhase('warnAboutMissingGlyphs');
+  await warnAboutMissingGlyphs(ctx.pages, ctx.assetGraph);
+  ctx.timings.warnAboutMissingGlyphs = warnGlyphsPhase.end();
+}
+
+async function runPostSubsetCleanup(ctx: SubsetCtx): Promise<void> {
+  const relationsToRemove = new Set<Relation>();
+  const originalRelations = new Set<Relation>();
+
+  const lazyFallbackPhase = ctx.trackPhase('lazy load fallback CSS');
+  await emitLazyFallbackCss(ctx, relationsToRemove, originalRelations);
+  ctx.timings['lazy load fallback CSS'] = lazyFallbackPhase.end();
+
+  const removeFontFacePhase = ctx.trackPhase('remove original @font-face');
+  removeOriginalFontFaceRelations(ctx.assetGraph, originalRelations);
+  ctx.timings['remove original @font-face'] = removeFontFacePhase.end();
+
+  const googleCleanupPhase = ctx.trackPhase('Google Fonts + cleanup');
+  await handleGoogleFontStylesheets(ctx, relationsToRemove);
+  // Clean up, making sure not to detach the same relation twice, eg. when
+  // multiple pages use the same stylesheet that imports a font.
   for (const relation of relationsToRemove) {
     relation.detach();
   }
+  ctx.timings['Google Fonts + cleanup'] = googleCleanupPhase.end();
 
-  timings['Google Fonts + cleanup'] = googleCleanupPhase.end();
+  const injectPhase = ctx.trackPhase('inject subset font-family into CSS/SVG');
+  injectSubsetFontFamilies(ctx.assetGraph, ctx.pages, ctx.omitFallbacks);
+  ctx.timings['inject subset font-family'] = injectPhase.end();
 
-  const injectPhase = trackPhase('inject subset font-family into CSS/SVG');
-  injectSubsetFontFamilies(assetGraph, pages, omitFallbacks);
-  timings['inject subset font-family'] = injectPhase.end();
-
-  const orphanCleanupPhase = trackPhase('source maps + orphan cleanup');
-  if (sourceMaps) {
-    await rewriteCssSourceMaps(assetGraph, hrefType);
+  const orphanCleanupPhase = ctx.trackPhase('source maps + orphan cleanup');
+  if (ctx.sourceMaps) {
+    await rewriteCssSourceMaps(ctx.assetGraph, ctx.hrefType);
   }
-  removeOrphanedAssets(assetGraph, potentiallyOrphanedAssets);
-  timings['source maps + orphan cleanup'] = orphanCleanupPhase.end();
+  removeOrphanedAssets(ctx.assetGraph, ctx.potentiallyOrphanedAssets);
+  ctx.timings['source maps + orphan cleanup'] = orphanCleanupPhase.end();
+}
+
+async function subsetFonts(
+  assetGraph: AssetGraph,
+  {
+    formats = ['woff2'],
+    subsetPath = 'subfont/',
+    omitFallbacks = false,
+    inlineCss = false,
+    fontDisplay,
+    hrefType = 'rootRelative',
+    onlyInfo,
+    dynamic,
+    console = global.console,
+    text,
+    sourceMaps = false,
+    debug = false,
+    concurrency,
+    chromeArgs = [],
+    cacheDir = null,
+  }: SubsetFontsOptions = {}
+): Promise<SubsetFontsResult> {
+  if (fontDisplay && !validFontDisplayValues.includes(fontDisplay)) {
+    fontDisplay = undefined;
+  }
+
+  // Pre-warm the WASM pool: start compiling harfbuzz WASM while
+  // collectTextsByPage traces fonts. Compilation (~50-200ms) overlaps
+  // with tracing work rather than appearing on the critical path.
+  subsetFontWithGlyphs.warmup().catch((err) => {
+    if (debug) {
+      console.warn(
+        'WASM warmup failed (will retry on first subset call):',
+        err
+      );
+    }
+  });
+
+  const subsetUrl = urltools.ensureTrailingSlash(assetGraph.root + subsetPath);
+  const timings: SubsetFontsTimings = {};
+  const trackPhase = makePhaseTracker(console, debug);
+
+  const applySourceMapsPhase = trackPhase('applySourceMaps');
+  if (sourceMaps) {
+    await assetGraph.applySourceMaps({ type: 'Css' });
+  }
+  timings.applySourceMaps = applySourceMapsPhase.end();
+
+  const googlePopulatePhase = trackPhase('populate (google fonts)');
+  const hasGoogleFonts = await populateGoogleFontsIfPresent(assetGraph);
+  timings['populate (google fonts)'] = googlePopulatePhase.end(
+    hasGoogleFonts ? null : 'skipped, no Google Fonts found'
+  );
+
+  const preCtx: PreCollectCtx = {
+    assetGraph,
+    htmlOrSvgAssets: assetGraph.findAssets({
+      $or: [{ type: 'Html', isInline: false }, { type: 'Svg' }],
+    }),
+    console,
+    debug,
+    text,
+    dynamic,
+    concurrency,
+    chromeArgs,
+    formats,
+    hrefType,
+    subsetUrl,
+    omitFallbacks,
+    sourceMaps,
+    cacheDir,
+    hasGoogleFonts,
+    potentiallyOrphanedAssets: new Set<Asset>(),
+    trackPhase,
+    timings,
+  };
+
+  const { pages, fontFaceDeclarationsByHtmlOrSvgAsset } =
+    await runCollectAndPrepPagesPhase(preCtx);
+  const ctx: SubsetCtx = {
+    ...preCtx,
+    pages,
+    fontFaceDeclarationsByHtmlOrSvgAsset,
+  };
+
+  const codepointPhase = trackPhase('codepoint generation');
+  await computeCodepoints(assetGraph, pages, fontDisplay);
+  timings['codepoint generation'] = codepointPhase.end();
+
+  if (onlyInfo) {
+    // Stage 2 hasn't run, but buildFontInfoReport's input only requires
+    // `codepoints` (stage 3) — already attached above.
+    return {
+      fontInfo: buildFontInfoReport(pages as ReportFontUsageEntry[]),
+      timings,
+    };
+  }
+
+  await runSubsetPhase(ctx);
+
+  const insertPhase = trackPhase(`insert subsets loop (${pages.length} pages)`);
+  const { numFontUsagesWithSubset } = await insertSubsets({
+    assetGraph,
+    pages,
+    formats,
+    subsetUrl,
+    hrefType,
+    inlineCss,
+    omitFallbacks,
+  });
+  timings['insert subsets loop'] = insertPhase.end();
+
+  if (numFontUsagesWithSubset === 0) {
+    return { fontInfo: [], timings };
+  }
+
+  await runPostSubsetCleanup(ctx);
 
   return {
     fontInfo: buildFontInfoReport(pages as ReportFontUsageEntry[]),

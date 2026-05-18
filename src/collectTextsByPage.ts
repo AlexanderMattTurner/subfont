@@ -256,20 +256,21 @@ function computeSnappedGlobalEntries(
   return entries;
 }
 
-// Fill in fontUsageTemplates/pageTextIndex/preloadIndex on the cached
-// declarations entry. No-op on repeat calls — results are shared across
-// pages that resolve to the same @font-face set.
-function populateGlobalFontUsages(
-  cached: DeclCacheEntry,
-  accumulatedFontFaceDeclarations: FontFaceDeclaration[],
-  text: string | undefined
-): void {
-  if (cached.fontUsageTemplates) {
-    return;
-  }
+interface ExtraTextsForFont {
+  texts: string[];
+  props: Record<string, string>;
+  fontRelations: Relation[];
+}
 
-  const snappedGlobalEntries = cached.snappedEntries;
+interface IndexedSnappedEntries {
+  pageTextIndex: Map<Asset, Map<string, string[]>>;
+  entriesByFontUrl: Map<string, SnappedEntry[]>;
+  textAndPropsToFontUrl: Map<TextByPropsEntry, string>;
+}
 
+function indexSnappedEntries(
+  snappedGlobalEntries: SnappedEntry[]
+): IndexedSnappedEntries {
   const pageTextIndex = new Map<Asset, Map<string, string[]>>();
   const entriesByFontUrl = new Map<string, SnappedEntry[]>();
   const textAndPropsToFontUrl = new Map<TextByPropsEntry, string>();
@@ -301,12 +302,13 @@ function populateGlobalFontUsages(
 
     textAndPropsToFontUrl.set(entry.textAndProps, entry.fontUrl);
   }
+  return { pageTextIndex, entriesByFontUrl, textAndPropsToFontUrl };
+}
 
-  interface ExtraTextsForFont {
-    texts: string[];
-    props: Record<string, string>;
-    fontRelations: Relation[];
-  }
+function collectExtraTextsByFontUrl(
+  accumulatedFontFaceDeclarations: FontFaceDeclaration[],
+  text: string | undefined
+): Map<string, ExtraTextsForFont> {
   const extraTextsByFontUrl = new Map<string, ExtraTextsForFont>();
   for (const fontFaceDeclaration of accumulatedFontFaceDeclarations) {
     const {
@@ -318,99 +320,120 @@ function populateGlobalFontUsages(
     if (!fontUrl) continue;
 
     const extras: string[] = [];
-    if (subfontText !== undefined) {
-      extras.push(unquote(subfontText));
+    if (subfontText !== undefined) extras.push(unquote(subfontText));
+    if (text !== undefined) extras.push(text);
+    if (extras.length === 0) continue;
+
+    let arr = extraTextsByFontUrl.get(fontUrl);
+    if (!arr) {
+      // After destructuring out `relations` and `-subfont-text`, the
+      // remaining spread props are CSS descriptor strings.
+      arr = {
+        texts: [],
+        props: props as Record<string, string>,
+        fontRelations: relations,
+      };
+      extraTextsByFontUrl.set(fontUrl, arr);
     }
-    if (text !== undefined) {
-      extras.push(text);
-    }
-    if (extras.length > 0) {
-      let arr = extraTextsByFontUrl.get(fontUrl);
-      if (!arr) {
-        // After destructuring out `relations` and `-subfont-text`, the
-        // remaining spread props are CSS descriptor strings.
-        arr = {
-          texts: [],
-          props: props as Record<string, string>,
-          fontRelations: relations,
-        };
-        extraTextsByFontUrl.set(fontUrl, arr);
+    arr.texts.push(...extras);
+  }
+  return extraTextsByFontUrl;
+}
+
+function buildFontUsageTemplate(
+  fontUrl: string,
+  fontEntries: SnappedEntry[],
+  extra: ExtraTextsForFont | undefined
+): FontUsageTemplate {
+  const allTexts: string[] = [];
+  if (extra) allTexts.push(...extra.texts);
+  for (const e of fontEntries) allTexts.push(e.textAndProps.text);
+
+  const fontFamilies = new Set<string>(
+    fontEntries.map((e) => e.props['font-family'])
+  );
+  const fontStyles = new Set(fontEntries.map((e) => e.fontStyle));
+  const fontWeights = new Set(fontEntries.map((e) => e.fontWeight));
+  const fontStretches = new Set(fontEntries.map((e) => e.fontStretch));
+  const fontVariationSettings = new Set<string>(
+    fontEntries
+      .map((e) => e.fontVariationSettings)
+      .filter(
+        (fvs): fvs is string =>
+          typeof fvs === 'string' && fvs.toLowerCase() !== 'normal'
+      )
+  );
+  // Use first entry's relations for size computation, or extra's if no entries
+  const fontRelations =
+    fontEntries.length > 0
+      ? fontEntries[0].fontRelations
+      : (extra as ExtraTextsForFont).fontRelations;
+  let smallestOriginalSize = 0;
+  let smallestOriginalFormat: string | undefined;
+  for (const relation of fontRelations) {
+    if (relation.to.isLoaded) {
+      const size = relation.to.rawSrc.length;
+      if (smallestOriginalSize === 0 || size < smallestOriginalSize) {
+        smallestOriginalSize = size;
+        smallestOriginalFormat = relation.to.type?.toLowerCase();
       }
-      arr.texts.push(...extras);
     }
   }
 
-  // Build the global fontUsage template for each fontUrl
-  const fontUsageTemplates: FontUsageTemplate[] = [];
+  const props =
+    fontEntries.length > 0
+      ? { ...fontEntries[0].props }
+      : { ...(extra as ExtraTextsForFont).props };
+  const extraTextsStr = extra ? extra.texts.join('') : '';
+
+  return {
+    smallestOriginalSize,
+    smallestOriginalFormat,
+    texts: allTexts,
+    text: uniqueCharsFromArray(allTexts),
+    extraTextsStr,
+    props,
+    fontUrl,
+    fontFamilies,
+    fontStyles,
+    fontStretches,
+    fontWeights,
+    fontVariationSettings,
+  };
+}
+
+// Fill in fontUsageTemplates/pageTextIndex/preloadIndex on the cached
+// declarations entry. No-op on repeat calls — results are shared across
+// pages that resolve to the same @font-face set.
+function populateGlobalFontUsages(
+  cached: DeclCacheEntry,
+  accumulatedFontFaceDeclarations: FontFaceDeclaration[],
+  text: string | undefined
+): void {
+  if (cached.fontUsageTemplates) return;
+
+  const { pageTextIndex, entriesByFontUrl, textAndPropsToFontUrl } =
+    indexSnappedEntries(cached.snappedEntries);
+
+  const extraTextsByFontUrl = collectExtraTextsByFontUrl(
+    accumulatedFontFaceDeclarations,
+    text
+  );
+
   const allFontUrls = new Set<string>([
     ...entriesByFontUrl.keys(),
     ...extraTextsByFontUrl.keys(),
   ]);
 
+  const fontUsageTemplates: FontUsageTemplate[] = [];
   for (const fontUrl of allFontUrls) {
-    const fontEntries = entriesByFontUrl.get(fontUrl) || [];
-    const extra = extraTextsByFontUrl.get(fontUrl);
-
-    // Collect all texts (extras first, then global entries)
-    const allTexts: string[] = [];
-    if (extra) {
-      allTexts.push(...extra.texts);
-    }
-    for (const e of fontEntries) {
-      allTexts.push(e.textAndProps.text);
-    }
-
-    const fontFamilies = new Set<string>(
-      fontEntries.map((e) => e.props['font-family'])
+    fontUsageTemplates.push(
+      buildFontUsageTemplate(
+        fontUrl,
+        entriesByFontUrl.get(fontUrl) || [],
+        extraTextsByFontUrl.get(fontUrl)
+      )
     );
-    const fontStyles = new Set(fontEntries.map((e) => e.fontStyle));
-    const fontWeights = new Set(fontEntries.map((e) => e.fontWeight));
-    const fontStretches = new Set(fontEntries.map((e) => e.fontStretch));
-    const fontVariationSettings = new Set<string>(
-      fontEntries
-        .map((e) => e.fontVariationSettings)
-        .filter(
-          (fvs): fvs is string =>
-            typeof fvs === 'string' && fvs.toLowerCase() !== 'normal'
-        )
-    );
-    // Use first entry's relations for size computation, or extra's if no entries
-    const fontRelations =
-      fontEntries.length > 0
-        ? fontEntries[0].fontRelations
-        : (extra as ExtraTextsForFont).fontRelations;
-    let smallestOriginalSize = 0;
-    let smallestOriginalFormat: string | undefined;
-    for (const relation of fontRelations) {
-      if (relation.to.isLoaded) {
-        const size = relation.to.rawSrc.length;
-        if (smallestOriginalSize === 0 || size < smallestOriginalSize) {
-          smallestOriginalSize = size;
-          smallestOriginalFormat = relation.to.type?.toLowerCase();
-        }
-      }
-    }
-
-    const props =
-      fontEntries.length > 0
-        ? { ...fontEntries[0].props }
-        : { ...(extra as ExtraTextsForFont).props };
-    const extraTextsStr = extra ? extra.texts.join('') : '';
-
-    fontUsageTemplates.push({
-      smallestOriginalSize,
-      smallestOriginalFormat,
-      texts: allTexts,
-      text: uniqueCharsFromArray(allTexts),
-      extraTextsStr,
-      props,
-      fontUrl,
-      fontFamilies,
-      fontStyles,
-      fontStretches,
-      fontWeights,
-      fontVariationSettings,
-    });
   }
 
   cached.fontUsageTemplates = fontUsageTemplates;
@@ -982,6 +1005,89 @@ interface BuildPerPageTimings {
   cloningTime: number;
 }
 
+function getOrSnapDeclCacheEntry(
+  declCache: Map<string, DeclCacheEntry>,
+  accumulatedFontFaceDeclarations: FontFaceDeclaration[],
+  globalTextByProps: TextByPropsEntry[]
+): { entry: DeclCacheEntry; elapsedSnap: number } {
+  const declKey = getDeclarationsKey(accumulatedFontFaceDeclarations);
+  let elapsedSnap = 0;
+  if (!declCache.has(declKey)) {
+    const snapStart = Date.now();
+    declCache.set(declKey, {
+      snappedEntries: computeSnappedGlobalEntries(
+        accumulatedFontFaceDeclarations,
+        globalTextByProps
+      ),
+      fontUsageTemplates: null,
+      pageTextIndex: null,
+      preloadIndex: null,
+    });
+    elapsedSnap = Date.now() - snapStart;
+  }
+  return { entry: declCache.get(declKey) as DeclCacheEntry, elapsedSnap };
+}
+
+function instantiateFontUsagesForPage(
+  entry: AssetTextWithPropsEntry,
+  declCacheEntry: DeclCacheEntry,
+  uniqueCharsCache: Map<string, string>
+): void {
+  const fontUsageTemplates =
+    declCacheEntry.fontUsageTemplates as FontUsageTemplate[];
+  const pageTextIndex = declCacheEntry.pageTextIndex as Map<
+    Asset,
+    Map<string, string[]>
+  >;
+  const textAndPropsToFontUrl = declCacheEntry.preloadIndex as Map<
+    TextByPropsEntry,
+    string
+  >;
+
+  const preloadFontUrls = new Set<string>();
+  for (const textByPropsEntry of entry.textByProps) {
+    const fontUrl = textAndPropsToFontUrl.get(textByPropsEntry);
+    if (fontUrl) preloadFontUrls.add(fontUrl);
+  }
+
+  const assetTexts = pageTextIndex.get(entry.htmlOrSvgAsset);
+  entry.fontUsages = fontUsageTemplates.map((template) => {
+    const pageTexts = assetTexts ? assetTexts.get(template.fontUrl) : undefined;
+    let pageTextStr = pageTexts ? pageTexts.join('') : '';
+    if (template.extraTextsStr) pageTextStr += template.extraTextsStr;
+
+    let pageTextUnique = uniqueCharsCache.get(pageTextStr);
+    if (pageTextUnique === undefined) {
+      pageTextUnique = uniqueChars(pageTextStr);
+      uniqueCharsCache.set(pageTextStr, pageTextUnique);
+    }
+
+    const { hasFontFeatureSettings, fontFeatureTags } = resolveFeatureSettings(
+      template.fontFamilies,
+      entry.fontFamiliesWithFeatureSettings,
+      entry.featureTagsByFamily
+    );
+
+    return {
+      smallestOriginalSize: template.smallestOriginalSize,
+      smallestOriginalFormat: template.smallestOriginalFormat,
+      texts: template.texts,
+      pageText: pageTextUnique,
+      text: template.text,
+      props: { ...template.props },
+      fontUrl: template.fontUrl,
+      fontFamilies: template.fontFamilies,
+      fontStyles: template.fontStyles,
+      fontStretches: template.fontStretches,
+      fontWeights: template.fontWeights,
+      fontVariationSettings: template.fontVariationSettings,
+      preload: preloadFontUrls.has(template.fontUrl),
+      hasFontFeatureSettings,
+      fontFeatureTags,
+    };
+  });
+}
+
 // Iterate every traced page, snap its text against the @font-face set, and
 // emit fully-formed per-page fontUsages (one entry per font URL + props).
 function buildPerPageFontUsages(
@@ -996,99 +1102,23 @@ function buildPerPageFontUsages(
   let cloningTime = 0;
 
   for (const entry of htmlOrSvgAssetTextsWithProps) {
-    const {
-      htmlOrSvgAsset,
-      textByProps,
-      accumulatedFontFaceDeclarations,
-      fontFamiliesWithFeatureSettings,
-      featureTagsByFamily,
-    } = entry;
+    const { entry: declCacheEntry, elapsedSnap } = getOrSnapDeclCacheEntry(
+      declCache,
+      entry.accumulatedFontFaceDeclarations,
+      globalTextByProps
+    );
+    snappingTime += elapsedSnap;
 
-    const declKey = getDeclarationsKey(accumulatedFontFaceDeclarations);
-    if (!declCache.has(declKey)) {
-      const snapStart = Date.now();
-      declCache.set(declKey, {
-        snappedEntries: computeSnappedGlobalEntries(
-          accumulatedFontFaceDeclarations,
-          globalTextByProps
-        ),
-        fontUsageTemplates: null,
-        pageTextIndex: null,
-        preloadIndex: null,
-      });
-      snappingTime += Date.now() - snapStart;
-    }
-
-    const declCacheEntry = declCache.get(declKey) as DeclCacheEntry;
     const globalUsageStart = Date.now();
     populateGlobalFontUsages(
       declCacheEntry,
-      accumulatedFontFaceDeclarations,
+      entry.accumulatedFontFaceDeclarations,
       text
     );
     globalUsageTime += Date.now() - globalUsageStart;
 
-    const fontUsageTemplates =
-      declCacheEntry.fontUsageTemplates as FontUsageTemplate[];
-    const pageTextIndex = declCacheEntry.pageTextIndex as Map<
-      Asset,
-      Map<string, string[]>
-    >;
-    const textAndPropsToFontUrl = declCacheEntry.preloadIndex as Map<
-      TextByPropsEntry,
-      string
-    >;
-
-    const preloadFontUrls = new Set<string>();
-    for (const textByPropsEntry of textByProps) {
-      const fontUrl = textAndPropsToFontUrl.get(textByPropsEntry);
-      if (fontUrl) {
-        preloadFontUrls.add(fontUrl);
-      }
-    }
-
     const cloneStart = Date.now();
-    const assetTexts = pageTextIndex.get(htmlOrSvgAsset);
-    entry.fontUsages = fontUsageTemplates.map((template) => {
-      const pageTexts = assetTexts
-        ? assetTexts.get(template.fontUrl)
-        : undefined;
-      let pageTextStr = pageTexts ? pageTexts.join('') : '';
-      if (template.extraTextsStr) {
-        pageTextStr += template.extraTextsStr;
-      }
-
-      let pageTextUnique = uniqueCharsCache.get(pageTextStr);
-      if (pageTextUnique === undefined) {
-        pageTextUnique = uniqueChars(pageTextStr);
-        uniqueCharsCache.set(pageTextStr, pageTextUnique);
-      }
-
-      const { hasFontFeatureSettings, fontFeatureTags } =
-        resolveFeatureSettings(
-          template.fontFamilies,
-          fontFamiliesWithFeatureSettings,
-          featureTagsByFamily
-        );
-
-      return {
-        smallestOriginalSize: template.smallestOriginalSize,
-        smallestOriginalFormat: template.smallestOriginalFormat,
-        texts: template.texts,
-        pageText: pageTextUnique,
-        text: template.text,
-        props: { ...template.props },
-        fontUrl: template.fontUrl,
-        fontFamilies: template.fontFamilies,
-        fontStyles: template.fontStyles,
-        fontStretches: template.fontStretches,
-        fontWeights: template.fontWeights,
-        fontVariationSettings: template.fontVariationSettings,
-        preload: preloadFontUrls.has(template.fontUrl),
-        hasFontFeatureSettings,
-        fontFeatureTags,
-      };
-    });
+    instantiateFontUsagesForPage(entry, declCacheEntry, uniqueCharsCache);
     cloningTime += Date.now() - cloneStart;
   }
 
