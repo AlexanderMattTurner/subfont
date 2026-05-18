@@ -8,6 +8,7 @@ import fontSnapper = require('font-snapper');
 import HeadlessBrowser = require('./HeadlessBrowser');
 import FontTracerPool = require('./FontTracerPool');
 import gatherStylesheetsWithPredicates = require('./gatherStylesheetsWithPredicates');
+import { MAX_POOL_SIZE } from './concurrencyLimit';
 import * as cssFontParser from 'css-font-parser';
 import unquote = require('./unquote');
 import normalizeFontPropertyValue = require('./normalizeFontPropertyValue');
@@ -478,7 +479,7 @@ async function tracePages(
     const maxWorkers =
       concurrency && concurrency > 0
         ? concurrency
-        : Math.min(os.cpus().length, 8);
+        : Math.min(os.cpus().length, MAX_POOL_SIZE);
     const numWorkers = Math.min(maxWorkers, totalPages);
     const pool = new FontTracerPool(numWorkers);
     await pool.init();

@@ -1148,15 +1148,17 @@ function buildFallbackCssText(
   const rulesByMedia = new Map<string, string[]>();
   for (const rule of containedRelationsByFontFaceRule.keys()) {
     const mediaKey = findEnclosingMediaQuery(rule);
-    if (!rulesByMedia.has(mediaKey)) rulesByMedia.set(mediaKey, []);
-    rulesByMedia
-      .get(mediaKey)!
-      .push(
-        getFontFaceDeclarationText(
-          rule,
-          containedRelationsByFontFaceRule.get(rule) ?? []
-        )
-      );
+    let texts = rulesByMedia.get(mediaKey);
+    if (!texts) {
+      texts = [];
+      rulesByMedia.set(mediaKey, texts);
+    }
+    texts.push(
+      getFontFaceDeclarationText(
+        rule,
+        containedRelationsByFontFaceRule.get(rule) ?? []
+      )
+    );
   }
   let fallbackCssText = '';
   for (const [media, texts] of rulesByMedia) {

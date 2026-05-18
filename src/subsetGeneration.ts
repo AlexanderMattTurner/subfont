@@ -114,6 +114,7 @@ class SubsetDiskCache {
     try {
       return await fs.readFile(filePath);
     } catch {
+      // ENOENT (cache miss) or permission error — treat as a miss.
       return undefined;
     }
   }
