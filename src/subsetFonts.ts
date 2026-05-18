@@ -771,49 +771,6 @@ function rewriteFontShorthand(
   }${lineHeightSuffix} ${fontFamilies.map(maybeCssQuote).join(', ')}`;
 }
 
-interface CssVarInjectionCtx {
-  cssAssets: Asset[];
-  parseTreeToAsset: Map<Asset['parseTree'], Asset>;
-  webfontNameMap: Record<string, string>;
-  omitFallbacks: boolean;
-  cssAssetsDirtiedByCustomProps: Set<Asset>;
-  customPropertyDefinitions:
-    | ReturnType<typeof findCustomPropertyDefinitions>
-    | undefined;
-}
-
-function injectIntoCssVarRule(
-  ctx: CssVarInjectionCtx,
-  cssRule: { value: string; root(): Asset['parseTree'] }
-): void {
-  if (!ctx.customPropertyDefinitions) {
-    ctx.customPropertyDefinitions = findCustomPropertyDefinitions(
-      ctx.cssAssets
-    );
-  }
-  for (const customPropertyName of extractReferencedCustomPropertyNames(
-    cssRule.value
-  )) {
-    for (const relatedCssRule of [
-      cssRule,
-      ...(ctx.customPropertyDefinitions[customPropertyName] || []),
-    ]) {
-      const modifiedValue = injectSubsetDefinitions(
-        relatedCssRule.value,
-        ctx.webfontNameMap,
-        ctx.omitFallbacks
-      );
-      if (modifiedValue !== relatedCssRule.value) {
-        relatedCssRule.value = modifiedValue;
-        const ownerAsset = ctx.parseTreeToAsset.get(relatedCssRule.root());
-        if (ownerAsset) {
-          ctx.cssAssetsDirtiedByCustomProps.add(ownerAsset);
-        }
-      }
-    }
-  }
-}
-
 function injectSubsetIntoCssAssets(
   assetGraph: AssetGraph,
   webfontNameMap: Record<string, string>,
@@ -824,26 +781,51 @@ function injectSubsetIntoCssAssets(
   for (const cssAsset of cssAssets) {
     parseTreeToAsset.set(cssAsset.parseTree, cssAsset);
   }
-  const ctx: CssVarInjectionCtx = {
-    cssAssets,
-    parseTreeToAsset,
-    webfontNameMap,
-    omitFallbacks,
-    cssAssetsDirtiedByCustomProps: new Set<Asset>(),
-    customPropertyDefinitions: undefined,
+  const cssAssetsDirtiedByCustomProps = new Set<Asset>();
+
+  // Lazy: findCustomPropertyDefinitions walks every CSS asset's parse tree.
+  // Skip the work entirely when no rule references var(); pay it once on the
+  // first hit.
+  let customPropertyDefinitions:
+    | ReturnType<typeof findCustomPropertyDefinitions>
+    | undefined;
+  const injectVarRule = (cssRule: {
+    value: string;
+    root(): Asset['parseTree'];
+  }): void => {
+    if (!customPropertyDefinitions) {
+      customPropertyDefinitions = findCustomPropertyDefinitions(cssAssets);
+    }
+    for (const customPropertyName of extractReferencedCustomPropertyNames(
+      cssRule.value
+    )) {
+      for (const relatedCssRule of [
+        cssRule,
+        ...(customPropertyDefinitions[customPropertyName] || []),
+      ]) {
+        const modifiedValue = injectSubsetDefinitions(
+          relatedCssRule.value,
+          webfontNameMap,
+          omitFallbacks
+        );
+        if (modifiedValue === relatedCssRule.value) continue;
+        relatedCssRule.value = modifiedValue;
+        const ownerAsset = parseTreeToAsset.get(relatedCssRule.root());
+        if (ownerAsset) cssAssetsDirtiedByCustomProps.add(ownerAsset);
+      }
+    }
   };
 
   for (const cssAsset of cssAssets) {
     let changesMade = false;
     cssAsset.eachRuleInParseTree((cssRule) => {
       if (cssRule.parent.type !== 'rule' || cssRule.type !== 'decl') return;
-
       const propName = cssRule.prop.toLowerCase();
       if (
         (propName === 'font' || propName === 'font-family') &&
         cssRule.value.includes('var(')
       ) {
-        injectIntoCssVarRule(ctx, cssRule);
+        injectVarRule(cssRule);
       } else if (propName === 'font-family') {
         const updated = rewriteFontFamilyList(
           cssRule.value,
@@ -866,12 +848,10 @@ function injectSubsetIntoCssAssets(
         }
       }
     });
-    if (changesMade) {
-      cssAsset.markDirty();
-    }
+    if (changesMade) cssAsset.markDirty();
   }
 
-  for (const dirtiedAsset of ctx.cssAssetsDirtiedByCustomProps) {
+  for (const dirtiedAsset of cssAssetsDirtiedByCustomProps) {
     dirtiedAsset.markDirty();
   }
 }
@@ -1189,6 +1169,9 @@ function buildFallbackCssText(
   return fallbackCssText;
 }
 
+// Returns the map of @font-face rule node → sibling relations sharing that
+// rule. As a side effect, adds every retained relation to originalRelations
+// so the caller can later remove the original CSS in one pass.
 function collectFontFaceRelations(
   accumulatedFontFaceDeclarations: AccumulatedFontFaceDeclaration[],
   originalRelations: Set<Relation>
@@ -1406,11 +1389,10 @@ async function handleGoogleFontStylesheets(
   selfHostedGoogleCssByUrl.clear();
 }
 
-// Shared pipeline state. Built once at the start of subsetFonts(); pages
-// and fontFaceDeclarationsByHtmlOrSvgAsset are populated by the collect
-// phase. Every phase helper takes this so we don't drag a dozen positional
-// args (or per-helper Args interfaces) through the pipeline.
-interface SubsetCtx {
+// Shared pipeline state. The pre-collect shape carries the inputs+config
+// every phase needs; the collect phase produces `pages` and the font-face
+// decl map, which join the ctx for downstream phases.
+interface PreCollectCtx {
   assetGraph: AssetGraph;
   htmlOrSvgAssets: Asset[];
   console: Console;
@@ -1429,7 +1411,9 @@ interface SubsetCtx {
   potentiallyOrphanedAssets: Set<Asset>;
   trackPhase: ReturnType<typeof makePhaseTracker>;
   timings: SubsetFontsTimings;
-  // Populated by runCollectAndPrepPagesPhase.
+}
+
+interface SubsetCtx extends PreCollectCtx {
   pages: AssetTextWithProps[];
   fontFaceDeclarationsByHtmlOrSvgAsset: Map<
     Asset,
@@ -1437,7 +1421,13 @@ interface SubsetCtx {
   >;
 }
 
-async function runCollectAndPrepPagesPhase(ctx: SubsetCtx): Promise<void> {
+async function runCollectAndPrepPagesPhase(ctx: PreCollectCtx): Promise<{
+  pages: AssetTextWithProps[];
+  fontFaceDeclarationsByHtmlOrSvgAsset: Map<
+    Asset,
+    AccumulatedFontFaceDeclaration[]
+  >;
+}> {
   const collectPhase = ctx.trackPhase(
     `collectTextsByPage (${ctx.htmlOrSvgAssets.length} pages)`
   );
@@ -1476,11 +1466,12 @@ async function runCollectAndPrepPagesPhase(ctx: SubsetCtx): Promise<void> {
   ctx.timings['omitFallbacks processing'] = omitFallbacksPhase.end();
 
   // Stage 1 → 2 placeholder: SubsettedFontUsage only adds optional fields
-  // on top of TracedFontUsage, so this upcast is structurally valid even
-  // before getSubsetsForFontUsage runs.
-  ctx.pages = htmlOrSvgAssetTextsWithProps;
-  ctx.fontFaceDeclarationsByHtmlOrSvgAsset =
-    fontFaceDeclarationsByHtmlOrSvgAsset;
+  // on top of TracedFontUsage; this upcast happens implicitly in the
+  // returned AssetTextWithProps shape.
+  return {
+    pages: htmlOrSvgAssetTextsWithProps,
+    fontFaceDeclarationsByHtmlOrSvgAsset,
+  };
 }
 
 async function runSubsetPhase(ctx: SubsetCtx): Promise<void> {
@@ -1602,7 +1593,7 @@ async function subsetFonts(
     hasGoogleFonts ? null : 'skipped, no Google Fonts found'
   );
 
-  const ctx: SubsetCtx = {
+  const preCtx: PreCollectCtx = {
     assetGraph,
     htmlOrSvgAssets: assetGraph.findAssets({
       $or: [{ type: 'Html', isInline: false }, { type: 'Svg' }],
@@ -1623,33 +1614,35 @@ async function subsetFonts(
     potentiallyOrphanedAssets: new Set<Asset>(),
     trackPhase,
     timings,
-    pages: [],
-    fontFaceDeclarationsByHtmlOrSvgAsset: new Map(),
   };
 
-  await runCollectAndPrepPagesPhase(ctx);
+  const { pages, fontFaceDeclarationsByHtmlOrSvgAsset } =
+    await runCollectAndPrepPagesPhase(preCtx);
+  const ctx: SubsetCtx = {
+    ...preCtx,
+    pages,
+    fontFaceDeclarationsByHtmlOrSvgAsset,
+  };
 
   const codepointPhase = trackPhase('codepoint generation');
-  await computeCodepoints(assetGraph, ctx.pages, fontDisplay);
+  await computeCodepoints(assetGraph, pages, fontDisplay);
   timings['codepoint generation'] = codepointPhase.end();
 
   if (onlyInfo) {
     // Stage 2 hasn't run, but buildFontInfoReport's input only requires
     // `codepoints` (stage 3) — already attached above.
     return {
-      fontInfo: buildFontInfoReport(ctx.pages as ReportFontUsageEntry[]),
+      fontInfo: buildFontInfoReport(pages as ReportFontUsageEntry[]),
       timings,
     };
   }
 
   await runSubsetPhase(ctx);
 
-  const insertPhase = trackPhase(
-    `insert subsets loop (${ctx.pages.length} pages)`
-  );
+  const insertPhase = trackPhase(`insert subsets loop (${pages.length} pages)`);
   const { numFontUsagesWithSubset } = await insertSubsets({
     assetGraph,
-    pages: ctx.pages,
+    pages,
     formats,
     subsetUrl,
     hrefType,
@@ -1665,7 +1658,7 @@ async function subsetFonts(
   await runPostSubsetCleanup(ctx);
 
   return {
-    fontInfo: buildFontInfoReport(ctx.pages as ReportFontUsageEntry[]),
+    fontInfo: buildFontInfoReport(pages as ReportFontUsageEntry[]),
     timings,
   };
 }

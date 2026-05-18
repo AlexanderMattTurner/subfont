@@ -75,6 +75,13 @@ interface SubfontFn {
 // eslint-disable-next-line no-restricted-syntax
 type LogFn = (...args: unknown[]) => void;
 
+// Per-page font report returned by subsetFonts. Reused across the
+// reporting helpers, so it lives here rather than being inlined.
+type FontInfoReport = Array<{
+  assetFileName: string;
+  fontUsages: ReportFontUsage[];
+}>;
+
 function makeLogger(
   silent: boolean,
   console: Console | undefined
@@ -250,7 +257,7 @@ function resolveCacheDir(
   return null;
 }
 
-async function runPostSubsetPostProcessing(
+async function runPostProcessing(
   assetGraph: InstanceType<typeof AssetGraph>,
   rootUrl: string | undefined
 ): Promise<void> {
@@ -318,10 +325,7 @@ interface VariantEntry {
 // back multiple variants, so fontUrl alone is too coarse. Codepoint unions
 // and subset sizes are per-font, so the remaining per-page variation worth
 // surfacing is just which pages reference the variant.
-function printVariantSummary(
-  fontInfo: Array<{ assetFileName: string; fontUsages: ReportFontUsage[] }>,
-  log: LogFn
-): void {
+function printVariantSummary(fontInfo: FontInfoReport, log: LogFn): void {
   const SAMPLE_PAGES = 5;
   const byVariant = new Map<string, VariantEntry>();
   for (const { assetFileName, fontUsages } of fontInfo) {
@@ -432,7 +436,7 @@ function describeFontUsageStatus(
 }
 
 function printPerAssetFontReport(
-  fontInfo: Array<{ assetFileName: string; fontUsages: ReportFontUsage[] }>,
+  fontInfo: FontInfoReport,
   sumSizesBefore: number,
   sumSizesAfter: number,
   log: LogFn
@@ -652,43 +656,13 @@ async function resolveRootsAndInputs(
   return { rootUrl, outRoot, inputUrls };
 }
 
-function createAssetGraphForRun(
-  rootUrl: string | undefined,
-  canonicalRoot: string | undefined
-): InstanceType<typeof AssetGraph> {
-  const assetGraphConfig: { root: string | undefined; canonicalRoot?: string } =
-    { root: rootUrl, canonicalRoot };
-  if (rootUrl && !rootUrl.startsWith('file:')) {
-    // Ensure trailing slash
-    assetGraphConfig.canonicalRoot = rootUrl.replace(/\/?$/, '/');
-  }
-  return new AssetGraph(assetGraphConfig);
-}
-
-// Mutable run-state shared across the orchestration helpers. The owner
-// (subfont) builds this up; each phase reads/writes its slice. Bundles the
-// long-lived dependencies (assetGraph, log, trackPhase) so phase helpers
-// don't need a 10-field args interface each.
-interface SubfontRunState {
-  assetGraph: InstanceType<typeof AssetGraph>;
-  log: LogFn;
-  trackPhase: ReturnType<typeof makePhaseTracker>;
-  outerTimings: Record<string, number | undefined>;
-  debug: boolean;
-  dryRun: boolean;
-  outRoot: string | undefined;
-}
-
-function runOutputReportingPhase(
-  state: SubfontRunState,
-  fontInfo: Array<{ assetFileName: string; fontUsages: ReportFontUsage[] }>,
+function printRunReport(
+  fontInfo: FontInfoReport,
   sumSizesBefore: number,
   sumSizesAfter: number,
-  subsetFontsTotal: number,
-  subsetTimings: SubsetTimings | undefined
+  debug: boolean,
+  log: LogFn
 ): void {
-  const { log, trackPhase, outerTimings, debug, dryRun } = state;
-  const reportingPhase = trackPhase('output reporting');
   if (debug) printVariantSummary(fontInfo, log);
   const totalSavings = printPerAssetFontReport(
     fontInfo,
@@ -702,17 +676,6 @@ function runOutputReportingPhase(
     )}`
   );
   log(`Total savings: ${prettyBytes(totalSavings)}`);
-  outerTimings['output reporting'] = reportingPhase.end();
-
-  if (debug) {
-    printTimingSummary(outerTimings, subsetFontsTotal, subsetTimings, log);
-  }
-
-  if (dryRun) {
-    printDryRunPreview(state.assetGraph, log);
-  } else {
-    log('Output written to', state.outRoot || state.assetGraph.root);
-  }
 }
 
 const subfont = async function subfont(
@@ -775,7 +738,15 @@ const subfont = async function subfont(
     warn
   );
 
-  const assetGraph = createAssetGraphForRun(rootUrl, canonicalRoot);
+  const assetGraph = new AssetGraph({
+    root: rootUrl,
+    // Non-file roots get an explicit trailing-slash canonicalRoot so
+    // relative-URL resolution lines up with how the deployed site reads.
+    canonicalRoot:
+      rootUrl && !rootUrl.startsWith('file:')
+        ? rootUrl.replace(/\/?$/, '/')
+        : canonicalRoot,
+  });
   const getSawWarning = await installWarningHandlers(
     assetGraph,
     silent,
@@ -842,7 +813,7 @@ const subfont = async function subfont(
   for (const asset of assetGraph.findAssets(sizeableAssetQuery)) {
     sumSizesAfter += asset.rawSrc.length;
   }
-  await runPostSubsetPostProcessing(assetGraph, rootUrl);
+  await runPostProcessing(assetGraph, rootUrl);
   outerTimings['post-subsetFonts processing'] = postProcessingPhase.end();
 
   if (strict && getSawWarning()) {
@@ -868,23 +839,17 @@ const subfont = async function subfont(
   }
   outerTimings.writeAssetsToDisc = writePhase.end();
 
-  const state: SubfontRunState = {
-    assetGraph,
-    log,
-    trackPhase,
-    outerTimings,
-    debug,
-    dryRun,
-    outRoot,
-  };
-  runOutputReportingPhase(
-    state,
-    fontInfo,
-    sumSizesBefore,
-    sumSizesAfter,
-    subsetFontsTotal,
-    subsetTimings
-  );
+  const reportingPhase = trackPhase('output reporting');
+  printRunReport(fontInfo, sumSizesBefore, sumSizesAfter, debug, log);
+  outerTimings['output reporting'] = reportingPhase.end();
+  if (debug) {
+    printTimingSummary(outerTimings, subsetFontsTotal, subsetTimings, log);
+  }
+  if (dryRun) {
+    printDryRunPreview(assetGraph, log);
+  } else {
+    log('Output written to', outRoot || assetGraph.root);
+  }
   return assetGraph;
 } as SubfontFn;
 

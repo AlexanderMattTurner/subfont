@@ -280,37 +280,27 @@ function buildExtraSubsetOptions(
   };
 }
 
-interface QueueSubsetParams {
+// Shared across subset queueing: the assetGraph (for warn routing), the
+// loaded font assets, and the disk cache + stats counters. Per-font state
+// (fontUrl, buffer, text, featureGlyphIds, etc.) stays positional.
+interface SubsetGenCtx {
   assetGraph: AssetGraph;
   fontAssetsByUrl: Map<string, Asset>;
-  fontUrl: string;
-  fontBuffer: FontBuffer;
-  text: string;
-  targetFormat: string;
-  subsetInfo: SubsetInfo;
-  featureGlyphIds: number[] | undefined;
-  extraOptions: ExtraSubsetCacheOptions;
   diskCache: SubsetDiskCache | null;
   cacheStats: { hits: number; misses: number } | null;
 }
 
 async function queueSubsetForFormat(
-  params: QueueSubsetParams
+  ctx: SubsetGenCtx,
+  fontUrl: string,
+  fontBuffer: FontBuffer,
+  text: string,
+  targetFormat: string,
+  subsetInfo: SubsetInfo,
+  featureGlyphIds: number[] | undefined,
+  extraOptions: ExtraSubsetCacheOptions
 ): Promise<Buffer | null> {
-  const {
-    assetGraph,
-    fontAssetsByUrl,
-    fontUrl,
-    fontBuffer,
-    text,
-    targetFormat,
-    subsetInfo,
-    featureGlyphIds,
-    extraOptions,
-    diskCache,
-    cacheStats,
-  } = params;
-
+  const { assetGraph, fontAssetsByUrl, diskCache, cacheStats } = ctx;
   const cacheKey = diskCache
     ? subsetCacheKey(
         fontBuffer,
@@ -326,7 +316,7 @@ async function queueSubsetForFormat(
 
   if (cachedResult) {
     if (cacheStats) cacheStats.hits++;
-    return Promise.resolve(cachedResult);
+    return cachedResult;
   }
 
   if (cacheStats) cacheStats.misses++;
@@ -353,35 +343,19 @@ async function queueSubsetForFormat(
     });
 }
 
-interface QueueAllSubsetsParams {
-  assetGraph: AssetGraph;
-  canonicalFontUsageByUrl: Map<string, SubsettedFontUsage>;
-  originalFontBuffers: Map<string, FontBuffer>;
-  fontAssetsByUrl: Map<string, Asset>;
+async function queueAllSubsets(
+  ctx: SubsetGenCtx,
+  canonicalFontUsageByUrl: Map<string, SubsettedFontUsage>,
+  originalFontBuffers: Map<string, FontBuffer>,
   variationAxisBoundsCache: Map<
     string,
     Awaited<ReturnType<typeof getVariationAxisBounds>>
-  >;
-  formats: string[];
-  diskCache: SubsetDiskCache | null;
-  cacheStats: { hits: number; misses: number } | null;
-}
-
-async function queueAllSubsets(params: QueueAllSubsetsParams): Promise<{
+  >,
+  formats: string[]
+): Promise<{
   subsetPromiseMap: Map<string, Promise<Buffer | null>>;
   subsetInfoByFontUrl: Map<string, SubsetInfo>;
 }> {
-  const {
-    assetGraph,
-    canonicalFontUsageByUrl,
-    originalFontBuffers,
-    fontAssetsByUrl,
-    variationAxisBoundsCache,
-    formats,
-    diskCache,
-    cacheStats,
-  } = params;
-
   const subsetPromiseMap = new Map<string, Promise<Buffer | null>>();
   const subsetInfoByFontUrl = new Map<string, SubsetInfo>();
 
@@ -409,8 +383,8 @@ async function queueAllSubsets(params: QueueAllSubsetsParams): Promise<{
         } catch (rawErr) {
           // Feature glyph collection failed — continue without feature
           // glyphs rather than blocking all fonts.
-          assetGraph.warn(
-            wrapAssetGraphError(rawErr, fontAssetsByUrl.get(fontUrl))
+          ctx.assetGraph.warn(
+            wrapAssetGraphError(rawErr, ctx.fontAssetsByUrl.get(fontUrl))
           );
         }
       }
@@ -426,19 +400,16 @@ async function queueAllSubsets(params: QueueAllSubsetsParams): Promise<{
         if (subsetPromiseMap.has(promiseId)) continue;
         subsetPromiseMap.set(
           promiseId,
-          queueSubsetForFormat({
-            assetGraph,
-            fontAssetsByUrl,
+          queueSubsetForFormat(
+            ctx,
             fontUrl,
             fontBuffer,
             text,
             targetFormat,
             subsetInfo,
             featureGlyphIds,
-            extraOptions,
-            diskCache,
-            cacheStats,
-          })
+            extraOptions
+          )
         );
       }
     })
@@ -568,16 +539,13 @@ export async function getSubsetsForFontUsage(
     seenAxisValuesByFontUrlAndAxisName
   );
 
-  const { subsetPromiseMap, subsetInfoByFontUrl } = await queueAllSubsets({
-    assetGraph,
+  const { subsetPromiseMap, subsetInfoByFontUrl } = await queueAllSubsets(
+    { assetGraph, fontAssetsByUrl, diskCache, cacheStats },
     canonicalFontUsageByUrl,
     originalFontBuffers,
-    fontAssetsByUrl,
     variationAxisBoundsCache,
-    formats,
-    diskCache,
-    cacheStats,
-  });
+    formats
+  );
 
   // Wait for all subsets to settle. Errors are swallowed inside the subset
   // call site (returns null on failure), so this can't reject.
