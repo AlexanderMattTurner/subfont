@@ -945,8 +945,12 @@ async function insertSubsets({
   })) {
     const index = relTypeToIndex[relation.type];
     const from = relation.from;
-    if (!index.has(from)) index.set(from, []);
-    index.get(from)!.push(relation);
+    let arr = index.get(from);
+    if (!arr) {
+      arr = [];
+      index.set(from, arr);
+    }
+    arr.push(relation);
   }
 
   let numFontUsagesWithSubset = 0;

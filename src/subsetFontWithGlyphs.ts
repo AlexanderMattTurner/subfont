@@ -372,10 +372,10 @@ function configureUnicodeCodepoints(
   const nfc = text.normalize('NFC');
   const nfd = text.normalize('NFD');
   for (const c of nfc) {
-    exports.hb_set_add(inputUnicodes, c.codePointAt(0) as number);
+    exports.hb_set_add(inputUnicodes, c.codePointAt(0)!);
   }
   for (const c of nfd) {
-    exports.hb_set_add(inputUnicodes, c.codePointAt(0) as number);
+    exports.hb_set_add(inputUnicodes, c.codePointAt(0)!);
   }
 }
 

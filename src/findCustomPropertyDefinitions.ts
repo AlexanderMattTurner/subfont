@@ -39,7 +39,7 @@ function findCustomPropertyDefinitions(
     const seenProps = new Set<string>();
     const queue: string[] = [prop];
     while (queue.length > 0) {
-      const referencedProp = queue.shift() as string;
+      const referencedProp = queue.shift()!;
       if (!seenProps.has(referencedProp)) {
         seenProps.add(referencedProp);
         if (definitionsByProp[referencedProp]) {

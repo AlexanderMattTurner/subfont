@@ -213,7 +213,7 @@ function reportMissingGlyphs(
   const errorLog = missingGlyphsErrors.map(
     ({ char, fontUsage, location, occurrences }) => {
       const extra = occurrences > 1 ? ` (+${occurrences - 1} more)` : '';
-      return `- \\u{${(char.codePointAt(0) as number).toString(16)}} (${char}) in font-family '${
+      return `- \\u{${char.codePointAt(0)!.toString(16)}} (${char}) in font-family '${
         fontUsage.props['font-family']
       }' (${fontUsage.props['font-weight']}/${
         fontUsage.props['font-style']

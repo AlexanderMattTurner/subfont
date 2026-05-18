@@ -614,11 +614,13 @@ function planFastPathPages(fastPathPages: PageData[]): FastPathPlan {
         entry.props['font-style'] || '',
         entry.props['font-stretch'] || ''
       );
-      if (!uniquePropsMap.has(propsKey)) {
+      let texts = textPerPropsKey.get(propsKey);
+      if (!texts) {
         uniquePropsMap.set(propsKey, entry.props);
-        textPerPropsKey.set(propsKey, []);
+        texts = [];
+        textPerPropsKey.set(propsKey, texts);
       }
-      (textPerPropsKey.get(propsKey) as string[]).push(entry.text);
+      texts.push(entry.text);
       if (family) {
         const weight = entry.props['font-weight'] || 'normal';
         const style = entry.props['font-style'] || 'normal';
