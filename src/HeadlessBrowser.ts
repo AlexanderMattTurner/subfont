@@ -1,6 +1,9 @@
 import * as urlTools from 'urltools';
 import * as puppeteer from 'puppeteer-core';
-import type { Browser as PuppeteerBrowser } from 'puppeteer-core';
+import type {
+  Browser as PuppeteerBrowser,
+  Page as PuppeteerPage,
+} from 'puppeteer-core';
 import pathModule = require('path');
 import os = require('os');
 import {
@@ -121,6 +124,73 @@ class HeadlessBrowser {
     return this._launchPromise;
   }
 
+  private _attachRequestInterceptor(
+    page: PuppeteerPage,
+    assetGraph: AssetGraph,
+    baseUrl: string
+  ): void {
+    page.on('request', (request) => {
+      const url = request.url();
+      try {
+        if (url.startsWith(baseUrl)) {
+          let agUrl = url.replace(baseUrl, assetGraph.root);
+          if (/\/$/.test(agUrl)) {
+            agUrl += 'index.html';
+          }
+          const asset = assetGraph.findAssets({
+            isLoaded: true,
+            url: agUrl,
+          })[0];
+          if (asset) {
+            request.respond({
+              status: 200,
+              contentType: asset.contentType,
+              body: asset.rawSrc,
+            });
+          } else {
+            request.respond({ status: 404, body: '' });
+          }
+          return;
+        }
+        if (url.startsWith('file:')) {
+          request.continue();
+          return;
+        }
+        // External request — abort to avoid hanging on DNS/network.
+        request.abort('failed');
+      } catch {
+        // Request may already be handled or page may be closing — ignore.
+      }
+    });
+  }
+
+  private _attachErrorListeners(page: PuppeteerPage): void {
+    page.on('requestfailed', (request) => {
+      const failure = request.failure();
+      const reason = failure ? failure.errorText : 'unknown error';
+      this.console.error(
+        `${request.method()} ${request.url()} failed: ${reason}`
+      );
+    });
+
+    page.on('pageerror', (err) => {
+      // Puppeteer v24+ passes Error objects; format stack to match v19 style
+      if (err instanceof Error && err.stack) {
+        // Normalize "at <anonymous> (url:line:col)" to "at url:line:col"
+        const normalized = err.stack.replace(
+          /at <anonymous> \((.+)\)/g,
+          'at $1'
+        );
+        this.console.error(normalized);
+      } else if (err instanceof Error) {
+        this.console.error(`${err.name}: ${err.message}`);
+      } else {
+        this.console.error(err);
+      }
+    });
+    page.on('error', this.console.error);
+  }
+
   async tracePage(htmlAsset: Asset): Promise<TraceResult[]> {
     const assetGraph = htmlAsset.assetGraph as AssetGraph & {
       canonicalRoot?: string;
@@ -134,68 +204,12 @@ class HeadlessBrowser {
         ? assetGraph.canonicalRoot.replace(/\/?$/, '/')
         : 'https://example.com/';
 
-      // Intercept all requests made by the headless browser, and
-      // fake a response from the assetgraph instance if the corresponding
-      // asset is found there:
+      // Intercept all requests made by the headless browser, and fake a
+      // response from the assetgraph instance if the corresponding asset
+      // is found there.
       await page.setRequestInterception(true);
-      page.on('request', (request) => {
-        const url = request.url();
-        try {
-          if (url.startsWith(baseUrl)) {
-            let agUrl = url.replace(baseUrl, assetGraph.root);
-            if (/\/$/.test(agUrl)) {
-              agUrl += 'index.html';
-            }
-            const asset = assetGraph.findAssets({
-              isLoaded: true,
-              url: agUrl,
-            })[0];
-            if (asset) {
-              request.respond({
-                status: 200,
-                contentType: asset.contentType,
-                body: asset.rawSrc,
-              });
-            } else {
-              request.respond({ status: 404, body: '' });
-            }
-            return;
-          }
-          if (url.startsWith('file:')) {
-            request.continue();
-            return;
-          }
-          // External request — abort to avoid hanging on DNS/network.
-          request.abort('failed');
-        } catch {
-          // Request may already be handled or page may be closing — ignore.
-        }
-      });
-
-      page.on('requestfailed', (request) => {
-        const failure = request.failure();
-        const reason = failure ? failure.errorText : 'unknown error';
-        this.console.error(
-          `${request.method()} ${request.url()} failed: ${reason}`
-        );
-      });
-
-      page.on('pageerror', (err) => {
-        // Puppeteer v24+ passes Error objects; format stack to match v19 style
-        if (err instanceof Error && err.stack) {
-          // Normalize "at <anonymous> (url:line:col)" to "at url:line:col"
-          const normalized = err.stack.replace(
-            /at <anonymous> \((.+)\)/g,
-            'at $1'
-          );
-          this.console.error(normalized);
-        } else if (err instanceof Error) {
-          this.console.error(`${err.name}: ${err.message}`);
-        } else {
-          this.console.error(err);
-        }
-      });
-      page.on('error', this.console.error);
+      this._attachRequestInterceptor(page, assetGraph, baseUrl);
+      this._attachErrorListeners(page);
 
       // Prevent the CSP of the page from rejecting our injection of font-tracer
       await page.setBypassCSP(true);

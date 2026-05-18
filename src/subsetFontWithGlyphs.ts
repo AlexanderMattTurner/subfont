@@ -277,26 +277,18 @@ const COLOR_TABLE_TAGS = [
 // everything above 6 are display/license metadata that browsers never read.
 const KEEP_NAME_IDS = [1, 2, 4, 6];
 
-function configureSubsetInput(
+// hb_subset_input_create_or_fail pre-populates the layout-features set with
+// a curated list of shaping-essential tags (locl, ccmp, calt, mark, mkmk,
+// Indic/Arabic/Khmer shaping features, etc.). When featureTags is provided,
+// add the CSS-requested tags on top of that default. Optional features the
+// page never references (e.g. ss##, cv##, smcp, swsh) are then dropped,
+// shrinking the GSUB/GPOS tables. When featureTags is undefined, fall back
+// to retain-all behavior.
+function configureLayoutFeatures(
   exports: HarfbuzzExports,
   input: number,
-  face: number,
-  text: string,
-  glyphIds: number[] | undefined,
-  variationAxes: Record<string, VariationAxisValue> | undefined,
-  featureTags: string[] | undefined,
-  dropMathTable: boolean,
-  dropColorTables: boolean,
-  scriptTags: string[] | undefined
+  featureTags: string[] | undefined
 ): void {
-  // --- Retain layout features ---
-  // hb_subset_input_create_or_fail pre-populates the layout-features set with
-  // a curated list of shaping-essential tags (locl, ccmp, calt, mark, mkmk,
-  // Indic/Arabic/Khmer shaping features, etc.).  When the caller passes
-  // featureTags, we leave that default in place and add the CSS-requested
-  // tags on top.  Optional features the page never references (e.g. ss##,
-  // cv##, smcp, swsh) are then dropped, shrinking the GSUB/GPOS tables.
-  // When featureTags is undefined, fall back to retain-all behavior.
   const layoutFeatures = exports.hb_subset_input_set(
     input,
     HB_SUBSET_SETS_LAYOUT_FEATURE_TAG
@@ -304,46 +296,51 @@ function configureSubsetInput(
   if (featureTags === undefined) {
     exports.hb_set_clear(layoutFeatures);
     exports.hb_set_invert(layoutFeatures);
-  } else {
-    for (const tag of featureTags) {
-      exports.hb_set_add(layoutFeatures, HB_TAG(tag));
-    }
+    return;
   }
-
-  // --- Retain layout scripts ---
-  // When scriptTags is provided, replace harfbuzz's default (all scripts)
-  // with exactly the listed tags. Undefined leaves the default in place.
-  if (scriptTags !== undefined) {
-    const layoutScripts = exports.hb_subset_input_set(
-      input,
-      HB_SUBSET_SETS_LAYOUT_SCRIPT_TAG
-    );
-    exports.hb_set_clear(layoutScripts);
-    for (const tag of scriptTags) {
-      exports.hb_set_add(layoutScripts, HB_TAG(tag));
-    }
+  for (const tag of featureTags) {
+    exports.hb_set_add(layoutFeatures, HB_TAG(tag));
   }
+}
 
-  // --- Strip hinting instructions (ignored by modern browsers) ---
-  const flags = exports.hb_subset_input_get_flags(input);
-  exports.hb_subset_input_set_flags(input, flags | HB_SUBSET_FLAGS_NO_HINTING);
+// When scriptTags is provided, replace harfbuzz's default (all scripts)
+// with exactly the listed tags. Undefined leaves the default in place.
+function configureLayoutScripts(
+  exports: HarfbuzzExports,
+  input: number,
+  scriptTags: string[] | undefined
+): void {
+  if (scriptTags === undefined) return;
+  const layoutScripts = exports.hb_subset_input_set(
+    input,
+    HB_SUBSET_SETS_LAYOUT_SCRIPT_TAG
+  );
+  exports.hb_set_clear(layoutScripts);
+  for (const tag of scriptTags) {
+    exports.hb_set_add(layoutScripts, HB_TAG(tag));
+  }
+}
 
-  // --- Keep only essential name table entries ---
+function configureNameTables(exports: HarfbuzzExports, input: number): void {
   const nameIdSet = exports.hb_subset_input_set(input, HB_SUBSET_SETS_NAME_ID);
   exports.hb_set_clear(nameIdSet);
   for (const id of KEEP_NAME_IDS) {
     exports.hb_set_add(nameIdSet, id);
   }
-
-  // --- Keep only en-US localized name strings ---
   const nameLangSet = exports.hb_subset_input_set(
     input,
     HB_SUBSET_SETS_NAME_LANG_ID
   );
   exports.hb_set_clear(nameLangSet);
   exports.hb_set_add(nameLangSet, KEEP_NAME_LANG_ID_EN_US);
+}
 
-  // --- Drop tables not needed for web rendering ---
+function configureDropTables(
+  exports: HarfbuzzExports,
+  input: number,
+  dropMathTable: boolean,
+  dropColorTables: boolean
+): void {
   const dropTableSet = exports.hb_subset_input_set(
     input,
     HB_SUBSET_SETS_DROP_TABLE_TAG
@@ -359,13 +356,18 @@ function configureSubsetInput(
       exports.hb_set_add(dropTableSet, HB_TAG(tag));
     }
   }
+}
 
-  // --- Add unicode codepoints ---
+// Include codepoints from both NFC and NFD normalized forms so the
+// subsetter covers precomposed and decomposed character variants. This
+// guards against harfbuzz subsetter not always expanding codepoints to
+// their NFC/NFD equivalents (harfbuzz issue #2283).
+function configureUnicodeCodepoints(
+  exports: HarfbuzzExports,
+  input: number,
+  text: string
+): void {
   const inputUnicodes = exports.hb_subset_input_unicode_set(input);
-  // Include codepoints from both NFC and NFD normalized forms so the
-  // subsetter covers precomposed and decomposed character variants.
-  // This guards against harfbuzz subsetter not always expanding
-  // codepoints to their NFC/NFD equivalents (harfbuzz issue #2283).
   const nfc = text.normalize('NFC');
   const nfd = text.normalize('NFD');
   for (const c of nfc) {
@@ -374,28 +376,63 @@ function configureSubsetInput(
   for (const c of nfd) {
     exports.hb_set_add(inputUnicodes, c.codePointAt(0) as number);
   }
+}
 
-  // --- Add explicit glyph IDs (from feature glyph collection) ---
-  if (glyphIds && glyphIds.length > 0) {
-    const glyphSet = exports.hb_subset_input_set(
-      input,
-      HB_SUBSET_SETS_GLYPH_INDEX
-    );
-    for (const gid of glyphIds) {
-      exports.hb_set_add(glyphSet, gid);
+function configureGlyphIds(
+  exports: HarfbuzzExports,
+  input: number,
+  glyphIds: number[] | undefined
+): void {
+  if (!glyphIds || glyphIds.length === 0) return;
+  const glyphSet = exports.hb_subset_input_set(
+    input,
+    HB_SUBSET_SETS_GLYPH_INDEX
+  );
+  for (const gid of glyphIds) {
+    exports.hb_set_add(glyphSet, gid);
+  }
+}
+
+function configureVariationAxes(
+  exports: HarfbuzzExports,
+  input: number,
+  face: number,
+  variationAxes: Record<string, VariationAxisValue> | undefined
+): void {
+  if (!variationAxes) return;
+  for (const [axisName, value] of Object.entries(variationAxes)) {
+    if (typeof value === 'number') {
+      pinAxisLocation(exports, input, face, axisName, value);
+    } else if (value && typeof value === 'object') {
+      setAxisRange(exports, input, face, axisName, value);
     }
   }
+}
 
-  // --- Pin/reduce variation axes ---
-  if (variationAxes) {
-    for (const [axisName, value] of Object.entries(variationAxes)) {
-      if (typeof value === 'number') {
-        pinAxisLocation(exports, input, face, axisName, value);
-      } else if (value && typeof value === 'object') {
-        setAxisRange(exports, input, face, axisName, value);
-      }
-    }
-  }
+function configureSubsetInput(
+  exports: HarfbuzzExports,
+  input: number,
+  face: number,
+  text: string,
+  glyphIds: number[] | undefined,
+  variationAxes: Record<string, VariationAxisValue> | undefined,
+  featureTags: string[] | undefined,
+  dropMathTable: boolean,
+  dropColorTables: boolean,
+  scriptTags: string[] | undefined
+): void {
+  configureLayoutFeatures(exports, input, featureTags);
+  configureLayoutScripts(exports, input, scriptTags);
+
+  // Strip hinting instructions (ignored by modern browsers)
+  const flags = exports.hb_subset_input_get_flags(input);
+  exports.hb_subset_input_set_flags(input, flags | HB_SUBSET_FLAGS_NO_HINTING);
+
+  configureNameTables(exports, input);
+  configureDropTables(exports, input, dropMathTable, dropColorTables);
+  configureUnicodeCodepoints(exports, input, text);
+  configureGlyphIds(exports, input, glyphIds);
+  configureVariationAxes(exports, input, face, variationAxes);
 }
 
 function extractSubsetFont(exports: HarfbuzzExports, subset: number): Buffer {

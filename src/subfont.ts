@@ -71,6 +71,650 @@ interface SubfontFn {
   UsageError: typeof UsageError;
 }
 
+// Variadic console-style log: log/warn accept any argument shape.
+// eslint-disable-next-line no-restricted-syntax
+type LogFn = (...args: unknown[]) => void;
+
+function makeLogger(
+  silent: boolean,
+  console: Console | undefined
+): { log: LogFn; warn: LogFn } {
+  // Variadic console-style helpers: console.log / .warn accept any argument.
+  /* eslint-disable no-restricted-syntax */
+  function logToConsole(severity: 'log' | 'warn', ...args: unknown[]): void {
+    if (!silent && console) {
+      (console[severity] as Console['log'])(...args);
+    }
+  }
+  return {
+    log: (...args: unknown[]) => logToConsole('log', ...args),
+    warn: (...args: unknown[]) => logToConsole('warn', ...args),
+  };
+  /* eslint-enable no-restricted-syntax */
+}
+
+async function resolveInputUrls(
+  inputFiles: Array<string | number | URL>,
+  rootUrl: string | undefined,
+  warn: LogFn
+): Promise<{ inputUrls: string[]; rootUrl: string | undefined }> {
+  // Validate --root path exists early to give a clear error message
+  if (rootUrl && rootUrl.startsWith('file:')) {
+    const rootPath = urlTools.fileUrlToFsPath(rootUrl);
+    try {
+      await fsPromises.access(rootPath);
+    } catch {
+      throw new UsageError(`The --root path does not exist: ${rootPath}`);
+    }
+  }
+  let inputUrls: string[];
+  if (inputFiles.length > 0) {
+    inputUrls = inputFiles.map((urlOrFsPath) =>
+      urlTools.urlOrFsPathToUrl(String(urlOrFsPath), false)
+    );
+    if (!rootUrl) {
+      rootUrl = urlTools.findCommonUrlPrefix(inputUrls);
+      if (rootUrl) {
+        if (rootUrl.startsWith('file:')) {
+          warn(`Guessing --root from input files: ${rootUrl}`);
+        } else {
+          rootUrl = urlTools.ensureTrailingSlash(rootUrl);
+        }
+      }
+    }
+  } else if (rootUrl && rootUrl.startsWith('file:')) {
+    inputUrls = [`${rootUrl}**/*.html`];
+    warn(`No input files specified, defaulting to ${inputUrls[0]}`);
+  } else {
+    throw new UsageError(
+      "No input files and no --root specified (or it isn't file:), cannot proceed.\n"
+    );
+  }
+  return { inputUrls, rootUrl };
+}
+
+// Subfont only needs to follow CSS-related relations during populate.
+const cssRelatedTypes = [
+  'HtmlStyle',
+  'SvgStyle',
+  'CssImport',
+  'CssFontFaceSrc',
+  'HttpRedirect',
+  'HtmlMetaRefresh',
+  'HtmlConditionalComment',
+  'HtmlNoscript',
+];
+
+function buildFollowRelationsQuery(recursive: boolean): AssetQuery {
+  if (!recursive) {
+    return { type: { $in: cssRelatedTypes } };
+  }
+  return {
+    $or: [
+      { type: { $in: cssRelatedTypes } },
+      {
+        type: { $in: [...cssRelatedTypes, 'HtmlAnchor', 'SvgAnchor'] },
+        crossorigin: false,
+      },
+    ],
+  };
+}
+
+// Catch-clause idiom: error values are `unknown` until narrowed.
+// eslint-disable-next-line no-restricted-syntax
+function isExtensionlessEnoent(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  // eslint-disable-next-line no-restricted-syntax
+  const e = err as { code?: unknown; path?: unknown };
+  return (
+    e.code === 'ENOENT' &&
+    typeof e.path === 'string' &&
+    !/\.[^/]+$/.test(e.path)
+  );
+}
+
+async function installWarningHandlers(
+  assetGraph: InstanceType<typeof AssetGraph>,
+  silent: boolean,
+  strict: boolean,
+  console: Console | undefined
+): Promise<() => boolean> {
+  let sawWarning = false;
+  const origEmit = assetGraph.emit;
+  // EventEmitter.emit forwards arbitrary varargs.
+  // eslint-disable-next-line no-restricted-syntax
+  assetGraph.emit = function (event: string, ...rest: unknown[]) {
+    if (event === 'warn') {
+      if (isExtensionlessEnoent(rest[0])) return false;
+      sawWarning = true;
+    }
+    return origEmit.call(this, event, ...rest);
+  };
+  if (silent) {
+    assetGraph.on('warn', () => {});
+  } else {
+    await assetGraph.logEvents({ console, stopOnWarning: strict });
+  }
+  return () => sawWarning;
+}
+
+function handleInitialRedirects(
+  assetGraph: InstanceType<typeof AssetGraph>
+): void {
+  const entrypointAssets = assetGraph.findAssets({ isInitial: true });
+  const redirectOrigins = new Set<string>();
+  type Redirect = Relation & { id: number };
+  for (const relation of (
+    assetGraph.findRelations({ type: 'HttpRedirect' }) as Redirect[]
+  ).sort((a, b) => a.id - b.id)) {
+    if (!relation.from.isInitial) continue;
+    assetGraph.info(
+      new Error(`${relation.from.url} redirected to ${relation.to.url}`)
+    );
+    relation.to.isInitial = true;
+    relation.from.isInitial = false;
+    redirectOrigins.add((relation.to as Asset & { origin: string }).origin);
+  }
+  if (
+    entrypointAssets.length === redirectOrigins.size &&
+    redirectOrigins.size === 1
+  ) {
+    const newRoot = `${[...redirectOrigins][0]}/`;
+    if (newRoot !== assetGraph.root) {
+      assetGraph.info(
+        new Error(
+          `All entrypoints redirected, changing root from ${assetGraph.root} to ${newRoot}`
+        )
+      );
+      assetGraph.root = newRoot;
+    }
+  }
+}
+
+function resolveCacheDir(
+  cache: boolean | string,
+  rootUrl: string | undefined,
+  warn: LogFn
+): string | null {
+  if (cache && typeof cache === 'string' && cache.length > 0) {
+    return cache;
+  }
+  if (cache && rootUrl && rootUrl.startsWith('file:')) {
+    return pathModule.join(urlTools.fileUrlToFsPath(rootUrl), '.subfont-cache');
+  }
+  if (cache) {
+    warn(
+      '--cache ignored: caching requires a local --root or an explicit cache path'
+    );
+  }
+  return null;
+}
+
+async function runPostSubsetPostProcessing(
+  assetGraph: InstanceType<typeof AssetGraph>,
+  rootUrl: string | undefined
+): Promise<void> {
+  // Omit function calls
+  for (const relation of assetGraph.findRelations({
+    type: 'JavaScriptStaticUrl',
+    to: { isLoaded: true },
+  })) {
+    relation.omitFunctionCall();
+  }
+
+  for (const asset of assetGraph.findAssets({
+    isDirty: true,
+    isInline: false,
+    isLoaded: true,
+    type: 'Css',
+  })) {
+    if (asset.url.startsWith(assetGraph.root)) continue;
+    assetGraph.info(new Error(`Pulling down modified stylesheet ${asset.url}`));
+    const safeName =
+      sanitizeFilename(asset.baseName || '', { replacement: '_' }) || 'index';
+    asset.url = `${assetGraph.root}subfont/${safeName}-${asset.md5Hex.slice(
+      0,
+      10
+    )}${asset.extension || asset.defaultExtension}`;
+  }
+
+  if (rootUrl && !rootUrl.startsWith('file:')) {
+    for (const relation of assetGraph.findRelations({
+      hrefType: { $in: ['protocolRelative', 'absolute'] },
+    })) {
+      relation.hrefType = 'rootRelative';
+    }
+
+    await assetGraph.moveAssets(
+      {
+        type: 'Html',
+        isLoaded: true,
+        isInline: false,
+        fileName: { $or: ['', undefined] },
+      },
+      (asset) =>
+        `${asset.url.replace(/\/?$/, '/')}index${asset.defaultExtension}`
+    );
+  }
+}
+
+interface VariantEntry {
+  fontUrl: string;
+  props: Record<string, string>;
+  preload: boolean;
+  fullyInstanced?: boolean;
+  numAxesPinned?: number;
+  numAxesReduced?: number;
+  smallestOriginalFormat?: string;
+  smallestSubsetFormat?: string;
+  smallestOriginalSize: number;
+  smallestSubsetSize?: number;
+  codepoints: { original: number; used: number; unused: number };
+  pageCount: number;
+  samplePages: string[];
+}
+
+// One entry per unique (fontUrl, props) variant. A variable-font URL can
+// back multiple variants, so fontUrl alone is too coarse. Codepoint unions
+// and subset sizes are per-font, so the remaining per-page variation worth
+// surfacing is just which pages reference the variant.
+function printVariantSummary(
+  fontInfo: Array<{ assetFileName: string; fontUsages: ReportFontUsage[] }>,
+  log: LogFn
+): void {
+  const SAMPLE_PAGES = 5;
+  const byVariant = new Map<string, VariantEntry>();
+  for (const { assetFileName, fontUsages } of fontInfo) {
+    for (const fu of fontUsages) {
+      const p = fu.props || {};
+      const key = [
+        fu.fontUrl || '[inline]',
+        p['font-family'],
+        p['font-weight'],
+        p['font-style'],
+        p['font-stretch'],
+      ].join('\0');
+      let entry = byVariant.get(key);
+      if (!entry) {
+        entry = {
+          fontUrl: fu.fontUrl,
+          props: fu.props,
+          preload: fu.preload,
+          fullyInstanced: fu.fullyInstanced,
+          numAxesPinned: fu.numAxesPinned,
+          numAxesReduced: fu.numAxesReduced,
+          smallestOriginalFormat: fu.smallestOriginalFormat,
+          smallestSubsetFormat: fu.smallestSubsetFormat,
+          smallestOriginalSize: fu.smallestOriginalSize,
+          smallestSubsetSize: fu.smallestSubsetSize,
+          codepoints: {
+            original: fu.codepoints.original.length,
+            used: fu.codepoints.used.length,
+            unused: fu.codepoints.unused.length,
+          },
+          pageCount: 0,
+          samplePages: [],
+        };
+        byVariant.set(key, entry);
+      }
+      entry.pageCount += 1;
+      if (entry.samplePages.length < SAMPLE_PAGES) {
+        entry.samplePages.push(assetFileName);
+      }
+    }
+  }
+  for (const entry of byVariant.values()) {
+    const remaining = entry.pageCount - entry.samplePages.length;
+    if (remaining > 0) {
+      entry.samplePages.push(`...and ${remaining} more`);
+    }
+  }
+  log(
+    `Font variants (aggregated across ${fontInfo.length} page${fontInfo.length === 1 ? '' : 's'}):`
+  );
+  log(util.inspect([...byVariant.values()], false, 99));
+}
+
+function buildInstancingSuffix(fontUsage: ReportFontUsage): string {
+  const numAxesReduced = fontUsage.numAxesReduced ?? 0;
+  const numAxesPinned = fontUsage.numAxesPinned ?? 0;
+  if (fontUsage.fullyInstanced) {
+    return ', fully instanced';
+  }
+  if (numAxesReduced === 0 && numAxesPinned === 0) {
+    return '';
+  }
+  const instancingInfos: string[] = [];
+  if (numAxesPinned > 0) {
+    instancingInfos.push(
+      `${numAxesPinned} ${numAxesPinned === 1 ? 'axis' : 'axes'} pinned`
+    );
+  }
+  if (numAxesReduced) {
+    instancingInfos.push(
+      `${numAxesReduced}${
+        numAxesPinned > 0 ? '' : numAxesReduced === 1 ? ' axis' : ' axes'
+      } reduced`
+    );
+  }
+  return `, partially instanced (${instancingInfos.join(', ')})`;
+}
+
+function describeFontUsageStatus(
+  fontUsage: ReportFontUsage,
+  usedPad: number,
+  originalPad: number
+): { status: string; savings: number } {
+  const variantShortName = `${fontUsage.props['font-weight']}${
+    fontUsage.props['font-style'] === 'italic' ? 'i' : ' '
+  }`;
+  let status = `    ${variantShortName}: ${String(
+    fontUsage.codepoints.used.length
+  ).padStart(usedPad)}/${String(fontUsage.codepoints.original.length).padStart(
+    originalPad
+  )} codepoints used`;
+  if (fontUsage.codepoints.page.length !== fontUsage.codepoints.used.length) {
+    status += ` (${fontUsage.codepoints.page.length} on this page)`;
+  }
+  let savings = 0;
+  if (fontUsage.smallestSubsetSize !== undefined) {
+    status += buildInstancingSuffix(fontUsage);
+    status += `, ${prettyBytes(fontUsage.smallestOriginalSize)} (${
+      fontUsage.smallestOriginalFormat
+    }) => ${prettyBytes(fontUsage.smallestSubsetSize)} (${
+      fontUsage.smallestSubsetFormat
+    })`;
+    savings = fontUsage.smallestOriginalSize - fontUsage.smallestSubsetSize;
+  } else {
+    status += ', no subset font created';
+  }
+  return { status, savings };
+}
+
+function printPerAssetFontReport(
+  fontInfo: Array<{ assetFileName: string; fontUsages: ReportFontUsage[] }>,
+  sumSizesBefore: number,
+  sumSizesAfter: number,
+  log: LogFn
+): number {
+  let totalSavings = sumSizesBefore - sumSizesAfter;
+  for (const { assetFileName, fontUsages } of fontInfo) {
+    let sumSmallestSubsetSize = 0;
+    let sumSmallestOriginalSize = 0;
+    let maxUsedCodePoints = 0;
+    let maxOriginalCodePoints = 0;
+    for (const fontUsage of fontUsages) {
+      sumSmallestSubsetSize += fontUsage.smallestSubsetSize || 0;
+      sumSmallestOriginalSize += fontUsage.smallestOriginalSize;
+      maxUsedCodePoints = Math.max(
+        fontUsage.codepoints.used.length,
+        maxUsedCodePoints
+      );
+      maxOriginalCodePoints = Math.max(
+        fontUsage.codepoints.original.length,
+        maxOriginalCodePoints
+      );
+    }
+    const fontUsagesByFontFamily: Record<string, ReportFontUsage[]> = {};
+    for (const fontUsage of fontUsages) {
+      const key = fontUsage.props['font-family'];
+      if (!fontUsagesByFontFamily[key]) fontUsagesByFontFamily[key] = [];
+      fontUsagesByFontFamily[key].push(fontUsage);
+    }
+    const numFonts = Object.keys(fontUsagesByFontFamily).length;
+    log(
+      `${assetFileName}: ${numFonts} font${numFonts === 1 ? '' : 's'} (${
+        fontUsages.length
+      } variant${fontUsages.length === 1 ? '' : 's'}) in use, ${prettyBytes(
+        sumSmallestOriginalSize
+      )} total. Created subsets: ${prettyBytes(sumSmallestSubsetSize)} total`
+    );
+    const usedPad = String(maxUsedCodePoints).length;
+    const originalPad = String(maxOriginalCodePoints).length;
+    for (const fontFamily of Object.keys(fontUsagesByFontFamily).sort()) {
+      log(`  ${fontFamily}:`);
+      for (const fontUsage of fontUsagesByFontFamily[fontFamily]) {
+        const { status, savings } = describeFontUsageStatus(
+          fontUsage,
+          usedPad,
+          originalPad
+        );
+        totalSavings += savings;
+        log(status);
+      }
+    }
+  }
+  return totalSavings;
+}
+
+type SubsetTimings = Record<
+  string,
+  number | undefined | Record<string, number | undefined>
+>;
+
+function printTimingSummary(
+  outerTimings: Record<string, number | undefined>,
+  subsetFontsTotal: number,
+  subsetTimings: SubsetTimings | undefined,
+  log: LogFn
+): void {
+  const st = subsetTimings ?? {};
+  const detailsRaw = st.collectTextsByPageDetails;
+  const details: Record<string, number | undefined> =
+    detailsRaw && typeof detailsRaw === 'object' ? detailsRaw : {};
+  const stNum = (key: string): number | undefined => {
+    const value = st[key];
+    return typeof value === 'number' ? value : undefined;
+  };
+  const totalElapsed =
+    (outerTimings.loadAssets || 0) +
+    (outerTimings['populate (initial)'] || 0) +
+    subsetFontsTotal +
+    (outerTimings['post-subsetFonts processing'] || 0) +
+    (outerTimings.writeAssetsToDisc || 0) +
+    (outerTimings['output reporting'] || 0);
+
+  const rows: Array<[string, number | undefined, number]> = [
+    ['loadAssets', outerTimings.loadAssets, 0],
+    ['populate (initial)', outerTimings['populate (initial)'], 0],
+    ['subsetFonts total', subsetFontsTotal, 0],
+    ['collectTextsByPage', stNum('collectTextsByPage'), 1],
+    ['Stylesheet precompute', details['Stylesheet precompute'], 2],
+    ['Full tracing', details['Full tracing'], 2],
+    ['Fast-path extraction', details['Fast-path extraction'], 2],
+    ['Per-page loop', details['Per-page loop'], 2],
+    ['Post-processing', details['Post-processing total'], 2],
+    ['codepoint generation', stNum('codepoint generation'), 1],
+    ['getSubsetsForFontUsage', stNum('getSubsetsForFontUsage'), 1],
+    ['insert subsets loop', stNum('insert subsets loop'), 1],
+    ['inject font-family', stNum('inject subset font-family'), 1],
+    ['post-subsetFonts', outerTimings['post-subsetFonts processing'], 0],
+    ['writeAssetsToDisc', outerTimings.writeAssetsToDisc, 0],
+    ['output reporting', outerTimings['output reporting'], 0],
+  ];
+
+  log('\n═══ Subfont Timing Summary ═══');
+  for (const [label, ms, indent] of rows) {
+    if (ms === undefined) continue;
+    const prefix = '  '.repeat(indent + 1);
+    const padded = (ms || 0).toLocaleString().padStart(8);
+    log(`${prefix}${label}: ${padded}ms`);
+  }
+  log('  ─────────────────────────────────');
+  log(`  Total: ${totalElapsed.toLocaleString().padStart(8)}ms`);
+  log('═══════════════════════════════\n');
+}
+
+function printDryRunPreview(
+  assetGraph: InstanceType<typeof AssetGraph>,
+  log: LogFn
+): void {
+  log('\n═══ Dry Run Preview ═══');
+  const assetsToWrite = assetGraph.findAssets({
+    isLoaded: true,
+    isRedirect: { $ne: true },
+    url: (url: string) => url && url.startsWith(assetGraph.root),
+  });
+  const byType: Record<
+    string,
+    { count: number; size: number; files: string[] }
+  > = {};
+  let totalOutputSize = 0;
+  for (const asset of assetsToWrite) {
+    const type = asset.type || 'Other';
+    if (!byType[type]) byType[type] = { count: 0, size: 0, files: [] };
+    const size = asset.rawSrc ? asset.rawSrc.length : 0;
+    byType[type].count += 1;
+    byType[type].size += size;
+    totalOutputSize += size;
+
+    if (asset.url && asset.url.includes('/subfont/')) {
+      byType[type].files.push(
+        `    ${asset.url.replace(assetGraph.root, '/')} (${prettyBytes(size)})`
+      );
+    }
+  }
+  for (const [type, info] of Object.entries(byType).sort(
+    ([, a], [, b]) => b.size - a.size
+  )) {
+    log(
+      `  ${type}: ${info.count} file${info.count === 1 ? '' : 's'}, ${prettyBytes(info.size)}`
+    );
+    for (const file of info.files) {
+      log(file);
+    }
+  }
+  log(`  ─────────────────────────────────`);
+  log(`  Total output: ${prettyBytes(totalOutputSize)}`);
+
+  const dirtyHtmlAssets = assetGraph.findAssets({
+    isDirty: true,
+    isLoaded: true,
+    type: { $in: ['Html', 'Svg'] },
+  });
+  if (dirtyHtmlAssets.length > 0) {
+    log(`\n  Modified HTML/SVG files (${dirtyHtmlAssets.length}):`);
+    for (const asset of dirtyHtmlAssets) {
+      log(`    ${asset.urlOrDescription}`);
+    }
+  }
+
+  const subsetCssAssets = assetGraph.findAssets({
+    type: 'Css',
+    isLoaded: true,
+    url: (url: string) => url && url.includes('/subfont/'),
+  });
+  if (subsetCssAssets.length > 0) {
+    log(
+      `\n  Subset CSS files that would be created (${subsetCssAssets.length}):`
+    );
+    for (const css of subsetCssAssets) {
+      const fontFaceCount = (css.text.match(/@font-face/g) || []).length;
+      log(
+        `    ${css.url.replace(assetGraph.root, '/')} (${prettyBytes(css.rawSrc.length)}, ${fontFaceCount} @font-face rule${fontFaceCount === 1 ? '' : 's'})`
+      );
+    }
+  }
+
+  log('═══════════════════════════════\n');
+  log('Dry run complete — no files were written.');
+}
+
+async function resolveRootsAndInputs(
+  root: string | undefined,
+  output: string | undefined,
+  inputFiles: Array<string | number | URL>,
+  inPlace: boolean,
+  dryRun: boolean,
+  warn: LogFn
+): Promise<{
+  rootUrl: string | undefined;
+  outRoot: string | undefined;
+  inputUrls: string[];
+}> {
+  let rootUrl: string | undefined =
+    root && urlTools.urlOrFsPathToUrl(root, true);
+  const outRoot = output && urlTools.urlOrFsPathToUrl(output, true);
+  const resolved = await resolveInputUrls(inputFiles, rootUrl, warn);
+  rootUrl = resolved.rootUrl;
+  const inputUrls = resolved.inputUrls;
+
+  if (!inputUrls[0].startsWith('file:') && !outRoot && !dryRun) {
+    throw new UsageError(
+      '--output has to be specified when using non-file input urls'
+    );
+  }
+  if (!inPlace && !outRoot && !dryRun) {
+    throw new UsageError(
+      'Either --output, --in-place, or --dry-run has to be specified'
+    );
+  }
+  return { rootUrl, outRoot, inputUrls };
+}
+
+function createAssetGraphForRun(
+  rootUrl: string | undefined,
+  canonicalRoot: string | undefined
+): InstanceType<typeof AssetGraph> {
+  const assetGraphConfig: { root: string | undefined; canonicalRoot?: string } =
+    { root: rootUrl, canonicalRoot };
+  if (rootUrl && !rootUrl.startsWith('file:')) {
+    // Ensure trailing slash
+    assetGraphConfig.canonicalRoot = rootUrl.replace(/\/?$/, '/');
+  }
+  return new AssetGraph(assetGraphConfig);
+}
+
+// Mutable run-state shared across the orchestration helpers. The owner
+// (subfont) builds this up; each phase reads/writes its slice. Bundles the
+// long-lived dependencies (assetGraph, log, trackPhase) so phase helpers
+// don't need a 10-field args interface each.
+interface SubfontRunState {
+  assetGraph: InstanceType<typeof AssetGraph>;
+  log: LogFn;
+  trackPhase: ReturnType<typeof makePhaseTracker>;
+  outerTimings: Record<string, number | undefined>;
+  debug: boolean;
+  dryRun: boolean;
+  outRoot: string | undefined;
+}
+
+function runOutputReportingPhase(
+  state: SubfontRunState,
+  fontInfo: Array<{ assetFileName: string; fontUsages: ReportFontUsage[] }>,
+  sumSizesBefore: number,
+  sumSizesAfter: number,
+  subsetFontsTotal: number,
+  subsetTimings: SubsetTimings | undefined
+): void {
+  const { log, trackPhase, outerTimings, debug, dryRun } = state;
+  const reportingPhase = trackPhase('output reporting');
+  if (debug) printVariantSummary(fontInfo, log);
+  const totalSavings = printPerAssetFontReport(
+    fontInfo,
+    sumSizesBefore,
+    sumSizesAfter,
+    log
+  );
+  log(
+    `HTML/SVG/JS/CSS size increase: ${prettyBytes(
+      sumSizesAfter - sumSizesBefore
+    )}`
+  );
+  log(`Total savings: ${prettyBytes(totalSavings)}`);
+  outerTimings['output reporting'] = reportingPhase.end();
+
+  if (debug) {
+    printTimingSummary(outerTimings, subsetFontsTotal, subsetTimings, log);
+  }
+
+  if (dryRun) {
+    printDryRunPreview(state.assetGraph, log);
+  } else {
+    log('Output written to', state.outRoot || state.assetGraph.root);
+  }
+}
+
 const subfont = async function subfont(
   {
     root,
@@ -113,22 +757,7 @@ const subfont = async function subfont(
     process.env.BROWSERSLIST = 'defaults';
   }
 
-  const formats = ['woff2'];
-
-  // Variadic console-style helpers: console.log / .warn accept any argument.
-  /* eslint-disable no-restricted-syntax */
-  function logToConsole(severity: 'log' | 'warn', ...args: unknown[]): void {
-    if (!silent && console) {
-      (console[severity] as Console['log'])(...args);
-    }
-  }
-  function log(...args: unknown[]): void {
-    logToConsole('log', ...args);
-  }
-  function warn(...args: unknown[]): void {
-    logToConsole('warn', ...args);
-  }
-  /* eslint-enable no-restricted-syntax */
+  const { log, warn } = makeLogger(silent, console);
 
   const maxConcurrency = getMaxConcurrency();
   if (concurrency !== undefined && concurrency > maxConcurrency) {
@@ -137,126 +766,22 @@ const subfont = async function subfont(
     );
   }
 
-  let rootUrl: string | undefined =
-    root && urlTools.urlOrFsPathToUrl(root, true);
-  // Validate --root path exists early to give a clear error message
-  if (root && rootUrl && rootUrl.startsWith('file:')) {
-    const rootPath = urlTools.fileUrlToFsPath(rootUrl);
-    try {
-      await fsPromises.access(rootPath);
-    } catch {
-      throw new UsageError(`The --root path does not exist: ${rootPath}`);
-    }
-  }
-  const outRoot = output && urlTools.urlOrFsPathToUrl(output, true);
-  let inputUrls: string[];
-  if (inputFiles.length > 0) {
-    inputUrls = inputFiles.map((urlOrFsPath) =>
-      urlTools.urlOrFsPathToUrl(String(urlOrFsPath), false)
-    );
-    if (!rootUrl) {
-      rootUrl = urlTools.findCommonUrlPrefix(inputUrls);
+  const { rootUrl, outRoot, inputUrls } = await resolveRootsAndInputs(
+    root,
+    output,
+    inputFiles,
+    inPlace,
+    dryRun,
+    warn
+  );
 
-      if (rootUrl) {
-        if (rootUrl.startsWith('file:')) {
-          warn(`Guessing --root from input files: ${rootUrl}`);
-        } else {
-          rootUrl = urlTools.ensureTrailingSlash(rootUrl);
-        }
-      }
-    }
-  } else if (rootUrl && rootUrl.startsWith('file:')) {
-    inputUrls = [`${rootUrl}**/*.html`];
-    warn(`No input files specified, defaulting to ${inputUrls[0]}`);
-  } else {
-    throw new UsageError(
-      "No input files and no --root specified (or it isn't file:), cannot proceed.\n"
-    );
-  }
-
-  if (!inputUrls[0].startsWith('file:') && !outRoot && !dryRun) {
-    throw new UsageError(
-      '--output has to be specified when using non-file input urls'
-    );
-  }
-
-  if (!inPlace && !outRoot && !dryRun) {
-    throw new UsageError(
-      'Either --output, --in-place, or --dry-run has to be specified'
-    );
-  }
-
-  const assetGraphConfig: { root: string | undefined; canonicalRoot?: string } =
-    {
-      root: rootUrl,
-      canonicalRoot,
-    };
-
-  if (rootUrl && !rootUrl.startsWith('file:')) {
-    assetGraphConfig.canonicalRoot = rootUrl.replace(/\/?$/, '/'); // Ensure trailing slash
-  }
-
-  // Subfont only needs to follow CSS-related relations during populate.
-  const cssRelatedTypes = [
-    'HtmlStyle',
-    'SvgStyle',
-    'CssImport',
-    'CssFontFaceSrc',
-    'HttpRedirect',
-    'HtmlMetaRefresh',
-    'HtmlConditionalComment',
-    'HtmlNoscript',
-  ];
-
-  let followRelationsQuery: AssetQuery;
-  if (recursive) {
-    followRelationsQuery = {
-      $or: [
-        {
-          type: { $in: cssRelatedTypes },
-        },
-        {
-          type: { $in: [...cssRelatedTypes, 'HtmlAnchor', 'SvgAnchor'] },
-          crossorigin: false,
-        },
-      ],
-    };
-  } else {
-    followRelationsQuery = {
-      type: { $in: cssRelatedTypes },
-    };
-  }
-  const assetGraph = new AssetGraph(assetGraphConfig);
-
-  // Catch-clause idiom: error values are `unknown` until narrowed.
-  // eslint-disable-next-line no-restricted-syntax
-  function isExtensionlessEnoent(err: unknown): boolean {
-    if (typeof err !== 'object' || err === null) return false;
-    // eslint-disable-next-line no-restricted-syntax
-    const e = err as { code?: unknown; path?: unknown };
-    return (
-      e.code === 'ENOENT' &&
-      typeof e.path === 'string' &&
-      !/\.[^/]+$/.test(e.path)
-    );
-  }
-
-  let sawWarning = false;
-  const origEmit = assetGraph.emit;
-  // EventEmitter.emit forwards arbitrary varargs.
-  // eslint-disable-next-line no-restricted-syntax
-  assetGraph.emit = function (event: string, ...rest: unknown[]) {
-    if (event === 'warn') {
-      if (isExtensionlessEnoent(rest[0])) return false;
-      sawWarning = true;
-    }
-    return origEmit.call(this, event, ...rest);
-  };
-  if (silent) {
-    assetGraph.on('warn', () => {});
-  } else {
-    await assetGraph.logEvents({ console, stopOnWarning: strict });
-  }
+  const assetGraph = createAssetGraphForRun(rootUrl, canonicalRoot);
+  const getSawWarning = await installWarningHandlers(
+    assetGraph,
+    silent,
+    strict,
+    console
+  );
 
   const outerTimings: Record<string, number | undefined> = {};
   // The tracker writes with console.log (duck-typed). Route it through
@@ -270,47 +795,16 @@ const subfont = async function subfont(
 
   const populatePhase = trackPhase('populate (initial)');
   await assetGraph.populate({
-    followRelations: followRelationsQuery,
+    followRelations: buildFollowRelationsQuery(recursive),
   });
   outerTimings['populate (initial)'] = populatePhase.end();
 
-  const entrypointAssets = assetGraph.findAssets({ isInitial: true });
-  const redirectOrigins = new Set<string>();
-  type Redirect = Relation & { id: number };
-  for (const relation of (
-    assetGraph.findRelations({ type: 'HttpRedirect' }) as Redirect[]
-  ).sort((a, b) => a.id - b.id)) {
-    if (relation.from.isInitial) {
-      assetGraph.info(
-        new Error(`${relation.from.url} redirected to ${relation.to.url}`)
-      );
-      relation.to.isInitial = true;
-      relation.from.isInitial = false;
-
-      redirectOrigins.add((relation.to as Asset & { origin: string }).origin);
-    }
-  }
-  if (
-    entrypointAssets.length === redirectOrigins.size &&
-    redirectOrigins.size === 1
-  ) {
-    const newRoot = `${[...redirectOrigins][0]}/`;
-    if (newRoot !== assetGraph.root) {
-      assetGraph.info(
-        new Error(
-          `All entrypoints redirected, changing root from ${assetGraph.root} to ${newRoot}`
-        )
-      );
-      assetGraph.root = newRoot;
-    }
-  }
+  handleInitialRedirects(assetGraph);
 
   const sizeableAssetQuery = {
     isInline: false,
     isLoaded: true,
-    type: {
-      $in: ['Html', 'Svg', 'Css', 'JavaScript'],
-    },
+    type: { $in: ['Html', 'Svg', 'Css', 'JavaScript'] },
   };
   let sumSizesBefore = 0;
   for (const asset of assetGraph.findAssets(sizeableAssetQuery)) {
@@ -323,25 +817,13 @@ const subfont = async function subfont(
     );
   }
 
-  let cacheDir: string | null = null;
-  if (cache && typeof cache === 'string' && cache.length > 0) {
-    cacheDir = cache;
-  } else if (cache && rootUrl && rootUrl.startsWith('file:')) {
-    cacheDir = pathModule.join(
-      urlTools.fileUrlToFsPath(rootUrl),
-      '.subfont-cache'
-    );
-  } else if (cache) {
-    warn(
-      '--cache ignored: caching requires a local --root or an explicit cache path'
-    );
-  }
+  const cacheDir = resolveCacheDir(cache, rootUrl, warn);
 
   const subsetPhase = trackPhase('subsetFonts total');
   const { fontInfo, timings: subsetTimings } = await subsetFonts(assetGraph, {
     inlineCss,
     fontDisplay,
-    formats,
+    formats: ['woff2'],
     omitFallbacks: !fallbacks,
     hrefType: relativeUrls ? 'relative' : 'rootRelative',
     text,
@@ -360,56 +842,10 @@ const subfont = async function subfont(
   for (const asset of assetGraph.findAssets(sizeableAssetQuery)) {
     sumSizesAfter += asset.rawSrc.length;
   }
-
-  // Omit function calls:
-  for (const relation of assetGraph.findRelations({
-    type: 'JavaScriptStaticUrl',
-    to: { isLoaded: true },
-  })) {
-    relation.omitFunctionCall();
-  }
-
-  for (const asset of assetGraph.findAssets({
-    isDirty: true,
-    isInline: false,
-    isLoaded: true,
-    type: 'Css',
-  })) {
-    if (!asset.url.startsWith(assetGraph.root)) {
-      assetGraph.info(
-        new Error(`Pulling down modified stylesheet ${asset.url}`)
-      );
-      const safeName =
-        sanitizeFilename(asset.baseName || '', { replacement: '_' }) || 'index';
-      asset.url = `${assetGraph.root}subfont/${safeName}-${asset.md5Hex.slice(
-        0,
-        10
-      )}${asset.extension || asset.defaultExtension}`;
-    }
-  }
-
-  if (rootUrl && !rootUrl.startsWith('file:')) {
-    for (const relation of assetGraph.findRelations({
-      hrefType: { $in: ['protocolRelative', 'absolute'] },
-    })) {
-      relation.hrefType = 'rootRelative';
-    }
-
-    await assetGraph.moveAssets(
-      {
-        type: 'Html',
-        isLoaded: true,
-        isInline: false,
-        fileName: { $or: ['', undefined] },
-      },
-      (asset) =>
-        `${asset.url.replace(/\/?$/, '/')}index${asset.defaultExtension}`
-    );
-  }
-
+  await runPostSubsetPostProcessing(assetGraph, rootUrl);
   outerTimings['post-subsetFonts processing'] = postProcessingPhase.end();
 
-  if (strict && sawWarning) {
+  if (strict && getSawWarning()) {
     // In non-silent mode, assetgraph's logEvents normally exits earlier via
     // stopOnWarning. This guard covers silent mode and warnings that slipped
     // past a transform boundary.
@@ -432,301 +868,23 @@ const subfont = async function subfont(
   }
   outerTimings.writeAssetsToDisc = writePhase.end();
 
-  const reportingPhase = trackPhase('output reporting');
-  if (debug) {
-    // One entry per unique (fontUrl, props) variant. A variable-font URL can
-    // back multiple variants, so fontUrl alone is too coarse. Codepoint unions
-    // and subset sizes are per-font, so the remaining per-page variation
-    // worth surfacing is just which pages reference the variant.
-    const SAMPLE_PAGES = 5;
-    interface VariantEntry {
-      fontUrl: string;
-      props: Record<string, string>;
-      preload: boolean;
-      fullyInstanced?: boolean;
-      numAxesPinned?: number;
-      numAxesReduced?: number;
-      smallestOriginalFormat?: string;
-      smallestSubsetFormat?: string;
-      smallestOriginalSize: number;
-      smallestSubsetSize?: number;
-      codepoints: { original: number; used: number; unused: number };
-      pageCount: number;
-      samplePages: string[];
-    }
-    const byVariant = new Map<string, VariantEntry>();
-    for (const { assetFileName, fontUsages } of fontInfo) {
-      for (const fu of fontUsages) {
-        const p = fu.props || {};
-        const key = [
-          fu.fontUrl || '[inline]',
-          p['font-family'],
-          p['font-weight'],
-          p['font-style'],
-          p['font-stretch'],
-        ].join('\0');
-        let entry = byVariant.get(key);
-        if (!entry) {
-          entry = {
-            fontUrl: fu.fontUrl,
-            props: fu.props,
-            preload: fu.preload,
-            fullyInstanced: fu.fullyInstanced,
-            numAxesPinned: fu.numAxesPinned,
-            numAxesReduced: fu.numAxesReduced,
-            smallestOriginalFormat: fu.smallestOriginalFormat,
-            smallestSubsetFormat: fu.smallestSubsetFormat,
-            smallestOriginalSize: fu.smallestOriginalSize,
-            smallestSubsetSize: fu.smallestSubsetSize,
-            codepoints: {
-              original: fu.codepoints.original.length,
-              used: fu.codepoints.used.length,
-              unused: fu.codepoints.unused.length,
-            },
-            pageCount: 0,
-            samplePages: [],
-          };
-          byVariant.set(key, entry);
-        }
-        entry.pageCount += 1;
-        if (entry.samplePages.length < SAMPLE_PAGES) {
-          entry.samplePages.push(assetFileName);
-        }
-      }
-    }
-    for (const entry of byVariant.values()) {
-      const remaining = entry.pageCount - entry.samplePages.length;
-      if (remaining > 0) {
-        entry.samplePages.push(`...and ${remaining} more`);
-      }
-    }
-    log(
-      `Font variants (aggregated across ${fontInfo.length} page${fontInfo.length === 1 ? '' : 's'}):`
-    );
-    log(util.inspect([...byVariant.values()], false, 99));
-  }
-
-  let totalSavings = sumSizesBefore - sumSizesAfter;
-  for (const { assetFileName, fontUsages } of fontInfo) {
-    let sumSmallestSubsetSize = 0;
-    let sumSmallestOriginalSize = 0;
-    let maxUsedCodePoints = 0;
-    let maxOriginalCodePoints = 0;
-    for (const fontUsage of fontUsages) {
-      sumSmallestSubsetSize += fontUsage.smallestSubsetSize || 0;
-      sumSmallestOriginalSize += fontUsage.smallestOriginalSize;
-      maxUsedCodePoints = Math.max(
-        fontUsage.codepoints.used.length,
-        maxUsedCodePoints
-      );
-      maxOriginalCodePoints = Math.max(
-        fontUsage.codepoints.original.length,
-        maxOriginalCodePoints
-      );
-    }
-    const fontUsagesByFontFamily: Record<string, ReportFontUsage[]> = {};
-    for (const fontUsage of fontUsages) {
-      const key = fontUsage.props['font-family'];
-      if (!fontUsagesByFontFamily[key]) fontUsagesByFontFamily[key] = [];
-      fontUsagesByFontFamily[key].push(fontUsage);
-    }
-    const numFonts = Object.keys(fontUsagesByFontFamily).length;
-    log(
-      `${assetFileName}: ${numFonts} font${numFonts === 1 ? '' : 's'} (${
-        fontUsages.length
-      } variant${fontUsages.length === 1 ? '' : 's'}) in use, ${prettyBytes(
-        sumSmallestOriginalSize
-      )} total. Created subsets: ${prettyBytes(sumSmallestSubsetSize)} total`
-    );
-    const usedPad = String(maxUsedCodePoints).length;
-    const originalPad = String(maxOriginalCodePoints).length;
-    for (const fontFamily of Object.keys(fontUsagesByFontFamily).sort()) {
-      log(`  ${fontFamily}:`);
-      for (const fontUsage of fontUsagesByFontFamily[fontFamily]) {
-        const variantShortName = `${fontUsage.props['font-weight']}${
-          fontUsage.props['font-style'] === 'italic' ? 'i' : ' '
-        }`;
-        let status = `    ${variantShortName}: ${String(
-          fontUsage.codepoints.used.length
-        ).padStart(usedPad)}/${String(
-          fontUsage.codepoints.original.length
-        ).padStart(originalPad)} codepoints used`;
-        if (
-          fontUsage.codepoints.page.length !== fontUsage.codepoints.used.length
-        ) {
-          status += ` (${fontUsage.codepoints.page.length} on this page)`;
-        }
-        if (fontUsage.smallestSubsetSize !== undefined) {
-          const numAxesReduced = fontUsage.numAxesReduced ?? 0;
-          const numAxesPinned = fontUsage.numAxesPinned ?? 0;
-          if (fontUsage.fullyInstanced) {
-            status += ', fully instanced';
-          } else if (numAxesReduced > 0 || numAxesPinned) {
-            const instancingInfos = [];
-            if (numAxesPinned > 0) {
-              instancingInfos.push(
-                `${numAxesPinned} ${
-                  numAxesPinned === 1 ? 'axis' : 'axes'
-                } pinned`
-              );
-            }
-            if (numAxesReduced) {
-              instancingInfos.push(
-                `${numAxesReduced}${
-                  numAxesPinned > 0
-                    ? ''
-                    : numAxesReduced === 1
-                      ? ' axis'
-                      : ' axes'
-                } reduced`
-              );
-            }
-
-            status += `, partially instanced (${instancingInfos.join(', ')})`;
-          }
-          status += `, ${prettyBytes(fontUsage.smallestOriginalSize)} (${
-            fontUsage.smallestOriginalFormat
-          }) => ${prettyBytes(fontUsage.smallestSubsetSize)} (${
-            fontUsage.smallestSubsetFormat
-          })`;
-          totalSavings +=
-            fontUsage.smallestOriginalSize - fontUsage.smallestSubsetSize;
-        } else {
-          status += ', no subset font created';
-        }
-        log(status);
-      }
-    }
-  }
-  log(
-    `HTML/SVG/JS/CSS size increase: ${prettyBytes(
-      sumSizesAfter - sumSizesBefore
-    )}`
-  );
-  log(`Total savings: ${prettyBytes(totalSavings)}`);
-  outerTimings['output reporting'] = reportingPhase.end();
-
-  const st = subsetTimings ?? {};
-  const detailsRaw = st.collectTextsByPageDetails;
-  const details: Record<string, number | undefined> =
-    detailsRaw && typeof detailsRaw === 'object' ? detailsRaw : {};
-  const stNum = (key: string): number | undefined => {
-    const value = st[key];
-    return typeof value === 'number' ? value : undefined;
+  const state: SubfontRunState = {
+    assetGraph,
+    log,
+    trackPhase,
+    outerTimings,
+    debug,
+    dryRun,
+    outRoot,
   };
-  const totalElapsed =
-    (outerTimings.loadAssets || 0) +
-    (outerTimings['populate (initial)'] || 0) +
-    subsetFontsTotal +
-    (outerTimings['post-subsetFonts processing'] || 0) +
-    (outerTimings.writeAssetsToDisc || 0) +
-    (outerTimings['output reporting'] || 0);
-
-  const rows: Array<[string, number | undefined, number]> = [
-    ['loadAssets', outerTimings.loadAssets, 0],
-    ['populate (initial)', outerTimings['populate (initial)'], 0],
-    ['subsetFonts total', subsetFontsTotal, 0],
-    ['collectTextsByPage', stNum('collectTextsByPage'), 1],
-    ['Stylesheet precompute', details['Stylesheet precompute'], 2],
-    ['Full tracing', details['Full tracing'], 2],
-    ['Fast-path extraction', details['Fast-path extraction'], 2],
-    ['Per-page loop', details['Per-page loop'], 2],
-    ['Post-processing', details['Post-processing total'], 2],
-    ['codepoint generation', stNum('codepoint generation'), 1],
-    ['getSubsetsForFontUsage', stNum('getSubsetsForFontUsage'), 1],
-    ['insert subsets loop', stNum('insert subsets loop'), 1],
-    ['inject font-family', stNum('inject subset font-family'), 1],
-    ['post-subsetFonts', outerTimings['post-subsetFonts processing'], 0],
-    ['writeAssetsToDisc', outerTimings.writeAssetsToDisc, 0],
-    ['output reporting', outerTimings['output reporting'], 0],
-  ];
-
-  if (debug) {
-    log('\n═══ Subfont Timing Summary ═══');
-    for (const [label, ms, indent] of rows) {
-      if (ms === undefined) continue;
-      const prefix = '  '.repeat(indent + 1);
-      const padded = (ms || 0).toLocaleString().padStart(8);
-      log(`${prefix}${label}: ${padded}ms`);
-    }
-    log('  ─────────────────────────────────');
-    log(`  Total: ${totalElapsed.toLocaleString().padStart(8)}ms`);
-    log('═══════════════════════════════\n');
-  }
-
-  if (dryRun) {
-    log('\n═══ Dry Run Preview ═══');
-    const assetsToWrite = assetGraph.findAssets({
-      isLoaded: true,
-      isRedirect: { $ne: true },
-      url: (url: string) => url && url.startsWith(assetGraph.root),
-    });
-    const byType: Record<
-      string,
-      { count: number; size: number; files: string[] }
-    > = {};
-    let totalOutputSize = 0;
-    for (const asset of assetsToWrite) {
-      const type = asset.type || 'Other';
-      if (!byType[type]) byType[type] = { count: 0, size: 0, files: [] };
-      const size = asset.rawSrc ? asset.rawSrc.length : 0;
-      byType[type].count += 1;
-      byType[type].size += size;
-      totalOutputSize += size;
-
-      if (asset.url && asset.url.includes('/subfont/')) {
-        byType[type].files.push(
-          `    ${asset.url.replace(assetGraph.root, '/')} (${prettyBytes(size)})`
-        );
-      }
-    }
-    for (const [type, info] of Object.entries(byType).sort(
-      ([, a], [, b]) => b.size - a.size
-    )) {
-      log(
-        `  ${type}: ${info.count} file${info.count === 1 ? '' : 's'}, ${prettyBytes(info.size)}`
-      );
-      for (const file of info.files) {
-        log(file);
-      }
-    }
-    log(`  ─────────────────────────────────`);
-    log(`  Total output: ${prettyBytes(totalOutputSize)}`);
-
-    const dirtyHtmlAssets = assetGraph.findAssets({
-      isDirty: true,
-      isLoaded: true,
-      type: { $in: ['Html', 'Svg'] },
-    });
-    if (dirtyHtmlAssets.length > 0) {
-      log(`\n  Modified HTML/SVG files (${dirtyHtmlAssets.length}):`);
-      for (const asset of dirtyHtmlAssets) {
-        log(`    ${asset.urlOrDescription}`);
-      }
-    }
-
-    const subsetCssAssets = assetGraph.findAssets({
-      type: 'Css',
-      isLoaded: true,
-      url: (url: string) => url && url.includes('/subfont/'),
-    });
-    if (subsetCssAssets.length > 0) {
-      log(
-        `\n  Subset CSS files that would be created (${subsetCssAssets.length}):`
-      );
-      for (const css of subsetCssAssets) {
-        const fontFaceCount = (css.text.match(/@font-face/g) || []).length;
-        log(
-          `    ${css.url.replace(assetGraph.root, '/')} (${prettyBytes(css.rawSrc.length)}, ${fontFaceCount} @font-face rule${fontFaceCount === 1 ? '' : 's'})`
-        );
-      }
-    }
-
-    log('═══════════════════════════════\n');
-    log('Dry run complete — no files were written.');
-  } else {
-    log('Output written to', outRoot || assetGraph.root);
-  }
+  runOutputReportingPhase(
+    state,
+    fontInfo,
+    sumSizesBefore,
+    sumSizesAfter,
+    subsetFontsTotal,
+    subsetTimings
+  );
   return assetGraph;
 } as SubfontFn;
 
