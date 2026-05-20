@@ -93,15 +93,16 @@ export function getFontFaceDeclarationText(
     relation.hrefType = 'absolute';
   }
 
-  const text = node.toString();
-  // Put the hrefTypes that were set to absolute back to their original state:
-  for (const [
-    relation,
-    originalHrefType,
-  ] of originalHrefTypeByRelation.entries()) {
-    relation.hrefType = originalHrefType;
+  try {
+    return node.toString();
+  } finally {
+    for (const [
+      relation,
+      originalHrefType,
+    ] of originalHrefTypeByRelation.entries()) {
+      relation.hrefType = originalHrefType;
+    }
   }
-  return text;
 }
 
 const fontOrder = ['woff2', 'woff', 'truetype'];

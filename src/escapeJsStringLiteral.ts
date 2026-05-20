@@ -2,11 +2,13 @@
 // double-quoted, or template literal). Uses JSON.stringify for robust escaping
 // of backslashes, quotes, newlines, U+2028, U+2029, etc.
 // The < escape prevents </script> from closing an inline script tag.
+// The $ escape prevents ${...} interpolation in template literals.
 function escapeJsStringLiteral(str: string): string {
   return JSON.stringify(str)
     .slice(1, -1)
     .replace(/'/g, "\\'")
     .replace(/`/g, '\\x60')
+    .replace(/\$/g, '\\x24')
     .replace(/</g, '\\x3c');
 }
 
