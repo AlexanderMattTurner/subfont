@@ -180,21 +180,32 @@ function isExtensionlessEnoent(err: unknown): boolean {
   );
 }
 
+class WarningTracker {
+  sawWarning = false;
+
+  // eslint-disable-next-line no-restricted-syntax
+  readonly handler = (event: string, ...rest: unknown[]): boolean | void => {
+    if (event === 'warn') {
+      if (isExtensionlessEnoent(rest[0])) return false;
+      this.sawWarning = true;
+    }
+    return undefined;
+  };
+}
+
 async function installWarningHandlers(
   assetGraph: InstanceType<typeof AssetGraph>,
   silent: boolean,
   strict: boolean,
   console: Console | undefined
-): Promise<() => boolean> {
-  let sawWarning = false;
+): Promise<WarningTracker> {
+  const tracker = new WarningTracker();
   const origEmit = assetGraph.emit;
   // EventEmitter.emit forwards arbitrary varargs.
   // eslint-disable-next-line no-restricted-syntax
   assetGraph.emit = function (event: string, ...rest: unknown[]) {
-    if (event === 'warn') {
-      if (isExtensionlessEnoent(rest[0])) return false;
-      sawWarning = true;
-    }
+    const suppressed = tracker.handler(event, ...rest);
+    if (suppressed === false) return false;
     return origEmit.call(this, event, ...rest);
   };
   if (silent) {
@@ -202,7 +213,7 @@ async function installWarningHandlers(
   } else {
     await assetGraph.logEvents({ console, stopOnWarning: strict });
   }
-  return () => sawWarning;
+  return tracker;
 }
 
 function handleInitialRedirects(
@@ -751,7 +762,7 @@ const subfont = async function subfont(
         ? rootUrl.replace(/\/?$/, '/')
         : canonicalRoot,
   });
-  const getSawWarning = await installWarningHandlers(
+  const warningTracker = await installWarningHandlers(
     assetGraph,
     silent,
     strict,
@@ -820,7 +831,7 @@ const subfont = async function subfont(
   await runPostProcessing(assetGraph, rootUrl);
   outerTimings['post-subsetFonts processing'] = postProcessingPhase.end();
 
-  if (strict && getSawWarning()) {
+  if (strict && warningTracker.sawWarning) {
     // In non-silent mode, assetgraph's logEvents normally exits earlier via
     // stopOnWarning. This guard covers silent mode and warnings that slipped
     // past a transform boundary.

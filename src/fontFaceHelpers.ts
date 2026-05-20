@@ -243,9 +243,11 @@ export function getUnusedVariantsStylesheet(
       let src = stripLocalTokens(props.src ?? '');
       const tokenRe = props.relations[0]?.tokenRegExp;
       if (props.relations.length > 0 && tokenRe) {
-        const targets = props.relations.map((relation) => relation.to.url);
+        const urls = props.relations.map((relation) => relation.to.url);
+        let urlIndex = 0;
         src = src.replace(tokenRe, () => {
-          const url = targets.shift();
+          const url = urlIndex < urls.length ? urls[urlIndex] : undefined;
+          urlIndex++;
           if (url === undefined) return "url('')";
           return `url('${url.replace(/'/g, "\\'")}')`;
         });
