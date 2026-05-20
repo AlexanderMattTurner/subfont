@@ -1,1 +1,1 @@
-npx prettier --check '**/*.{js,md}'
+npx prettier --check '**/*.{js,ts,md}'

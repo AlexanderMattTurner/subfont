@@ -63,6 +63,15 @@ describe('escapeJsStringLiteral', function () {
     expect(escapeJsStringLiteral('a`b'), 'to equal', 'a\\x60b');
   });
 
+  it('should escape dollar signs to prevent template literal interpolation', function () {
+    // eslint-disable-next-line no-template-curly-in-string
+    expect(escapeJsStringLiteral('${evil}'), 'to equal', '\\x24{evil}');
+  });
+
+  it('should escape dollar sign even without braces', function () {
+    expect(escapeJsStringLiteral('$100'), 'to equal', '\\x24100');
+  });
+
   it('should escape null bytes', function () {
     expect(escapeJsStringLiteral('a\0b'), 'to equal', 'a\\u0000b');
   });

@@ -180,21 +180,32 @@ function isExtensionlessEnoent(err: unknown): boolean {
   );
 }
 
+class WarningTracker {
+  sawWarning = false;
+
+  // eslint-disable-next-line no-restricted-syntax
+  readonly handler = (event: string, ...rest: unknown[]): boolean | void => {
+    if (event === 'warn') {
+      if (isExtensionlessEnoent(rest[0])) return false;
+      this.sawWarning = true;
+    }
+    return undefined;
+  };
+}
+
 async function installWarningHandlers(
   assetGraph: InstanceType<typeof AssetGraph>,
   silent: boolean,
   strict: boolean,
   console: Console | undefined
-): Promise<() => boolean> {
-  let sawWarning = false;
+): Promise<WarningTracker> {
+  const tracker = new WarningTracker();
   const origEmit = assetGraph.emit;
   // EventEmitter.emit forwards arbitrary varargs.
   // eslint-disable-next-line no-restricted-syntax
   assetGraph.emit = function (event: string, ...rest: unknown[]) {
-    if (event === 'warn') {
-      if (isExtensionlessEnoent(rest[0])) return false;
-      sawWarning = true;
-    }
+    const suppressed = tracker.handler(event, ...rest);
+    if (suppressed === false) return false;
     return origEmit.call(this, event, ...rest);
   };
   if (silent) {
@@ -202,7 +213,7 @@ async function installWarningHandlers(
   } else {
     await assetGraph.logEvents({ console, stopOnWarning: strict });
   }
-  return () => sawWarning;
+  return tracker;
 }
 
 function handleInitialRedirects(
@@ -408,7 +419,7 @@ function describeFontUsageStatus(
   fontUsage: ReportFontUsage,
   usedPad: number,
   originalPad: number
-): { status: string; savings: number } {
+): { status: string } {
   const variantShortName = `${fontUsage.props['font-weight']}${
     fontUsage.props['font-style'] === 'italic' ? 'i' : ' '
   }`;
@@ -420,7 +431,6 @@ function describeFontUsageStatus(
   if (fontUsage.codepoints.page.length !== fontUsage.codepoints.used.length) {
     status += ` (${fontUsage.codepoints.page.length} on this page)`;
   }
-  let savings = 0;
   if (fontUsage.smallestSubsetSize !== undefined) {
     status += buildInstancingSuffix(fontUsage);
     status += `, ${prettyBytes(fontUsage.smallestOriginalSize)} (${
@@ -428,20 +438,34 @@ function describeFontUsageStatus(
     }) => ${prettyBytes(fontUsage.smallestSubsetSize)} (${
       fontUsage.smallestSubsetFormat
     })`;
-    savings = fontUsage.smallestOriginalSize - fontUsage.smallestSubsetSize;
   } else {
     status += ', no subset font created';
   }
-  return { status, savings };
+  return { status };
 }
 
-function printPerAssetFontReport(
-  fontInfo: FontInfoReport,
-  sumSizesBefore: number,
-  sumSizesAfter: number,
-  log: LogFn
-): number {
-  let totalSavings = sumSizesBefore - sumSizesAfter;
+// Compute unique font savings, deduplicating by fontUrl since font files
+// are shared across pages.
+function computeFontSavings(fontInfo: FontInfoReport): number {
+  const seenFontUrls = new Set<string>();
+  let fontSavings = 0;
+  for (const { fontUsages } of fontInfo) {
+    for (const fontUsage of fontUsages) {
+      if (
+        fontUsage.fontUrl &&
+        !seenFontUrls.has(fontUsage.fontUrl) &&
+        fontUsage.smallestSubsetSize !== undefined
+      ) {
+        seenFontUrls.add(fontUsage.fontUrl);
+        fontSavings +=
+          fontUsage.smallestOriginalSize - fontUsage.smallestSubsetSize;
+      }
+    }
+  }
+  return fontSavings;
+}
+
+function printPerAssetFontReport(fontInfo: FontInfoReport, log: LogFn): void {
   for (const { assetFileName, fontUsages } of fontInfo) {
     let sumSmallestSubsetSize = 0;
     let sumSmallestOriginalSize = 0;
@@ -478,17 +502,15 @@ function printPerAssetFontReport(
     for (const fontFamily of Object.keys(fontUsagesByFontFamily).sort()) {
       log(`  ${fontFamily}:`);
       for (const fontUsage of fontUsagesByFontFamily[fontFamily]) {
-        const { status, savings } = describeFontUsageStatus(
+        const { status } = describeFontUsageStatus(
           fontUsage,
           usedPad,
           originalPad
         );
-        totalSavings += savings;
         log(status);
       }
     }
   }
-  return totalSavings;
 }
 
 type SubsetTimings = Record<
@@ -664,18 +686,11 @@ function printRunReport(
   log: LogFn
 ): void {
   if (debug) printVariantSummary(fontInfo, log);
-  const totalSavings = printPerAssetFontReport(
-    fontInfo,
-    sumSizesBefore,
-    sumSizesAfter,
-    log
-  );
-  log(
-    `HTML/SVG/JS/CSS size increase: ${prettyBytes(
-      sumSizesAfter - sumSizesBefore
-    )}`
-  );
-  log(`Total savings: ${prettyBytes(totalSavings)}`);
+  printPerAssetFontReport(fontInfo, log);
+  const htmlCssOverhead = sumSizesAfter - sumSizesBefore;
+  const fontSavings = computeFontSavings(fontInfo);
+  log(`HTML/SVG/JS/CSS size increase: ${prettyBytes(htmlCssOverhead)}`);
+  log(`Total savings: ${prettyBytes(fontSavings - htmlCssOverhead)}`);
 }
 
 const subfont = async function subfont(
@@ -747,7 +762,7 @@ const subfont = async function subfont(
         ? rootUrl.replace(/\/?$/, '/')
         : canonicalRoot,
   });
-  const getSawWarning = await installWarningHandlers(
+  const warningTracker = await installWarningHandlers(
     assetGraph,
     silent,
     strict,
@@ -816,7 +831,7 @@ const subfont = async function subfont(
   await runPostProcessing(assetGraph, rootUrl);
   outerTimings['post-subsetFonts processing'] = postProcessingPhase.end();
 
-  if (strict && getSawWarning()) {
+  if (strict && warningTracker.sawWarning) {
     // In non-silent mode, assetgraph's logEvents normally exits earlier via
     // stopOnWarning. This guard covers silent mode and warnings that slipped
     // past a transform boundary.

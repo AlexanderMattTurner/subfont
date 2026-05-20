@@ -30,6 +30,12 @@ Reproducible benchmark on `testdata/subsetFonts/OpenSans-400.ttf` (run with `nod
 ## Install
 
 ```
+pnpm add -g @turntrout/subfont
+```
+
+Or with npm:
+
+```
 npm install -g @turntrout/subfont
 ```
 
@@ -101,8 +107,8 @@ To include extra characters in a specific font's subset, add `-subfont-text` to 
 
 ## Programmatic API
 
-```ts
-import subfont = require('@turntrout/subfont');
+```js
+const subfont = require('@turntrout/subfont');
 
 const assetGraph = await subfont(
   {
@@ -113,7 +119,7 @@ const assetGraph = await subfont(
 );
 ```
 
-The package ships CommonJS with TypeScript declarations. Returns the [Assetgraph](https://github.com/assetgraph/assetgraph) instance.
+The package ships CommonJS with TypeScript declarations (`subfont.d.ts`). Returns the [Assetgraph](https://github.com/assetgraph/assetgraph) instance.
 
 ### Parameters
 
