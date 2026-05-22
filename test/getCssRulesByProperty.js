@@ -642,6 +642,29 @@ describe('getCssRulesByProperty', function () {
         ],
       });
     });
+
+    it('should resolve a namespace prefix that contains a hyphen', function () {
+      // Regression: the previous /^(?<prefix>\w+)\s+.../ regex rejected
+      // hyphenated CSS identifiers, so `@namespace my-ns "..."` fell
+      // through to the default-namespace branch — the URI was wrongly
+      // applied to all unprefixed selectors and the `my-ns|` prefix
+      // didn't resolve at all.
+      const result = getRules(
+        ['font-family'],
+        '@namespace my-ns "http://example.com/my-ns"; my-ns|text { font-family: serif }',
+        []
+      );
+
+      expect(result, 'to satisfy', {
+        'font-family': [
+          {
+            selector: 'my-ns|text',
+            namespaceURI: 'http://example.com/my-ns',
+            value: 'serif',
+          },
+        ],
+      });
+    });
   });
 
   describe('deduplication', function () {

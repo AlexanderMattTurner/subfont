@@ -109,4 +109,41 @@ describe('unquote', function () {
       expect(unquote("'\\ffffff'"), 'to equal', '\\ffffff');
     });
   });
+
+  describe('with escaped quotes inside the string body', function () {
+    // Regression: the old `^'([^']*)'$` regex required no unescaped quote
+    // inside the body, so `'foo\'bar'` would fail the outer match entirely
+    // and the function returned the raw, still-quoted source string. With
+    // postcss-value-parser's tokeniser the body is recognised as a single
+    // string node and the escape is decoded.
+    it('should unwrap a single-quoted string containing an escaped single quote', function () {
+      expect(unquote("'foo\\'bar'"), 'to equal', "foo'bar");
+    });
+
+    it('should unwrap a double-quoted string containing an escaped double quote', function () {
+      expect(unquote('"foo\\"bar"'), 'to equal', 'foo"bar');
+    });
+
+    it('should unwrap a string containing an escaped backslash', function () {
+      expect(unquote("'foo\\\\bar'"), 'to equal', 'foo\\bar');
+    });
+
+    it('should leave inputs that are not a single string token unchanged', function () {
+      expect(unquote("'foo'bar"), 'to equal', "'foo'bar");
+    });
+  });
+
+  describe('with non-hex backslash escapes', function () {
+    // Per CSS spec a backslash before any non-hex-non-newline character
+    // unescapes to that character. The previous implementation only knew
+    // about hex escapes, so things like `\a` (lowercase letter a, not a
+    // line feed) leaked through as literal `\a`.
+    it('should decode \\X where X is a non-hex character', function () {
+      expect(unquote("'foo\\zbar'"), 'to equal', 'foozbar');
+    });
+
+    it('should treat a backslash before a line terminator as a line continuation', function () {
+      expect(unquote("'foo\\\nbar'"), 'to equal', 'foobar');
+    });
+  });
 });

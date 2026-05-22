@@ -185,21 +185,23 @@ describe('extractVisibleText', function () {
   });
 
   it('should not throw on invalid numeric HTML entities', function () {
+    // Per the HTML spec parse5 maps out-of-range numeric refs to U+FFFD.
+    // The substantive invariant is "doesn't crash"; what character ends up
+    // in the output doesn't matter as long as no lone surrogate leaks.
     const result = extractVisibleText(
       '<p>before &#xFFFFFFFF; after &#99999999; end</p>'
     );
     expect(result, 'to contain', 'before');
     expect(result, 'to contain', 'after');
     expect(result, 'to contain', 'end');
-    expect(result, 'to contain', '&#xFFFFFFFF;');
-    expect(result, 'to contain', '&#99999999;');
   });
 
   it('should not decode surrogate-half numeric entities into lone surrogates', function () {
     // &#xD800; / &#55296; are high-surrogate code units — not valid scalars.
     // Emitting String.fromCodePoint(0xD800) would corrupt downstream
     // [...string] iteration and confuse harfbuzz / unicode-range emission.
-    // Cover both the hex and decimal branches of decodeEntities.
+    // parse5 follows the HTML spec and replaces surrogate-range refs with
+    // U+FFFD; the invariant we care about is no lone surrogate in output.
     const result = extractVisibleText(
       '<p>x&#xD800;y&#xDFFF;z&#55296;w&#57343;v</p>'
     );
@@ -208,17 +210,36 @@ describe('extractVisibleText', function () {
     expect(result, 'to contain', 'z');
     expect(result, 'to contain', 'w');
     expect(result, 'to contain', 'v');
-    // The entity is left untouched (not decoded) rather than emitted as a
-    // lone surrogate.
-    expect(result, 'to contain', '&#xD800;');
-    expect(result, 'to contain', '&#xDFFF;');
-    expect(result, 'to contain', '&#55296;');
-    expect(result, 'to contain', '&#57343;');
-    // And no actual lone-surrogate code units leak into the output.
+    // No actual lone-surrogate code units leak into the output.
     for (const ch of result) {
       const cp = ch.codePointAt(0);
       expect(cp < 0xd800 || cp > 0xdfff, 'to be true');
     }
+  });
+
+  it('should decode the full HTML5 named-entity set (accented Latin etc.)', function () {
+    // Regression: the hand-rolled namedEntities table only covered ~30 of
+    // ~2200 HTML5 named entities, so European-language pages using
+    // &eacute; / &ouml; for accents silently dropped those glyphs from
+    // the subset. parse5 decodes the full set.
+    const result = extractVisibleText(
+      '<p>caf&eacute; na&iuml;ve &Eacute;cole &ouml;l</p>'
+    );
+    expect(result, 'to contain', 'café');
+    expect(result, 'to contain', 'naïve');
+    expect(result, 'to contain', 'École');
+    expect(result, 'to contain', 'öl');
+  });
+
+  it('should strip invisible elements whose attributes contain ">"', function () {
+    // Regression: the previous regex stripper used [^>]* for the opening
+    // tag, so an attribute value containing > could trip it. parse5 always
+    // gets attribute parsing right.
+    const result = extractVisibleText(
+      '<svg aria-label="a>b"><text>hidden-svg</text></svg><p>visible</p>'
+    );
+    expect(result, 'to contain', 'visible');
+    expect(result, 'not to contain', 'hidden-svg');
   });
 
   it('should not extract attributes from inside invisible elements', function () {

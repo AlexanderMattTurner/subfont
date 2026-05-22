@@ -304,6 +304,10 @@ declare module 'postcss-value-parser' {
     after?: string;
     quote?: string;
     nodes?: Node[];
+    // Optional because some call sites build literal Node objects without
+    // these fields; postcssValueParser-produced nodes always set them.
+    sourceIndex?: number;
+    sourceEndIndex?: number;
   }
   export interface Root {
     nodes: Node[];
