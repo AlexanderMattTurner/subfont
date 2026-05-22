@@ -129,13 +129,13 @@ class HeadlessBrowser {
     assetGraph: AssetGraph,
     baseUrl: string
   ): void {
+    // Puppeteer request methods return promises, but page.on callbacks
+    // are synchronous. Attach .catch(noop) to each call so rejections
+    // (e.g. request already handled, page closing) don't become
+    // unhandled-rejection crashes.
+    const noop = () => {};
     page.on('request', (request) => {
       const url = request.url();
-      // Puppeteer request methods return promises, but this callback is
-      // synchronous (page.on does not await it). Attach .catch() to each
-      // call so rejections (e.g. request already handled, page closing)
-      // don't become unhandled-rejection crashes.
-      const swallow = () => {};
       if (url.startsWith(baseUrl)) {
         let agUrl = url.replace(baseUrl, assetGraph.root);
         if (/\/$/.test(agUrl)) {
@@ -152,17 +152,17 @@ class HeadlessBrowser {
               contentType: asset.contentType,
               body: asset.rawSrc,
             })
-            .catch(swallow);
+            .catch(noop);
         } else {
-          void request.respond({ status: 404, body: '' }).catch(swallow);
+          void request.respond({ status: 404, body: '' }).catch(noop);
         }
         return;
       }
       if (url.startsWith('file:')) {
-        void request.continue().catch(swallow);
+        void request.continue().catch(noop);
         return;
       }
-      void request.abort('failed').catch(swallow);
+      void request.abort('failed').catch(noop);
     });
   }
 

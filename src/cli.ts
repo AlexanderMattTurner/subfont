@@ -5,12 +5,15 @@ import subfont = require('./subfont');
 
 const { yargs, help: _help, ...options } = parseCommandLineOptions();
 
-subfont(options, console).catch((err: Error) => {
+// eslint-disable-next-line no-restricted-syntax
+subfont(options, console).catch((err: unknown) => {
   yargs.showHelp();
-  if (err.name === 'UsageError') {
+  if (err instanceof Error && err.name === 'UsageError') {
     console.error(err.message);
+  } else if (err instanceof Error) {
+    console.error(err.stack || err.message);
   } else {
-    console.error(err.stack || err);
+    console.error(err);
   }
   process.exitCode = 1;
 });
