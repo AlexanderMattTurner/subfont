@@ -366,10 +366,9 @@ async function queueSubsetForFormat(
   });
 
   return subsetCall
-    .then(async (result) => {
+    .then((result) => {
       if (diskCache && result && cacheKey) {
-        // Fire-and-forget: cache writes are best-effort.
-        diskCache.set(cacheKey, result).catch(() => {});
+        void diskCache.set(cacheKey, result).catch(() => {});
       }
       return result;
     })

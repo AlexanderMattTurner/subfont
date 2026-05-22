@@ -10,6 +10,7 @@ import type {
 } from 'assetgraph';
 import type {
   AssetGraphError,
+  ExternalFontUsage,
   ReportFontUsage,
   SubsettedFontUsage,
 } from './types/shared';
@@ -169,7 +170,7 @@ function asyncLoadStyleRelationWithFallback(
   );
 
   noScriptFallbackRelation.inline();
-  asyncCssLoadingRelation.to.minify();
+  void asyncCssLoadingRelation.to.minify();
   htmlOrSvgAsset.markDirty();
 }
 
@@ -548,13 +549,16 @@ function buildFontInfoReport(
     htmlOrSvgAsset: Asset;
     fontUsages: ReportFontUsage[];
   }>
-): Array<{ assetFileName: string; fontUsages: ReportFontUsage[] }> {
+): Array<{ assetFileName: string; fontUsages: ExternalFontUsage[] }> {
   return htmlOrSvgAssetTextsWithProps.map(({ fontUsages, htmlOrSvgAsset }) => ({
     assetFileName: htmlOrSvgAsset.nonInlineAncestor.urlOrDescription,
     fontUsages: fontUsages.map(
-      (fontUsage) =>
-        (({ subsets, hasFontFeatureSettings, fontFeatureTags, ...rest }) =>
-          rest)(fontUsage) as ReportFontUsage
+      ({
+        subsets: _subsets,
+        hasFontFeatureSettings: _hasFF,
+        fontFeatureTags: _ffTags,
+        ...rest
+      }) => rest
     ),
   }));
 }
@@ -914,7 +918,7 @@ async function insertSubsets({
       for (const fu of pages[i].fontUsages) {
         if (fu.pageText && fu.fontUrl) pageFontUrls.add(fu.fontUrl);
       }
-      for (const fontUrl of fontUrlsUsedOnEveryPage) {
+      for (const fontUrl of [...fontUrlsUsedOnEveryPage]) {
         if (!pageFontUrls.has(fontUrl)) {
           fontUrlsUsedOnEveryPage.delete(fontUrl);
         }
@@ -1135,7 +1139,7 @@ type SubsetFontsTimings = Record<
 >;
 
 interface SubsetFontsResult {
-  fontInfo: Array<{ assetFileName: string; fontUsages: ReportFontUsage[] }>;
+  fontInfo: Array<{ assetFileName: string; fontUsages: ExternalFontUsage[] }>;
   timings: SubsetFontsTimings;
 }
 
@@ -1594,13 +1598,11 @@ async function subsetFonts(
   // Pre-warm the WASM pool: start compiling harfbuzz WASM while
   // collectTextsByPage traces fonts. Compilation (~50-200ms) overlaps
   // with tracing work rather than appearing on the critical path.
-  subsetFontWithGlyphs.warmup().catch((err) => {
-    if (debug) {
-      console.warn(
-        'WASM warmup failed (will retry on first subset call):',
-        err
-      );
-    }
+  void subsetFontWithGlyphs.warmup().catch((err) => {
+    console.warn(
+      'subfont: WASM warmup failed (will retry on first subset call):',
+      err
+    );
   });
 
   const subsetUrl = urltools.ensureTrailingSlash(assetGraph.root + subsetPath);

@@ -1372,7 +1372,7 @@ async function collectTextsByPage(
     }
   } finally {
     if (headlessBrowser) {
-      await headlessBrowser.close();
+      await headlessBrowser.close().catch(() => {});
     }
   }
 

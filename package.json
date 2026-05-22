@@ -60,7 +60,6 @@
   },
   "homepage": "https://github.com/alexander-turner/subfont#readme",
   "dependencies": {
-    "@gustavnikolaj/async-main-wrap": "^3.0.1",
     "@hookun/parse-animation-shorthand": "^0.1.5",
     "@puppeteer/browsers": "^2.0.0",
     "assetgraph": "^7.13.0",

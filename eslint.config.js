@@ -34,12 +34,21 @@ module.exports = [
     files: ['src/**/*.ts'],
     languageOptions: {
       parser: tseslint.parser,
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: __dirname,
+      },
     },
     plugins: {
       '@typescript-eslint': tseslint.plugin,
     },
     rules: {
       '@typescript-eslint/no-explicit-any': 'error',
+      '@typescript-eslint/no-floating-promises': [
+        'error',
+        { ignoreVoid: true },
+      ],
+      'no-void': ['error', { allowAsStatement: true }],
       'no-restricted-syntax': [
         'error',
         {
@@ -67,6 +76,7 @@ module.exports = [
     },
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-floating-promises': 'off',
       'no-restricted-syntax': 'off',
       'no-undef': 'off',
     },

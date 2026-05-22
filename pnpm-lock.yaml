@@ -11,9 +11,6 @@ importers:
 
   .:
     dependencies:
-      '@gustavnikolaj/async-main-wrap':
-        specifier: ^3.0.1
-        version: 3.0.1
       '@hookun/parse-animation-shorthand':
         specifier: ^0.1.5
         version: 0.1.5
@@ -339,9 +336,6 @@ packages:
   '@eslint/plugin-kit@0.4.1':
     resolution: {integrity: sha512-43/qtrDUokr7LJqoF2c3+RInu/t4zfrpYdoSDfYyhg52rwLV6TnOvdG4fXm7IkSB3wErkcmJS9iEhjVtOSEjjA==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
-
-  '@gustavnikolaj/async-main-wrap@3.0.1':
-    resolution: {integrity: sha512-FHh1Tz5Jk5xJphcYpFUMsxCTO+XbgQyCorlbztqBsYRnu5hmuoV/0Q+dJlcOtQCG6cJ5/EHX+VrSsoLBoaTJvQ==}
 
   '@hapi/address@2.1.4':
     resolution: {integrity: sha512-QD1PhQk+s31P1ixsX0H0Suoupp3VMXzIVMSwobR3F3MSUO2YCV0B7xqLcUw/Bh8yuvd3LhpyqLQWTNcRmp6IdQ==}
@@ -4907,8 +4901,6 @@ snapshots:
     dependencies:
       '@eslint/core': 0.17.0
       levn: 0.4.1
-
-  '@gustavnikolaj/async-main-wrap@3.0.1': {}
 
   '@hapi/address@2.1.4': {}
 

@@ -270,15 +270,6 @@ declare module 'urltools' {
   export function buildRelativeUrl(base: string, target: string): string;
 }
 
-declare module '@gustavnikolaj/async-main-wrap' {
-  type AnyAsyncFn = (...args: any[]) => Promise<unknown>;
-  const asyncMainWrap: <F extends AnyAsyncFn>(
-    fn: F,
-    options?: { processError?: (err: Error) => unknown }
-  ) => (...args: Parameters<F>) => void;
-  export = asyncMainWrap;
-}
-
 declare module 'css-font-parser' {
   export function parseFontFamily(value: string): string[];
   export interface ParsedFont {

@@ -10,7 +10,7 @@ import * as urlTools from 'urltools';
 import * as util from 'util';
 import subsetFonts = require('./subsetFonts');
 import { makePhaseTracker } from './progress';
-import type { ReportFontUsage } from './types/shared';
+import type { ExternalFontUsage } from './types/shared';
 
 class UsageError extends Error {
   constructor(message: string) {
@@ -79,7 +79,7 @@ type LogFn = (...args: unknown[]) => void;
 // reporting helpers, so it lives here rather than being inlined.
 type FontInfoReport = Array<{
   assetFileName: string;
-  fontUsages: ReportFontUsage[];
+  fontUsages: ExternalFontUsage[];
 }>;
 
 function makeLogger(
@@ -390,7 +390,7 @@ function printVariantSummary(fontInfo: FontInfoReport, log: LogFn): void {
   log(util.inspect([...byVariant.values()], false, 99));
 }
 
-function buildInstancingSuffix(fontUsage: ReportFontUsage): string {
+function buildInstancingSuffix(fontUsage: ExternalFontUsage): string {
   const numAxesReduced = fontUsage.numAxesReduced ?? 0;
   const numAxesPinned = fontUsage.numAxesPinned ?? 0;
   if (fontUsage.fullyInstanced) {
@@ -416,7 +416,7 @@ function buildInstancingSuffix(fontUsage: ReportFontUsage): string {
 }
 
 function describeFontUsageStatus(
-  fontUsage: ReportFontUsage,
+  fontUsage: ExternalFontUsage,
   usedPad: number,
   originalPad: number
 ): { status: string } {
@@ -483,7 +483,7 @@ function printPerAssetFontReport(fontInfo: FontInfoReport, log: LogFn): void {
         maxOriginalCodePoints
       );
     }
-    const fontUsagesByFontFamily: Record<string, ReportFontUsage[]> = {};
+    const fontUsagesByFontFamily: Record<string, ExternalFontUsage[]> = {};
     for (const fontUsage of fontUsages) {
       const key = fontUsage.props['font-family'];
       if (!fontUsagesByFontFamily[key]) fontUsagesByFontFamily[key] = [];
