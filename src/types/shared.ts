@@ -54,6 +54,11 @@ export interface ReportFontUsage extends SubsettedFontUsage {
   };
 }
 
+export type ExternalFontUsage = Omit<
+  ReportFontUsage,
+  'subsets' | 'hasFontFeatureSettings' | 'fontFeatureTags'
+>;
+
 export function wrapAssetGraphError(
   // eslint-disable-next-line no-restricted-syntax
   rawErr: unknown,

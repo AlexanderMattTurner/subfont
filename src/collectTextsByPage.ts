@@ -1372,7 +1372,11 @@ async function collectTextsByPage(
     }
   } finally {
     if (headlessBrowser) {
-      await headlessBrowser.close();
+      await headlessBrowser.close().catch(() => {
+        // Browser may already be gone (crashed, killed). Cleanup is
+        // best-effort; the primary error from the try block takes
+        // precedence.
+      });
     }
   }
 
