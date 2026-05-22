@@ -261,7 +261,7 @@ export function getUnusedVariantsStylesheet(
           const url = urlIndex < urls.length ? urls[urlIndex] : undefined;
           urlIndex++;
           if (url === undefined) return "url('')";
-          return `url('${url.replace(/'/g, "\\'")}')`;
+          return `url('${escapeCssStringContent(url, "'")}')`;
         });
       }
       let rule = `@font-face{font-family:${maybeCssQuote(`${props['font-family']}__subset`)};font-stretch:${props['font-stretch']};font-style:${props['font-style']};font-weight:${props['font-weight']};src:${src}`;

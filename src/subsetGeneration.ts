@@ -17,8 +17,11 @@ import {
   scriptsForText,
 } from './codepointMaps';
 
-// Bump when subsetting behaviour changes to invalidate stale disk-cache
-// entries (e.g. after adding hinting removal or table stripping).
+// Bump when subsetting behaviour changes the output bytes for any cached key
+// (e.g. after adding hinting removal or table stripping). Pure cache-key
+// reshaping that doesn't alter bytes (like adding a sort to a stable input)
+// does NOT need a bump — old keys just stop matching and new equivalents
+// fill in on next run; existing entries remain byte-correct.
 const SUBSET_CACHE_VERSION = '6';
 
 type FontBuffer = Buffer | Uint8Array;
