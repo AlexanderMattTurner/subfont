@@ -26,6 +26,11 @@ interface ConvertTask {
 }
 
 let _pool: Piscina | null = null;
+// Held while `destroy()` is awaiting the underlying piscina teardown.
+// Concurrent `convert()` calls await this before constructing a fresh
+// pool — otherwise a `convert()` that lands between `_pool = null` and
+// `pool.destroy()` would spin up a second pool alongside the dying one.
+let _destroyPromise: Promise<void> | null = null;
 
 function getPool(): Piscina {
   if (_pool === null) {
@@ -51,6 +56,11 @@ export async function convert(
   sourceFormat?: string,
   { signal }: ConvertOptions = {}
 ): Promise<Buffer> {
+  // If a destroy is in flight, wait it out so we don't spawn a new pool
+  // alongside the dying one.
+  if (_destroyPromise) {
+    await _destroyPromise;
+  }
   const task: ConvertTask = { buffer, targetFormat, sourceFormat };
   const result = await runWithTimeoutAndSignal<Buffer | Uint8Array>(
     getPool(),
@@ -68,5 +78,8 @@ export async function destroy(): Promise<void> {
   if (_pool === null) return;
   const pool = _pool;
   _pool = null;
-  await pool.destroy();
+  _destroyPromise = pool.destroy().finally(() => {
+    _destroyPromise = null;
+  });
+  await _destroyPromise;
 }

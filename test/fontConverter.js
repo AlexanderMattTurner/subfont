@@ -113,11 +113,24 @@ describe('fontConverter', function () {
         () => 'rejected'
       );
       await destroying;
-      // Either outcome is acceptable for the racing task; what matters
-      // is that the next convert recovers.
       expect(settled, 'to match', /resolved|rejected/);
 
       const result = await convert(woff2Font, 'sfnt');
+      expect(result, 'to be a', Buffer);
+      expect(result.length, 'to be greater than', 0);
+      await destroy();
+    });
+
+    it('should not double-spawn when convert() starts after destroy() begins', async function () {
+      // Prime the pool, then kick off destroy() and immediately fire a
+      // second convert(). The second call must wait for the destroy to
+      // finish before constructing a fresh pool — otherwise two pools
+      // coexist briefly.
+      await convert(woff2Font, 'sfnt');
+      const destroying = destroy();
+      const next = convert(woff2Font, 'sfnt');
+      await destroying;
+      const result = await next;
       expect(result, 'to be a', Buffer);
       expect(result.length, 'to be greater than', 0);
       await destroy();

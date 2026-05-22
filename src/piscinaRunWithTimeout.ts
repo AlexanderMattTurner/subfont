@@ -2,14 +2,18 @@ import type { Piscina } from 'piscina';
 
 /**
  * Compose a user-provided abort signal with a timeout watchdog and run
- * the task on the given piscina pool. If the timeout fires, the task
- * is cancelled and the rejection is reshaped to a Timeout-style Error
- * with the formatted message instead of piscina's generic AbortError —
- * truncated tasks are otherwise hard to diagnose in logs.
+ * the task on the given piscina pool. The rejection shape depends on
+ * which source fired:
+ *
+ *   - watchdog timeout  → Error(formatTimeoutMessage(ms))
+ *   - user signal abort → the user's `signal.reason` if it's an Error
+ *                         (otherwise piscina's AbortError, whose `cause`
+ *                         is the reason)
+ *   - other failure     → the original error
  *
  * `taskTimeoutMs <= 0` disables the watchdog (the user signal is still
- * forwarded). User-side abort always surfaces as the user's own reason
- * (or piscina's AbortError if the user provided no `reason`).
+ * forwarded). Reshaping the timeout case avoids surfacing piscina's
+ * generic AbortError when a truncated task lands in logs.
  */
 export function runWithTimeoutAndSignal<TResult>(
   pool: Piscina,
@@ -63,10 +67,16 @@ export function runWithTimeoutAndSignal<TResult>(
     // eslint-disable-next-line no-restricted-syntax
     (err: unknown) => {
       cleanup();
-      // Surface the timeout message rather than piscina's generic AbortError
-      // when the abort came from our watchdog.
-      if (timeoutErr && (err as Error)?.name === 'AbortError') {
-        throw timeoutErr;
+      if ((err as Error)?.name === 'AbortError') {
+        // Surface the timeout message rather than piscina's generic
+        // AbortError when the abort came from our watchdog.
+        if (timeoutErr) throw timeoutErr;
+        // Otherwise the abort came from the user signal. Prefer the
+        // user's reason if it's an Error so callers see their own
+        // stack instead of piscina's wrapper.
+        if (userSignal?.aborted && userSignal.reason instanceof Error) {
+          throw userSignal.reason;
+        }
       }
       throw err;
     }

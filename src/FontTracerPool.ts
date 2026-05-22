@@ -75,10 +75,22 @@ class FontTracerPool {
   }
 
   async init(): Promise<void> {
-    // Piscina spawns workers eagerly when minThreads === maxThreads, and
-    // queues tasks until each worker's module has finished loading. The
-    // explicit init() step is preserved for API stability with prior
-    // callers; no additional setup is required.
+    // Piscina spawns workers eagerly when minThreads === maxThreads, but
+    // each worker still pays a one-time `require('jsdom')` + `postcss` cost
+    // on its first message — hundreds of ms cold. Fire one warmup trace
+    // per worker so that cost lands in init() (where the phase tracker
+    // expects it) instead of in the first real `trace()` batch.
+    //
+    // Empty HTML produces an empty result quickly and exercises the full
+    // require chain. Tasks load-balance across all idle workers.
+    const minThreads = this._pool.options.minThreads;
+    if (minThreads > 0) {
+      await Promise.all(
+        Array.from({ length: minThreads }, () =>
+          this._pool.run({ htmlText: '', stylesheetsWithPredicates: [] })
+        )
+      );
+    }
   }
 
   trace(

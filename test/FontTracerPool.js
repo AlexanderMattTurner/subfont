@@ -45,15 +45,18 @@ describe('FontTracerPool', function () {
     await pool.destroy();
   });
 
+  it('should warm workers eagerly in init() so the first trace is hot', async function () {
+    const pool = new FontTracerPool(2);
+    await pool.init();
+    // init() dispatches one warmup task per worker; by the time it
+    // resolves, both workers must have loaded jsdom/postcss.
+    expect(pool.threadCount, 'to be', 2);
+    await pool.destroy();
+  });
+
   it('should clean up workers on destroy', async function () {
     const pool = new FontTracerPool(2);
     await pool.init();
-    // A trace dispatches a task to each worker, forcing piscina to spawn
-    // them before we assert their presence.
-    await Promise.all([
-      pool.trace(html('<p>warmup A</p>'), []),
-      pool.trace(html('<p>warmup B</p>'), []),
-    ]);
     expect(pool.threadCount, 'to be greater than', 0);
 
     await pool.destroy();
@@ -118,7 +121,7 @@ describe('FontTracerPool', function () {
       }
     });
 
-    it('should reject immediately when given an already-aborted signal', async function () {
+    it('should reject immediately with the user reason when given an already-aborted signal', async function () {
       pool = new FontTracerPool(1);
       await pool.init();
 
@@ -129,9 +132,10 @@ describe('FontTracerPool', function () {
         pool.trace(html('<p>nope</p>'), [], { signal: controller.signal })
       );
       expect(result.status, 'to be', 'rejected');
+      expect(result.message, 'to be', 'cancelled before run');
     });
 
-    it('should reject a queued task when the signal aborts before dispatch', async function () {
+    it('should reject a queued task with the user reason when the signal aborts before dispatch', async function () {
       pool = new FontTracerPool(1);
       await pool.init();
 
@@ -146,6 +150,7 @@ describe('FontTracerPool', function () {
 
       const result = await settle(queued);
       expect(result.status, 'to be', 'rejected');
+      expect(result.message, 'to be', 'cancel queued');
       // The blocker (and the pool overall) keeps working.
       await blocker;
     });
