@@ -324,6 +324,7 @@ interface SubsetGenCtx {
   fontAssetsByUrl: Map<string, Asset>;
   diskCache: SubsetDiskCache | null;
   cacheStats: { hits: number; misses: number } | null;
+  signal?: AbortSignal;
 }
 
 async function queueSubsetForFormat(
@@ -336,7 +337,7 @@ async function queueSubsetForFormat(
   featureGlyphIds: number[] | undefined,
   extraOptions: ExtraSubsetCacheOptions
 ): Promise<Buffer | null> {
-  const { assetGraph, fontAssetsByUrl, diskCache, cacheStats } = ctx;
+  const { assetGraph, fontAssetsByUrl, diskCache, cacheStats, signal } = ctx;
   const cacheKey = diskCache
     ? subsetCacheKey(
         fontBuffer,
@@ -361,6 +362,7 @@ async function queueSubsetForFormat(
     glyphIds: featureGlyphIds,
     variationAxes: subsetInfo.variationAxes,
     ...extraOptions,
+    signal,
   });
 
   return subsetCall
@@ -554,7 +556,8 @@ export async function getSubsetsForFontUsage(
   seenAxisValuesByFontUrlAndAxisName: Map<string, Map<string, Set<number>>>,
   cacheDir: string | null = null,
   console: Console | null = null,
-  debug = false
+  debug = false,
+  signal?: AbortSignal
 ): Promise<Map<string, Asset>> {
   const diskCache = cacheDir ? new SubsetDiskCache(cacheDir, console) : null;
   const cacheStats = diskCache ? { hits: 0, misses: 0 } : null;
@@ -576,7 +579,7 @@ export async function getSubsetsForFontUsage(
   );
 
   const { subsetPromiseMap, subsetInfoByFontUrl } = await queueAllSubsets(
-    { assetGraph, fontAssetsByUrl, diskCache, cacheStats },
+    { assetGraph, fontAssetsByUrl, diskCache, cacheStats, signal },
     canonicalFontUsageByUrl,
     originalFontBuffers,
     variationAxisBoundsCache,

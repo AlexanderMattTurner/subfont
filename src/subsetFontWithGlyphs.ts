@@ -96,6 +96,7 @@ interface SubsetFontWithGlyphsOptions {
   // scripts" set is replaced by exactly these tags. When undefined, all
   // scripts in the font are retained (legacy behavior).
   scriptTags?: string[];
+  signal?: AbortSignal;
 }
 
 // Pool of WASM instances for parallel subsetting.  Each instance has its
@@ -491,6 +492,7 @@ async function subsetFontWithGlyphs(
     dropMathTable = false,
     dropColorTables = false,
     scriptTags,
+    signal,
   }: SubsetFontWithGlyphsOptions = {}
 ): Promise<Buffer> {
   // Reuse cached sfnt conversion when available (same buffer may have
@@ -556,7 +558,9 @@ async function subsetFontWithGlyphs(
     // wawoff2 WASM instance).  Non-woff2 formats use JS-based converters
     // that are safe to call concurrently in the main thread.
     return targetFormat === 'woff2'
-      ? convertInWorker(subsetFont as Buffer, targetFormat, 'truetype')
+      ? convertInWorker(subsetFont as Buffer, targetFormat, 'truetype', {
+          signal,
+        })
       : fontverter.convert(subsetFont as Buffer, targetFormat, 'truetype');
   } finally {
     if (!released) releaseInstance(inst);
