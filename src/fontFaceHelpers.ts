@@ -9,9 +9,21 @@ const contentTypeByFontFormat: Record<string, string> = {
   truetype: 'font/ttf',
 };
 
+// Backslashes must be escaped first; otherwise a literal `\` followed by the
+// closing quote forms a CSS escape sequence rather than `\` + quote.
+export function escapeCssStringContent(
+  value: string,
+  quote: "'" | '"'
+): string {
+  const quoteEscape = quote === "'" ? "\\'" : '\\"';
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(new RegExp(quote, 'g'), quoteEscape);
+}
+
 export function stringifyFontFamily(name: string): string {
   if (/[^a-z0-9_-]/i.test(name)) {
-    return `"${name.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+    return `"${escapeCssStringContent(name, '"')}"`;
   } else {
     return name;
   }
@@ -23,9 +35,7 @@ export function maybeCssQuote(value: string): string {
   if (/^[a-zA-Z_][a-zA-Z0-9_-]*$|^-[a-zA-Z_][a-zA-Z0-9_-]*$/.test(value)) {
     return value;
   } else {
-    // Escape backslashes before quotes — a lone `\` followed by `'` would
-    // otherwise form a CSS escape sequence rather than a literal `\` + `'`.
-    return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+    return `'${escapeCssStringContent(value, "'")}'`;
   }
 }
 

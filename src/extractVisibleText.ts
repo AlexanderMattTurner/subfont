@@ -83,7 +83,7 @@ const entityRe = /&(?:#x([0-9a-fA-F]+)|#(\d+)|([a-zA-Z]+));/g;
 // values past U+10FFFF; both produce invalid scalar values that break
 // downstream iterators (harfbuzz, unicode-range emitter). Skip them.
 function codePointToScalar(cp: number, match: string): string {
-  if (cp < 0 || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) {
+  if (cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) {
     return match;
   }
   return String.fromCodePoint(cp);

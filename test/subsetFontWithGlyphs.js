@@ -199,6 +199,20 @@ describe('subsetFontWithGlyphs', function () {
     }
   });
 
+  it('should throw on a feature tag that is not exactly 4 characters', async function () {
+    // OpenType tags are exactly 4 bytes. Shorter tags would otherwise be
+    // silently coerced to tag 0 via NaN arithmetic in HB_TAG.
+    try {
+      await subsetFontWithGlyphs(ttfBuffer, 'A', {
+        targetFormat: 'woff2',
+        featureTags: ['cv'],
+      });
+      expect.fail('Expected an error');
+    } catch (err) {
+      expect(err.message, 'to contain', 'HB_TAG requires a 4-character tag');
+    }
+  });
+
   it('targeted feature retention should produce a smaller subset than retain-all', async function () {
     // IBMPlexSans has many optional features (aalt, salt, ss##, sinf, etc.)
     // that the retain-all path keeps but targeted retention drops.

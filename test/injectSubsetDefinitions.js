@@ -104,6 +104,18 @@ describe('injectSubsetDefinitions', function () {
     );
   });
 
+  it('should escape backslashes in the subset font name before quoting', function () {
+    // A literal `\` followed by the closing `'` would otherwise form a CSS
+    // escape sequence rather than a literal backslash followed by a quote.
+    expect(
+      injectSubsetDefinitions('"times new roman"', {
+        'times new roman': 'times\\new\\roman__subset',
+      }),
+      'to equal',
+      '\'times\\\\new\\\\roman__subset\', "times new roman"'
+    );
+  });
+
   it('should inject before a bareword font family that follows a quoted one not in the map', function () {
     const map = {
       'times new roman': 'times new roman__subset',

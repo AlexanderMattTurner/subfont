@@ -212,6 +212,35 @@ describe('subsetGeneration', function () {
       });
     });
 
+    it('should produce the same key regardless of extraOptions.featureTags order', function () {
+      // fontFeatureTags arrives via [...Set] in fontFeatureHelpers, so the
+      // input order depends on insertion. Equivalent tag sets must hash to
+      // the same cache key regardless of input ordering.
+      const fontBuf = Buffer.from('feature-tags-ordering');
+      const ascending = subsetCacheKey(fontBuf, 'abc', 'woff2', null, null, {
+        featureTags: ['liga', 'smcp', 'ss02'],
+      });
+      const descending = subsetCacheKey(fontBuf, 'abc', 'woff2', null, null, {
+        featureTags: ['ss02', 'smcp', 'liga'],
+      });
+      expect(ascending, 'to equal', descending);
+    });
+
+    it('should produce the same key regardless of extraOptions key order', function () {
+      const fontBuf = Buffer.from('key-ordering');
+      const orderA = subsetCacheKey(fontBuf, 'abc', 'woff2', null, null, {
+        dropMathTable: true,
+        dropColorTables: false,
+        featureTags: ['liga'],
+      });
+      const orderB = subsetCacheKey(fontBuf, 'abc', 'woff2', null, null, {
+        featureTags: ['liga'],
+        dropColorTables: false,
+        dropMathTable: true,
+      });
+      expect(orderA, 'to equal', orderB);
+    });
+
     it('should produce the same key regardless of featureGlyphIds order', function () {
       // featureGlyphIds is derived from a Set, whose iteration order
       // depends on insertion ordering in V8. Two equivalent glyph sets

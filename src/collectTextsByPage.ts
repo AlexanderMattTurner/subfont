@@ -533,9 +533,6 @@ async function tracePages(
       );
       progress.done();
       if (fallbackCount > 0 && console) {
-        // Surface the aggregate so silent degradation is observable. Per-page
-        // warnings above name which URLs failed; this summary is what gets
-        // noticed in CI logs and what --strict trips on.
         console.warn(
           `Worker fontTracer fell back to the main thread for ${fallbackCount} of ${totalPages} page${totalPages === 1 ? '' : 's'}.`
         );

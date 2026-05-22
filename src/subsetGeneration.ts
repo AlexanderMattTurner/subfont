@@ -19,7 +19,7 @@ import {
 
 // Bump when subsetting behaviour changes to invalidate stale disk-cache
 // entries (e.g. after adding hinting removal or table stripping).
-const SUBSET_CACHE_VERSION = '7';
+const SUBSET_CACHE_VERSION = '6';
 
 type FontBuffer = Buffer | Uint8Array;
 
@@ -77,8 +77,24 @@ function subsetCacheKey(
   // upstream Set traversal (and across V8 versions / Map seeds).
   if (featureGlyphIds)
     hash.update(JSON.stringify([...featureGlyphIds].sort((a, b) => a - b)));
-  if (extraOptions) hash.update(JSON.stringify(extraOptions));
+  if (extraOptions)
+    hash.update(JSON.stringify(normalizeExtraOptions(extraOptions)));
   return hash.digest('hex');
+}
+
+// Sort string-array fields in extraOptions so the cache key doesn't depend on
+// the upstream Set traversal order that produced them (e.g. fontFeatureTags
+// is `[...Set]` in fontFeatureHelpers, scriptsForText insertion-orders by
+// codepoint sweep). Boolean/string fields pass through.
+function normalizeExtraOptions(
+  opts: ExtraSubsetCacheOptions
+): ExtraSubsetCacheOptions {
+  const out: ExtraSubsetCacheOptions = {};
+  for (const key of Object.keys(opts).sort()) {
+    const v = opts[key];
+    out[key] = Array.isArray(v) ? [...v].sort() : v;
+  }
+  return out;
 }
 
 class SubsetDiskCache {

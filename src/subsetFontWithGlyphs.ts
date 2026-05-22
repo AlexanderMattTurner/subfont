@@ -203,8 +203,8 @@ function getHeapu8(exports: HarfbuzzExports): Uint8Array {
 
 // >>> 0 keeps the accumulator unsigned; without it, tags whose first byte
 // exceeds 0x7F would overflow into negative i32 territory after << 24.
-// OpenType tags are exactly 4 bytes — anything shorter silently produces
-// tag 0 via NaN arithmetic, anything longer silently truncates.
+// OpenType tags are exactly 4 bytes; anything shorter silently produces
+// tag 0 via NaN arithmetic, and anything longer silently truncates.
 function HB_TAG(str: string): number {
   if (str.length !== 4) {
     throw new Error(
