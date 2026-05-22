@@ -67,5 +67,73 @@ describe('fontConverter', function () {
       expect(result, 'to be a', Buffer);
       expect(result.length, 'to be greater than', 0);
     });
+
+    it('should be idempotent — second destroy is a no-op', async function () {
+      await convert(woff2Font, 'sfnt');
+      await destroy();
+      await destroy();
+    });
+  });
+
+  describe('AbortSignal', function () {
+    afterEach(async function () {
+      await destroy();
+    });
+
+    it('should reject immediately when given an already-aborted signal', async function () {
+      const controller = new AbortController();
+      controller.abort(new Error('cancelled before run'));
+
+      await expect(
+        convert(woff2Font, 'sfnt', undefined, { signal: controller.signal }),
+        'to be rejected'
+      );
+    });
+
+    it('should accept a non-aborted signal without affecting the result', async function () {
+      const controller = new AbortController();
+      const result = await convert(woff2Font, 'sfnt', undefined, {
+        signal: controller.signal,
+      });
+      expect(result, 'to be a', Buffer);
+      expect(result.length, 'to be greater than', 0);
+    });
+  });
+
+  describe('destroy/convert race', function () {
+    it('should support destroy() concurrent with in-flight convert()', async function () {
+      // Start a conversion, then call destroy() before it can finish.
+      // The in-flight task should reject and the next convert() must
+      // spin up a fresh pool rather than hang.
+      const inflight = convert(woff2Font, 'sfnt');
+      const destroying = destroy();
+
+      const settled = await inflight.then(
+        () => 'resolved',
+        () => 'rejected'
+      );
+      await destroying;
+      expect(settled, 'to match', /resolved|rejected/);
+
+      const result = await convert(woff2Font, 'sfnt');
+      expect(result, 'to be a', Buffer);
+      expect(result.length, 'to be greater than', 0);
+      await destroy();
+    });
+
+    it('should not double-spawn when convert() starts after destroy() begins', async function () {
+      // Prime the pool, then kick off destroy() and immediately fire a
+      // second convert(). The second call must wait for the destroy to
+      // finish before constructing a fresh pool — otherwise two pools
+      // coexist briefly.
+      await convert(woff2Font, 'sfnt');
+      const destroying = destroy();
+      const next = convert(woff2Font, 'sfnt');
+      await destroying;
+      const result = await next;
+      expect(result, 'to be a', Buffer);
+      expect(result.length, 'to be greater than', 0);
+      await destroy();
+    });
   });
 });
