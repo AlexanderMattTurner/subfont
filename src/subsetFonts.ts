@@ -1599,10 +1599,12 @@ async function subsetFonts(
   // collectTextsByPage traces fonts. Compilation (~50-200ms) overlaps
   // with tracing work rather than appearing on the critical path.
   void subsetFontWithGlyphs.warmup().catch((err) => {
-    console.warn(
-      'subfont: WASM warmup failed (will retry on first subset call):',
-      err
-    );
+    if (debug) {
+      console.warn(
+        'subfont: WASM warmup failed (will retry on first subset call):',
+        err
+      );
+    }
   });
 
   const subsetUrl = urltools.ensureTrailingSlash(assetGraph.root + subsetPath);

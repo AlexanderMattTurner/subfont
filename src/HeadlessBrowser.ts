@@ -131,36 +131,38 @@ class HeadlessBrowser {
   ): void {
     page.on('request', (request) => {
       const url = request.url();
-      try {
-        if (url.startsWith(baseUrl)) {
-          let agUrl = url.replace(baseUrl, assetGraph.root);
-          if (/\/$/.test(agUrl)) {
-            agUrl += 'index.html';
-          }
-          const asset = assetGraph.findAssets({
-            isLoaded: true,
-            url: agUrl,
-          })[0];
-          if (asset) {
-            void request.respond({
+      // Puppeteer request methods return promises, but this callback is
+      // synchronous (page.on does not await it). Attach .catch() to each
+      // call so rejections (e.g. request already handled, page closing)
+      // don't become unhandled-rejection crashes.
+      const swallow = () => {};
+      if (url.startsWith(baseUrl)) {
+        let agUrl = url.replace(baseUrl, assetGraph.root);
+        if (/\/$/.test(agUrl)) {
+          agUrl += 'index.html';
+        }
+        const asset = assetGraph.findAssets({
+          isLoaded: true,
+          url: agUrl,
+        })[0];
+        if (asset) {
+          void request
+            .respond({
               status: 200,
               contentType: asset.contentType,
               body: asset.rawSrc,
-            });
-          } else {
-            void request.respond({ status: 404, body: '' });
-          }
-          return;
+            })
+            .catch(swallow);
+        } else {
+          void request.respond({ status: 404, body: '' }).catch(swallow);
         }
-        if (url.startsWith('file:')) {
-          void request.continue();
-          return;
-        }
-        // External request — abort to avoid hanging on DNS/network.
-        void request.abort('failed');
-      } catch {
-        // Request may already be handled or page may be closing — ignore.
+        return;
       }
+      if (url.startsWith('file:')) {
+        void request.continue().catch(swallow);
+        return;
+      }
+      void request.abort('failed').catch(swallow);
     });
   }
 
