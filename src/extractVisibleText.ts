@@ -1,165 +1,92 @@
+import { parse } from 'parse5';
+
+// Tags whose textual contents (and attribute text) must NOT contribute to
+// the rendered character set we trace for font subsetting. `title` lives in
+// `<head>` for valid documents and is already skipped via the head subtree,
+// but parse5 auto-promotes a stray top-level `<title>` from fragment input
+// into the synthetic head — listing it explicitly makes the intent
+// (browser tab titles aren't rendered with web fonts) match either parse
+// outcome.
 const INVISIBLE_ELEMENTS = new Set<string>([
   'script',
   'style',
   'svg',
   'template',
   'head',
+  'title',
   'noscript',
   'iframe',
   'object',
   'embed',
   'datalist',
 ]);
-// Build a regex that strips invisible element blocks (greedy, case-insensitive).
-// For void elements like <embed> there is no closing tag — just the opening
-// tag is stripped (which the tag-stripping regex below handles).
-const invisibleBlockTags = [...INVISIBLE_ELEMENTS].filter((t) => t !== 'embed');
-const invisibleBlockRe = new RegExp(
-  `<(${invisibleBlockTags.join('|')})\\b[^>]*>[\\s\\S]*?<\\/\\1\\s*>`,
-  'gi'
-);
-const commentRe = /<!--[\s\S]*?-->/g;
 
-// Match text-bearing attributes: alt="...", title='...', placeholder=..., etc.
-// Captures the attribute name (group 1) and the value (groups 2, 3, or 4 for
-// double-quoted, single-quoted, and unquoted respectively).
-// Negative lookbehind prevents matching data- prefixed attributes (e.g. data-alt).
-const attrRe =
-  /(?<![-\w])(alt|title|placeholder|value|aria-label)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]*))/gi;
-// Match <input ... type="hidden" ...> or <input ... type=hidden ...>
-// \b only after the unquoted alternative — quotes already delimit the value.
-const hiddenInputRe =
-  /<input\b[^>]*?\btype\s*=\s*(?:"hidden"|'hidden'|hidden\b)[^>]*/gi;
-const tagRe = /<[^>]+>/g;
+// Attributes whose values render as visible text in the page (typically
+// surfaced as tooltips, alternative text, or input value labels).
+const EXTRACTABLE_ATTRS = new Set<string>([
+  'alt',
+  'title',
+  'placeholder',
+  'value',
+  'aria-label',
+]);
 
-// Named and numeric HTML entity decoder.  Covers the XML built-ins plus
-// typographic entities commonly found in blog/article content.  Rare
-// entities are left as-is (their literal characters still enter the
-// subset, so glyphs are never lost — just slightly overcounted).
-const namedEntities: Record<string, string> = {
-  amp: '&',
-  lt: '<',
-  gt: '>',
-  quot: '"',
-  apos: "'",
-  nbsp: ' ',
-  // Typographic quotes & dashes
-  ldquo: '“',
-  rdquo: '”',
-  lsquo: '‘',
-  rsquo: '’',
-  mdash: '—',
-  ndash: '–',
-  hellip: '…',
-  laquo: '«',
-  raquo: '»',
-  // Common symbols
-  bull: '•',
-  middot: '·',
-  copy: '©',
-  reg: '®',
-  trade: '™',
-  times: '×',
-  divide: '÷',
-  minus: '−',
-  plusmn: '±',
-  deg: '°',
-  micro: 'µ',
-  para: '¶',
-  sect: '§',
-  // Currency
-  euro: '€',
-  pound: '£',
-  yen: '¥',
-  cent: '¢',
-  // Arrows
-  larr: '←',
-  rarr: '→',
-  uarr: '↑',
-  darr: '↓',
-};
-const entityRe = /&(?:#x([0-9a-fA-F]+)|#(\d+)|([a-zA-Z]+));/g;
-// Numeric character references may name surrogate halves (U+D800–U+DFFF) or
-// values past U+10FFFF; both produce invalid scalar values that break
-// downstream iterators (harfbuzz, unicode-range emitter). Skip them.
-function codePointToScalar(cp: number, match: string): string {
-  if (cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) {
-    return match;
-  }
-  return String.fromCodePoint(cp);
-}
-function decodeEntities(str: string): string {
-  return str.replace(entityRe, (match, hex, dec, name) => {
-    if (hex) {
-      const cp = parseInt(hex, 16);
-      return Number.isNaN(cp) ? match : codePointToScalar(cp, match);
-    }
-    if (dec) {
-      const cp = parseInt(dec, 10);
-      return Number.isNaN(cp) ? match : codePointToScalar(cp, match);
-    }
-    if (name && namedEntities[name.toLowerCase()] !== undefined) {
-      return namedEntities[name.toLowerCase()];
-    }
-    return match;
-  });
+// parse5 nodes are typed via a heavy generic adapter map; the runtime fields
+// we touch are this minimal shape, present on every visited node.
+interface Parse5Node {
+  nodeName: string;
+  tagName?: string;
+  attrs?: Array<{ name: string; value: string }>;
+  childNodes?: Parse5Node[];
+  value?: string;
 }
 
-// --- Pipeline stages ---
-// Each stage takes an HTML string and returns a transformed string or
-// extracted data. Ordering is enforced by the pipeline structure: stages
-// that must run on "clean" HTML (invisible blocks removed) receive the
-// output of stripInvisible, not the original HTML.
-
-function resetGlobalRegexes(): void {
-  invisibleBlockRe.lastIndex = 0;
-  hiddenInputRe.lastIndex = 0;
-  attrRe.lastIndex = 0;
-}
-
-function collectHiddenInputValues(html: string): Set<string> {
-  hiddenInputRe.lastIndex = 0;
-  const values = new Set<string>();
-  let match: RegExpExecArray | null;
-  while ((match = hiddenInputRe.exec(html)) !== null) {
-    const fragment = match[0];
-    let m: RegExpExecArray | null;
-    const localAttrRe = /\bvalue\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]*))/gi;
-    while ((m = localAttrRe.exec(fragment)) !== null) {
-      const val = m[1] ?? m[2] ?? m[3];
-      if (val) values.add(val);
+function isHiddenInput(node: Parse5Node): boolean {
+  if (node.tagName !== 'input' || !node.attrs) return false;
+  for (const attr of node.attrs) {
+    if (attr.name === 'type') {
+      return attr.value.toLowerCase() === 'hidden';
     }
   }
-  return values;
+  return false;
 }
 
-function stripInvisible(html: string): string {
-  invisibleBlockRe.lastIndex = 0;
-  let text = html.replace(invisibleBlockRe, ' ');
-  text = text.replace(commentRe, ' ');
-  return text;
+// parse5 maps invalid numeric character references to U+FFFD per spec, so
+// lone surrogates should never appear. This is a belt-and-suspenders pass:
+// downstream code (harfbuzz, unicode-range emitter) breaks on lone surrogates,
+// so any that slip through here must not propagate.
+const LONE_SURROGATE_RE =
+  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+function stripLoneSurrogates(text: string): string {
+  return text.replace(LONE_SURROGATE_RE, '');
 }
 
-function extractAttributes(
-  cleanedHtml: string,
-  hiddenInputValues: Set<string>
-): string[] {
-  attrRe.lastIndex = 0;
-  const parts: string[] = [];
-  let match: RegExpExecArray | null;
-  while ((match = attrRe.exec(cleanedHtml)) !== null) {
-    const attrName = match[1].toLowerCase();
-    const val = match[2] ?? match[3] ?? match[4];
-    if (!val) continue;
-    if (attrName === 'value' && hiddenInputValues.has(val)) continue;
-    parts.push(decodeEntities(val));
+function walk(node: Parse5Node, parts: string[]): void {
+  if (node.nodeName === '#text') {
+    if (node.value) parts.push(node.value);
+    return;
   }
-  return parts;
-}
+  if (node.nodeName === '#comment' || node.nodeName === '#documentType') {
+    return;
+  }
+  if (node.tagName && INVISIBLE_ELEMENTS.has(node.tagName)) {
+    return;
+  }
 
-function stripTagsAndDecode(cleanedHtml: string): string {
-  const text = cleanedHtml.replace(tagRe, ' ');
-  return decodeEntities(text);
+  if (node.attrs && node.attrs.length > 0) {
+    const hidden = isHiddenInput(node);
+    for (const attr of node.attrs) {
+      if (!EXTRACTABLE_ATTRS.has(attr.name)) continue;
+      if (hidden && attr.name === 'value') continue;
+      if (attr.value) parts.push(attr.value);
+    }
+  }
+
+  if (node.childNodes) {
+    for (const child of node.childNodes) {
+      walk(child, parts);
+    }
+  }
 }
 
 /**
@@ -167,30 +94,19 @@ function stripTagsAndDecode(cleanedHtml: string): string {
  * Used as a lightweight alternative to full font-tracer for pages
  * that share the same CSS configuration as an already-traced page.
  *
- * Pipeline:
- *   1. Collect hidden-input values (for exclusion)
- *   2. Strip invisible blocks + comments
- *   3. Extract text-bearing attributes from cleaned HTML
- *   4. Strip remaining tags and decode entities
+ * Uses parse5 (the WHATWG-spec HTML parser used by jsdom) to:
+ *   - skip invisible subtrees (script, style, svg, etc.) regardless of
+ *     attribute contents or nesting peculiarities
+ *   - decode every named or numeric HTML entity (~2200 entities incl.
+ *     accented Latin like &eacute; / &ouml; that hand-rolled tables miss)
+ *   - lowercase tag/attribute names so case variations don't leak text
  */
 function extractVisibleText(html: string): string {
   if (!html) return '';
-  resetGlobalRegexes();
-
-  // Stage 1: identify hidden-input values (on original HTML, since
-  // hidden inputs are visible elements whose values we want to exclude)
-  const hiddenInputValues = collectHiddenInputValues(html);
-
-  // Stage 2: remove invisible content
-  const cleaned = stripInvisible(html);
-
-  // Stage 3: extract attributes from cleaned HTML (not original!)
-  const attrTexts = extractAttributes(cleaned, hiddenInputValues);
-
-  // Stage 4: strip tags and decode remaining text content
-  const bodyText = stripTagsAndDecode(cleaned);
-
-  return [...attrTexts, bodyText].join(' ');
+  const doc = parse(html);
+  const parts: string[] = [];
+  walk(doc as Parse5Node, parts);
+  return stripLoneSurrogates(parts.join(' '));
 }
 
 interface ExtractVisibleText {

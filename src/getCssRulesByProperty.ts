@@ -110,13 +110,18 @@ interface NamespaceInfo {
 }
 
 // Parse @namespace rules: either a default namespace or a prefixed one.
+// The prefix character class follows the CSS Syntax spec for identifiers:
+// start with letter/underscore or a single leading hyphen followed by
+// letter/underscore, then letter/digit/hyphen/underscore. `\w+` would have
+// rejected hyphenated prefixes like `my-ns` and silently misparsed the rule
+// as a default-namespace declaration.
+const NAMESPACE_PARAMS_RE =
+  /^(?<prefix>-?[a-zA-Z_][\w-]*)\s+(?<uri>.+)$|^(?<defaultUri>.+)$/;
 function parseNamespaces(parseTree: postcss.Root): NamespaceInfo {
   let defaultNamespaceURI: string | undefined;
   const namespacePrefixes = new Map<string, string>();
   parseTree.walkAtRules('namespace', (rule) => {
-    const match = rule.params.match(
-      /^(?<prefix>\w+)\s+(?<uri>.+)$|^(?<defaultUri>.+)$/
-    );
+    const match = rule.params.match(NAMESPACE_PARAMS_RE);
     if (!match || !match.groups) return;
     const { prefix, uri, defaultUri } = match.groups;
     if (prefix) {
@@ -130,6 +135,9 @@ function parseNamespaces(parseTree: postcss.Root): NamespaceInfo {
 
 // Resolve the namespace URI for a selector by examining its subject
 // (the rightmost compound selector) for a namespace prefix like svg|text.
+// Prefix character class matches the same identifier shape as
+// NAMESPACE_PARAMS_RE so hyphenated prefixes (`my-ns|text`) resolve.
+const NAMESPACE_SELECTOR_RE = /^(?<nsPrefix>\*|-?[a-zA-Z_][\w-]*|)\|/;
 function resolveNamespaceURI(
   selector: string,
   ns: NamespaceInfo
@@ -139,7 +147,7 @@ function resolveNamespaceURI(
   }
   const compoundSelectors = selector.split(/\s*[>+~]\s*|\s+/);
   const subject = compoundSelectors[compoundSelectors.length - 1];
-  const nsMatch = subject.match(/^(?<nsPrefix>\*|\w*)\|/);
+  const nsMatch = subject.match(NAMESPACE_SELECTOR_RE);
   if (!nsMatch || !nsMatch.groups) {
     return ns.defaultNamespaceURI;
   }
