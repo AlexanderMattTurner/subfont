@@ -35,9 +35,14 @@ describe('parseCommandLineOptions', function () {
       expected: { concurrency: 4 },
     },
     {
-      desc: '--chrome-flags (comma-separated)',
-      argv: ['--chrome-flags=--no-sandbox,--disable-gpu'],
+      desc: '--chrome-flags (repeated)',
+      argv: ['--chrome-flags=--no-sandbox', '--chrome-flags=--disable-gpu'],
       expected: { chromeFlags: ['--no-sandbox', '--disable-gpu'] },
+    },
+    {
+      desc: '--chrome-flags preserves embedded commas (regression: was split before)',
+      argv: ['--chrome-flags=--disable-features=Foo,Bar'],
+      expected: { chromeFlags: ['--disable-features=Foo,Bar'] },
     },
     {
       desc: '--cache with a path',
@@ -125,14 +130,9 @@ describe('parseCommandLineOptions', function () {
       expected: { text: '0123456789' },
     },
     {
-      desc: '--chrome-flags with empty string',
-      argv: ['--chrome-flags='],
+      desc: '--chrome-flags with no flag passed defaults to empty array',
+      argv: [],
       expected: { chromeFlags: [] },
-    },
-    {
-      desc: '--chrome-flags trims whitespace',
-      argv: ['--chrome-flags= --no-sandbox , --disable-gpu '],
-      expected: { chromeFlags: ['--no-sandbox', '--disable-gpu'] },
     },
   ].forEach(({ desc, argv, expected }) => {
     it(`should parse ${desc}`, function () {

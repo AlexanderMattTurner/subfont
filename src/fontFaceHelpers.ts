@@ -317,35 +317,44 @@ export function cssAssetIsEmpty(cssAsset: {
   );
 }
 
+export type RangeWarnFn = (err: Error) => void;
+
 export function parseFontWeightRange(
-  str: string | undefined
+  str: string | undefined,
+  warn?: RangeWarnFn
 ): [number, number] {
   if (typeof str === 'undefined' || str === 'auto') {
     return [-Infinity, Infinity];
   }
-  let minFontWeight = 400;
-  let maxFontWeight = 400;
-  const fontWeightTokens = str.split(/\s+/).map((s) => parseFloat(s));
+  // Resolve keyword forms ("normal" → 400, "bold" → 700) before numeric
+  // parsing so they're not falsely flagged as malformed.
+  const fontWeightTokens = str.split(/\s+/).map((s) => {
+    const normalized = normalizeFontPropertyValue('font-weight', s);
+    return parseFloat(String(normalized));
+  });
   if (
     [1, 2].includes(fontWeightTokens.length) &&
     !fontWeightTokens.some(isNaN)
   ) {
-    minFontWeight = maxFontWeight = fontWeightTokens[0];
-    if (fontWeightTokens.length === 2) {
-      maxFontWeight = fontWeightTokens[1];
-    }
+    const minFontWeight = fontWeightTokens[0];
+    const maxFontWeight = fontWeightTokens[1] ?? fontWeightTokens[0];
+    return [minFontWeight, maxFontWeight];
   }
-  return [minFontWeight, maxFontWeight];
+  warn?.(
+    new Error(
+      `parseFontWeightRange: unrecognized font-weight range "${str}", falling back to 400. Expected one or two values (CSS Fonts Level 4 §2.2.3).`
+    )
+  );
+  return [400, 400];
 }
 
 export function parseFontStretchRange(
-  str: string | undefined
+  str: string | undefined,
+  warn?: RangeWarnFn
 ): [number, number] {
   if (typeof str === 'undefined' || str.toLowerCase() === 'auto') {
     return [-Infinity, Infinity];
   }
-  let minFontStretch = 100;
-  let maxFontStretch = 100;
   const fontStretchTokens = str.split(/\s+/).map((s) => {
     const normalized = normalizeFontPropertyValue('font-stretch', s);
     return parseFloat(String(normalized));
@@ -354,12 +363,16 @@ export function parseFontStretchRange(
     [1, 2].includes(fontStretchTokens.length) &&
     !fontStretchTokens.some(isNaN)
   ) {
-    minFontStretch = maxFontStretch = fontStretchTokens[0];
-    if (fontStretchTokens.length === 2) {
-      maxFontStretch = fontStretchTokens[1];
-    }
+    const minFontStretch = fontStretchTokens[0];
+    const maxFontStretch = fontStretchTokens[1] ?? fontStretchTokens[0];
+    return [minFontStretch, maxFontStretch];
   }
-  return [minFontStretch, maxFontStretch];
+  warn?.(
+    new Error(
+      `parseFontStretchRange: unrecognized font-stretch range "${str}", falling back to 100. Expected one or two values (CSS Fonts Level 4 §2.2.5).`
+    )
+  );
+  return [100, 100];
 }
 
 export function uniqueChars(text: string): string {

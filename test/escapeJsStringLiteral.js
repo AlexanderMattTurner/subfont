@@ -30,16 +30,16 @@ describe('escapeJsStringLiteral', function () {
     expect(escapeJsStringLiteral('a\rb'), 'to equal', 'a\\rb');
   });
 
-  it('should pass through line separator (U+2028) — safe in ES2019+ strings', function () {
-    const result = escapeJsStringLiteral('a\u2028b');
-    // U+2028 is legal in JSON and ES2019+ string literals.
-    // Either escaping or passing through is acceptable.
-    expect(result, 'to match', /^a(?:\u2028|\\u2028)b$/);
+  it('should escape line separator (U+2028) — JSON.stringify does not', function () {
+    // Regression: the prior comment claimed JSON.stringify escapes U+2028,
+    // but Node follows RFC 8259 and emits it verbatim. U+2028 is a line
+    // terminator in pre-ES2019 engines and remains hazardous in many
+    // embed contexts (inline scripts, eval), so escape it explicitly.
+    expect(escapeJsStringLiteral('a\u2028b'), 'to equal', 'a\\u2028b');
   });
 
-  it('should pass through paragraph separator (U+2029) — safe in ES2019+ strings', function () {
-    const result = escapeJsStringLiteral('a\u2029b');
-    expect(result, 'to match', /^a(?:\u2029|\\u2029)b$/);
+  it('should escape paragraph separator (U+2029) — JSON.stringify does not', function () {
+    expect(escapeJsStringLiteral('a\u2029b'), 'to equal', 'a\\u2029b');
   });
 
   it('should escape < to prevent </script> injection', function () {
