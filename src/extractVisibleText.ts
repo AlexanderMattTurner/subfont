@@ -1,13 +1,19 @@
 import { parse } from 'parse5';
 
 // Tags whose textual contents (and attribute text) must NOT contribute to
-// the rendered character set we trace for font subsetting.
+// the rendered character set we trace for font subsetting. `title` lives in
+// `<head>` for valid documents and is already skipped via the head subtree,
+// but parse5 auto-promotes a stray top-level `<title>` from fragment input
+// into the synthetic head — listing it explicitly makes the intent
+// (browser tab titles aren't rendered with web fonts) match either parse
+// outcome.
 const INVISIBLE_ELEMENTS = new Set<string>([
   'script',
   'style',
   'svg',
   'template',
   'head',
+  'title',
   'noscript',
   'iframe',
   'object',

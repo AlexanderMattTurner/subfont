@@ -146,4 +146,20 @@ describe('unquote', function () {
       expect(unquote("'foo\\\nbar'"), 'to equal', 'foobar');
     });
   });
+
+  describe('with unterminated quotes', function () {
+    // postcss-value-parser tokenises `"foo` as a string node whose source
+    // span covers the full input but is marked `unclosed: true`. Without
+    // the unclosed-guard the wrapper would return `foo` for malformed
+    // input — silently inventing a clean font name out of an unbalanced
+    // @font-face declaration. The legacy regex required matching quotes
+    // and returned the input unchanged.
+    it('should leave an unterminated double-quoted input unchanged', function () {
+      expect(unquote('"foo'), 'to equal', '"foo');
+    });
+
+    it('should leave an unterminated single-quoted input unchanged', function () {
+      expect(unquote("'foo"), 'to equal', "'foo");
+    });
+  });
 });

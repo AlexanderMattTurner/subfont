@@ -260,10 +260,9 @@ describe('extractVisibleText', function () {
     expect(result, 'not to contain', 'style-title');
   });
 
-  it('should strip deeply nested invisible blocks on repeated calls', function () {
-    // Ensures global regex state (lastIndex) is properly reset between calls.
-    // If invisibleBlockRe.lastIndex leaks, the second call may not strip the
-    // <script> block because the regex resumes from a non-zero position.
+  it('should strip invisible blocks across repeated calls', function () {
+    // parse5 is stateless across calls; this guards against any future
+    // refactor that introduces shared mutable state in the walker.
     for (let i = 0; i < 5; i++) {
       const result = extractVisibleText(
         `<div>visible${i}</div><script>hidden${i}</script><p>after${i}</p>`

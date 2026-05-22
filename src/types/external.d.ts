@@ -308,6 +308,10 @@ declare module 'postcss-value-parser' {
     // these fields; postcssValueParser-produced nodes always set them.
     sourceIndex?: number;
     sourceEndIndex?: number;
+    // String nodes set this when the closing quote was missing from the
+    // source value; consumers gating on "is this a valid quoted string?"
+    // must reject it.
+    unclosed?: true;
   }
   export interface Root {
     nodes: Node[];

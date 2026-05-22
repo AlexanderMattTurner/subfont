@@ -56,9 +56,13 @@ function unescapeCssString(str: string): string {
  * previous regex (`^'([^']*)'$`) failed on those inputs and returned the
  * raw, still-quoted source string.
  *
- * Inputs that don't tokenise as a single string node (bare identifiers,
- * malformed quotes, multi-token values) are returned unchanged, matching
- * the legacy behaviour the rest of the codebase relies on.
+ * Inputs that don't tokenise as a single, properly-closed string node
+ * spanning the full input (bare identifiers, unterminated quotes,
+ * multi-token values) are returned unchanged, matching the legacy
+ * behaviour the rest of the codebase relies on. Unterminated quotes
+ * matter because postcss-value-parser still emits them as a string node
+ * (with `unclosed: true`); the gate must reject them so callers like
+ * font-snapper don't get a phantom-unwrapped name for malformed input.
  */
 function unquote(str: string): string {
   if (typeof str !== 'string') {
@@ -69,6 +73,7 @@ function unquote(str: string): string {
   const first = parsed.nodes[0];
   if (
     first.type === 'string' &&
+    !first.unclosed &&
     first.sourceIndex === 0 &&
     first.sourceEndIndex === str.length
   ) {
