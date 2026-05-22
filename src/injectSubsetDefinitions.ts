@@ -1,4 +1,5 @@
 import postcssValueParser = require('postcss-value-parser');
+import { escapeCssStringContent } from './fontFaceHelpers';
 
 // State machine for tracking position within a CSS font-family value.
 // AwaitingFamily: ready to start scanning a new font-family name.
@@ -56,9 +57,9 @@ function injectSubsetDefinitions(
       } else if (webfontNameMap[possibleFontFamilyLowerCase]) {
         const newToken = {
           type: 'string',
-          value: webfontNameMap[possibleFontFamilyLowerCase].replace(
-            /'/g,
-            "\\'"
+          value: escapeCssStringContent(
+            webfontNameMap[possibleFontFamilyLowerCase],
+            "'"
           ),
           quote: "'",
         };

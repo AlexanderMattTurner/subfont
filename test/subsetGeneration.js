@@ -212,6 +212,65 @@ describe('subsetGeneration', function () {
       });
     });
 
+    it('should produce the same key regardless of extraOptions.featureTags order', function () {
+      // fontFeatureTags arrives via [...Set] in fontFeatureHelpers, so the
+      // input order depends on insertion. Equivalent tag sets must hash to
+      // the same cache key regardless of input ordering.
+      const fontBuf = Buffer.from('feature-tags-ordering');
+      const ascending = subsetCacheKey(fontBuf, 'abc', 'woff2', null, null, {
+        featureTags: ['liga', 'smcp', 'ss02'],
+      });
+      const descending = subsetCacheKey(fontBuf, 'abc', 'woff2', null, null, {
+        featureTags: ['ss02', 'smcp', 'liga'],
+      });
+      expect(ascending, 'to equal', descending);
+    });
+
+    it('should produce the same key regardless of extraOptions key order', function () {
+      const fontBuf = Buffer.from('key-ordering');
+      const orderA = subsetCacheKey(fontBuf, 'abc', 'woff2', null, null, {
+        dropMathTable: true,
+        dropColorTables: false,
+        featureTags: ['liga'],
+      });
+      const orderB = subsetCacheKey(fontBuf, 'abc', 'woff2', null, null, {
+        featureTags: ['liga'],
+        dropColorTables: false,
+        dropMathTable: true,
+      });
+      expect(orderA, 'to equal', orderB);
+    });
+
+    it('should produce the same key regardless of featureGlyphIds order', function () {
+      // featureGlyphIds is derived from a Set, whose iteration order
+      // depends on insertion ordering in V8. Two equivalent glyph sets
+      // must produce identical cache keys regardless of input ordering.
+      const fontBuf = Buffer.from('same-font-data-repeated');
+      const keyAsc = subsetCacheKey(
+        fontBuf,
+        'abc',
+        'woff2',
+        null,
+        [1, 2, 3, 100, 200]
+      );
+      const keyDesc = subsetCacheKey(
+        fontBuf,
+        'abc',
+        'woff2',
+        null,
+        [200, 100, 3, 2, 1]
+      );
+      const keyShuffled = subsetCacheKey(
+        fontBuf,
+        'abc',
+        'woff2',
+        null,
+        [100, 1, 200, 2, 3]
+      );
+      expect(keyAsc, 'to equal', keyDesc);
+      expect(keyAsc, 'to equal', keyShuffled);
+    });
+
     it('should produce stable keys when called multiple times with the same buffer', function () {
       const fontBuf = Buffer.from('same-font-data-repeated');
       const key1 = subsetCacheKey(fontBuf, 'abc', 'woff2', null, null);

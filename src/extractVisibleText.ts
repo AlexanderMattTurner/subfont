@@ -79,13 +79,24 @@ const namedEntities: Record<string, string> = {
   darr: '↓',
 };
 const entityRe = /&(?:#x([0-9a-fA-F]+)|#(\d+)|([a-zA-Z]+));/g;
+// Numeric character references may name surrogate halves (U+D800–U+DFFF) or
+// values past U+10FFFF; both produce invalid scalar values that break
+// downstream iterators (harfbuzz, unicode-range emitter). Skip them.
+function codePointToScalar(cp: number, match: string): string {
+  if (cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) {
+    return match;
+  }
+  return String.fromCodePoint(cp);
+}
 function decodeEntities(str: string): string {
   return str.replace(entityRe, (match, hex, dec, name) => {
-    try {
-      if (hex) return String.fromCodePoint(parseInt(hex, 16));
-      if (dec) return String.fromCodePoint(parseInt(dec, 10));
-    } catch {
-      return match;
+    if (hex) {
+      const cp = parseInt(hex, 16);
+      return Number.isNaN(cp) ? match : codePointToScalar(cp, match);
+    }
+    if (dec) {
+      const cp = parseInt(dec, 10);
+      return Number.isNaN(cp) ? match : codePointToScalar(cp, match);
     }
     if (name && namedEntities[name.toLowerCase()] !== undefined) {
       return namedEntities[name.toLowerCase()];
