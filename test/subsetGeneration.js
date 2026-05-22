@@ -115,6 +115,60 @@ describe('subsetGeneration', function () {
       expect(fontUsage.subsets, 'to have keys', ['woff', 'woff2']);
     });
 
+    it('should forward an aborted signal so in-flight subsets reject and resolve to null', async function () {
+      const subsetCalls = [];
+      const warnCalls = [];
+
+      const { getSubsetsForFontUsage } = proxyquire('../lib/subsetGeneration', {
+        './variationAxes': {
+          getVariationAxisBounds: () => Promise.resolve(null),
+        },
+        './collectFeatureGlyphIds': () => Promise.resolve([]),
+        './subsetFontWithGlyphs': (_buffer, _text, opts) => {
+          subsetCalls.push(opts);
+          if (opts.signal && opts.signal.aborted) {
+            return Promise.reject(opts.signal.reason);
+          }
+          return Promise.resolve(Buffer.alloc(100, 0x41));
+        },
+      });
+
+      const controller = new AbortController();
+      const abortReason = new Error('user cancelled');
+      controller.abort(abortReason);
+
+      const fontUrl = 'https://example.com/aborted.ttf';
+      const fontUsage = { text: 'abc', fontUrl };
+      const mockAssetGraph = {
+        populate: () => Promise.resolve(),
+        findAssets: () => [
+          { url: fontUrl, isLoaded: true, rawSrc: Buffer.alloc(10) },
+        ],
+        warn: (err) => warnCalls.push(err),
+      };
+
+      await getSubsetsForFontUsage(
+        mockAssetGraph,
+        [{ fontUsages: [fontUsage] }],
+        ['woff', 'woff2'],
+        new Map(),
+        null,
+        null,
+        false,
+        controller.signal
+      );
+
+      expect(subsetCalls, 'to have length', 2);
+      for (const opts of subsetCalls) {
+        expect(opts.signal, 'to be', controller.signal);
+      }
+      expect(fontUsage.subsets, 'to be undefined');
+      expect(warnCalls, 'to have length', 2);
+      for (const err of warnCalls) {
+        expect(err.message, 'to equal', abortReason.message);
+      }
+    });
+
     it('should skip a format when subsetFontWithGlyphs rejects and warn via assetGraph', async function () {
       const goodBuffer = Buffer.alloc(200, 0x43);
       const warnCalls = [];

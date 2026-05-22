@@ -1523,7 +1523,8 @@ async function runSubsetPhase(ctx: SubsetCtx): Promise<void> {
     seenAxisValuesByFontUrlAndAxisName,
     ctx.cacheDir,
     ctx.console,
-    ctx.debug
+    ctx.debug,
+    ctx.signal
   );
   ctx.timings.getSubsetsForFontUsage = subsetPhase.end();
 
