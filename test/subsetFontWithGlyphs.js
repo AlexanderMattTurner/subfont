@@ -323,6 +323,19 @@ describe('subsetFontWithGlyphs', function () {
     expect(result[1], 'to equal', 0x4f);
   });
 
+  it('should reject the woff2 path when given an already-aborted signal', async function () {
+    const controller = new AbortController();
+    controller.abort(new Error('cancelled before run'));
+
+    await expect(
+      subsetFontWithGlyphs(ttfBuffer, 'Hello', {
+        targetFormat: 'woff2',
+        signal: controller.signal,
+      }),
+      'to be rejected'
+    );
+  });
+
   it('should handle concurrent calls via worker pool', async function () {
     const results = await Promise.all([
       subsetFontWithGlyphs(ttfBuffer, 'A', { targetFormat: 'woff2' }),
