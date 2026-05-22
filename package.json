@@ -17,8 +17,7 @@
     "prepublishOnly": "pnpm test",
     "coverage": "nyc --reporter=lcov --reporter=text -- mocha",
     "check-coverage": "nyc check-coverage",
-    "preversion": "offline-github-changelog --next=${npm_new_version} > CHANGELOG.md && git add CHANGELOG.md",
-    "prepare": "husky || true"
+    "preversion": "offline-github-changelog --next=${npm_new_version} > CHANGELOG.md && git add CHANGELOG.md"
   },
   "bin": {
     "subfont": "lib/cli.js"
@@ -99,7 +98,6 @@
     "globals": "^16.0.0",
     "html-generators": "^1.0.3",
     "httpception": "^3.0.0",
-    "husky": "^9.1.7",
     "magicpen-prism": "^3.0.2",
     "mocha": "^11.0.0",
     "neostandard": "^0.12.0",
