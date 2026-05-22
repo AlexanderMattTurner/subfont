@@ -486,6 +486,7 @@ async function tracePages(
     const pool = new FontTracerPool(numWorkers);
     await pool.init();
 
+    let fallbackCount = 0;
     try {
       progress.banner(
         `  Tracing fonts across ${totalPages} pages using ${numWorkers} worker${numWorkers === 1 ? '' : 's'}...`
@@ -500,6 +501,7 @@ async function tracePages(
             )) as TextByPropsEntry[];
           } catch (rawErr) {
             const workerErr = rawErr as Error;
+            fallbackCount++;
             if (console) {
               console.warn(
                 `Worker fontTracer failed for ${pd.htmlOrSvgAsset.url}, falling back to main thread: ${workerErr.message}`
@@ -530,6 +532,14 @@ async function tracePages(
         })
       );
       progress.done();
+      if (fallbackCount > 0 && console) {
+        // Surface the aggregate so silent degradation is observable. Per-page
+        // warnings above name which URLs failed; this summary is what gets
+        // noticed in CI logs and what --strict trips on.
+        console.warn(
+          `Worker fontTracer fell back to the main thread for ${fallbackCount} of ${totalPages} page${totalPages === 1 ? '' : 's'}.`
+        );
+      }
     } finally {
       await pool.destroy();
     }

@@ -1,5 +1,6 @@
 import * as urltools from 'urltools';
 import * as fontverter from 'fontverter';
+import { convert as convertInWorker } from './fontConverter';
 import type {
   Asset,
   AssetGraph,
@@ -198,10 +199,14 @@ async function createSelfHostedGoogleFontsCssAsset(
         lines.push(`  ${propName}: ${declaration.value};`);
       }
     });
-    // Convert to all formats in parallel
+    // Convert to all formats in parallel. woff2 must go through the worker
+    // pool — wawoff2's WASM shares one instance per process and produces
+    // corrupt output under concurrent main-thread calls (see fontConverter.ts).
     const convertedFonts = await Promise.all(
       formats.map((format) =>
-        fontverter.convert(cssFontFaceSrc.to.rawSrc, format)
+        format === 'woff2'
+          ? convertInWorker(cssFontFaceSrc.to.rawSrc, format)
+          : fontverter.convert(cssFontFaceSrc.to.rawSrc, format)
       )
     );
     const srcFragments: string[] = [];

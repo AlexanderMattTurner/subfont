@@ -195,6 +195,25 @@ describe('extractVisibleText', function () {
     expect(result, 'to contain', '&#99999999;');
   });
 
+  it('should not decode surrogate-half numeric entities into lone surrogates', function () {
+    // &#xD800; is a high-surrogate code unit — not a valid scalar. Emitting
+    // String.fromCodePoint(0xD800) would corrupt downstream [...string]
+    // iteration and confuse harfbuzz / unicode-range emission.
+    const result = extractVisibleText('<p>x&#xD800;y&#xDFFF;z</p>');
+    expect(result, 'to contain', 'x');
+    expect(result, 'to contain', 'y');
+    expect(result, 'to contain', 'z');
+    // The entity is left untouched (not decoded) rather than emitted as a
+    // lone surrogate.
+    expect(result, 'to contain', '&#xD800;');
+    expect(result, 'to contain', '&#xDFFF;');
+    // And no actual lone-surrogate code units leak into the output.
+    for (const ch of result) {
+      const cp = ch.codePointAt(0);
+      expect(cp < 0xd800 || cp > 0xdfff, 'to be true');
+    }
+  });
+
   it('should not extract attributes from inside invisible elements', function () {
     const result = extractVisibleText(
       '<p>visible</p><script>var x = "<img alt=\\"hidden-attr\\">";</script><img alt="real-alt">'

@@ -77,6 +77,16 @@ describe('fontFaceHelpers', function () {
         expected: "'-'",
         desc: 'bare hyphen (not a valid CSS identifier)',
       },
+      {
+        input: 'foo\\bar',
+        expected: "'foo\\\\bar'",
+        desc: 'literal backslash (escaped before the quote pass)',
+      },
+      {
+        input: "foo\\'bar",
+        expected: "'foo\\\\\\'bar'",
+        desc: 'backslash followed by single quote (both escaped, in order)',
+      },
     ].forEach(({ input, expected, desc }) => {
       it(`should handle ${desc}: ${JSON.stringify(input)}`, function () {
         expect(maybeCssQuote(input), 'to equal', expected);

@@ -56,10 +56,11 @@ function injectSubsetDefinitions(
       } else if (webfontNameMap[possibleFontFamilyLowerCase]) {
         const newToken = {
           type: 'string',
-          value: webfontNameMap[possibleFontFamilyLowerCase].replace(
-            /'/g,
-            "\\'"
-          ),
+          // Escape backslashes before quotes so a literal `\` in the font
+          // name doesn't combine with the following `'` into a CSS escape.
+          value: webfontNameMap[possibleFontFamilyLowerCase]
+            .replace(/\\/g, '\\\\')
+            .replace(/'/g, "\\'"),
           quote: "'",
         };
         if (replaceOriginal) {

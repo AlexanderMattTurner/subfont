@@ -23,7 +23,9 @@ export function maybeCssQuote(value: string): string {
   if (/^[a-zA-Z_][a-zA-Z0-9_-]*$|^-[a-zA-Z_][a-zA-Z0-9_-]*$/.test(value)) {
     return value;
   } else {
-    return `'${value.replace(/'/g, "\\'")}'`;
+    // Escape backslashes before quotes — a lone `\` followed by `'` would
+    // otherwise form a CSS escape sequence rather than a literal `\` + `'`.
+    return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
   }
 }
 
