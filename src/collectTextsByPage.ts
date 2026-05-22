@@ -448,6 +448,7 @@ interface TracePagesOptions {
   console: Console | null | undefined;
   memoizedGetCssRulesByProperty: typeof getCssRulesByProperty;
   debug?: boolean;
+  signal?: AbortSignal;
 }
 
 // Trace fonts across the given pages. Uses a worker pool when the workload
@@ -461,6 +462,7 @@ async function tracePages(
     console,
     memoizedGetCssRulesByProperty,
     debug = false,
+    signal,
   }: TracePagesOptions
 ): Promise<void> {
   const totalPages = pagesNeedingFullTrace.length;
@@ -497,10 +499,16 @@ async function tracePages(
           try {
             pd.textByProps = (await pool.trace(
               pd.htmlOrSvgAsset.text || '',
-              pd.stylesheetsWithPredicates
+              pd.stylesheetsWithPredicates,
+              { signal }
             )) as TextByPropsEntry[];
           } catch (rawErr) {
             const workerErr = rawErr as Error;
+            // If the caller cancelled, surface the abort instead of running
+            // another (uncancellable) trace on the main thread.
+            if (signal?.aborted) {
+              throw workerErr;
+            }
             fallbackCount++;
             if (console) {
               console.warn(
@@ -1219,6 +1227,10 @@ interface CollectTextsByPageOptions {
   debug?: boolean;
   concurrency?: number;
   chromeArgs?: string[];
+  // When provided, in-flight font-tracing tasks are cancelled if the
+  // signal aborts. Allows an orchestrator to bail out of a long crawl
+  // on Ctrl-C without leaving worker threads spinning.
+  signal?: AbortSignal;
 }
 
 interface CollectTextsByPageResult {
@@ -1237,6 +1249,7 @@ async function collectTextsByPage(
     debug = false,
     concurrency,
     chromeArgs = [],
+    signal,
   }: CollectTextsByPageOptions = {}
 ): Promise<CollectTextsByPageResult> {
   const htmlOrSvgAssetTextsWithProps: AssetTextWithPropsEntry[] = [];
@@ -1304,6 +1317,7 @@ async function collectTextsByPage(
       console,
       memoizedGetCssRulesByProperty,
       debug,
+      signal,
     });
 
     subTimings['Full tracing'] = fullTracing.end();
@@ -1325,6 +1339,7 @@ async function collectTextsByPage(
         console,
         memoizedGetCssRulesByProperty,
         debug,
+        signal,
       });
       subTimings['Fallback tracing'] = fallbackTracing.end();
     }

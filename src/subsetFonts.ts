@@ -184,7 +184,8 @@ async function createSelfHostedGoogleFontsCssAsset(
   googleFontsCssAsset: Asset,
   formats: string[],
   hrefType: string,
-  subsetUrl: string
+  subsetUrl: string,
+  signal: AbortSignal | undefined
 ): Promise<Asset> {
   const lines: string[] = [];
   for (const cssFontFaceSrc of assetGraph.findRelations({
@@ -205,7 +206,9 @@ async function createSelfHostedGoogleFontsCssAsset(
     const convertedFonts = await Promise.all(
       formats.map((format) =>
         format === 'woff2'
-          ? convertInWorker(cssFontFaceSrc.to.rawSrc, format)
+          ? convertInWorker(cssFontFaceSrc.to.rawSrc, format, undefined, {
+              signal,
+            })
           : fontverter.convert(cssFontFaceSrc.to.rawSrc, format)
       )
     );
@@ -1121,6 +1124,9 @@ interface SubsetFontsOptions {
   concurrency?: number;
   chromeArgs?: string[];
   cacheDir?: string | null;
+  // Optional abort hook. Forwarded to font-tracing and woff2 conversion
+  // so orchestrators can interrupt long-running work on Ctrl-C.
+  signal?: AbortSignal;
 }
 
 type SubsetFontsTimings = Record<
@@ -1368,7 +1374,8 @@ async function handleGoogleFontStylesheets(
               googleFontStylesheetRelation.to,
               formats,
               hrefType,
-              subsetUrl
+              subsetUrl,
+              ctx.signal
             );
           await selfHostedGoogleFontsCssAsset.minify();
           selfHostedGoogleCssByUrl.set(
@@ -1422,6 +1429,7 @@ interface PreCollectCtx {
   potentiallyOrphanedAssets: Set<Asset>;
   trackPhase: ReturnType<typeof makePhaseTracker>;
   timings: SubsetFontsTimings;
+  signal: AbortSignal | undefined;
 }
 
 interface SubsetCtx extends PreCollectCtx {
@@ -1453,6 +1461,7 @@ async function runCollectAndPrepPagesPhase(ctx: PreCollectCtx): Promise<{
     debug: ctx.debug,
     concurrency: ctx.concurrency,
     chromeArgs: ctx.chromeArgs,
+    signal: ctx.signal,
   });
   ctx.timings.collectTextsByPage = collectPhase.end();
   ctx.timings.collectTextsByPageDetails = subTimings;
@@ -1570,6 +1579,7 @@ async function subsetFonts(
     concurrency,
     chromeArgs = [],
     cacheDir = null,
+    signal,
   }: SubsetFontsOptions = {}
 ): Promise<SubsetFontsResult> {
   if (fontDisplay && !validFontDisplayValues.includes(fontDisplay)) {
@@ -1625,6 +1635,7 @@ async function subsetFonts(
     potentiallyOrphanedAssets: new Set<Asset>(),
     trackPhase,
     timings,
+    signal,
   };
 
   const { pages, fontFaceDeclarationsByHtmlOrSvgAsset } =
