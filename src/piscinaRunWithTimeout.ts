@@ -67,16 +67,16 @@ export function runWithTimeoutAndSignal<TResult>(
     // eslint-disable-next-line no-restricted-syntax
     (err: unknown) => {
       cleanup();
+      // Piscina rejects with `new AbortError(signal.reason)`. The reason
+      // lands in `err.cause`, so we can distinguish "fired by our
+      // watchdog" from "fired by the user signal" even if both timers
+      // ran — only the *first* abort sets the signal's reason, and that's
+      // what surfaces here.
       if ((err as Error)?.name === 'AbortError') {
-        // Surface the timeout message rather than piscina's generic
-        // AbortError when the abort came from our watchdog.
-        if (timeoutErr) throw timeoutErr;
-        // Otherwise the abort came from the user signal. Prefer the
-        // user's reason if it's an Error so callers see their own
-        // stack instead of piscina's wrapper.
-        if (userSignal?.aborted && userSignal.reason instanceof Error) {
-          throw userSignal.reason;
-        }
+        // eslint-disable-next-line no-restricted-syntax
+        const cause = (err as Error & { cause?: unknown }).cause;
+        if (cause === timeoutErr) throw timeoutErr;
+        if (cause instanceof Error) throw cause;
       }
       throw err;
     }

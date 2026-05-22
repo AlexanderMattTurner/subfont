@@ -171,6 +171,29 @@ describe('FontTracerPool', function () {
         expect(result.message, 'to contain', 'timed out');
       }
     });
+
+    it('should prefer the user reason over the watchdog when both could fire', async function () {
+      // Long watchdog so it can't beat us, then abort the user signal
+      // mid-flight. The rejection should carry the user's reason, not
+      // a timeout message.
+      pool = new FontTracerPool(1, { taskTimeoutMs: 60_000 });
+      await pool.init();
+
+      // Saturate the worker so the abortable task queues — easier to
+      // cancel cleanly than racing a fast trace.
+      const blocker = pool.trace(html('<p>blocker</p>'), []);
+
+      const controller = new AbortController();
+      const queued = pool.trace(html('<p>queued</p>'), [], {
+        signal: controller.signal,
+      });
+      controller.abort(new Error('user-initiated cancel'));
+
+      const result = await settle(queued);
+      expect(result.status, 'to be', 'rejected');
+      expect(result.message, 'to be', 'user-initiated cancel');
+      await blocker;
+    });
   });
 
   describe('destroy', function () {
