@@ -1,29 +1,27 @@
-import { parentPort } from 'worker_threads';
+/**
+ * Piscina worker handler for font format conversion.
+ *
+ * Each worker thread loads its own wawoff2 WASM instance via fontverter,
+ * enabling safe parallel woff2 compression — wawoff2's shared WASM
+ * instance corrupts memory under concurrent use within a single thread.
+ */
+
 import * as fontverter from 'fontverter';
 
-interface ConvertMessage {
+interface ConvertTask {
   buffer: Uint8Array | Buffer;
   targetFormat: string;
   sourceFormat?: string;
 }
 
-if (!parentPort) {
-  throw new Error('fontConverterWorker must be run as a worker thread');
+async function convertTask(task: ConvertTask): Promise<Uint8Array> {
+  // Structured clone delivers Uint8Array on the worker side; wrap so
+  // fontverter sees the Buffer it expects. The host wraps the response
+  // in Buffer.from on its end — wrapping here would duplicate work
+  // since structured clone copies bytes and strips the Buffer prototype
+  // on every transfer.
+  const buffer = Buffer.from(task.buffer);
+  return await fontverter.convert(buffer, task.targetFormat, task.sourceFormat);
 }
 
-const port = parentPort;
-
-port.on('message', async (msg: ConvertMessage) => {
-  try {
-    const buffer = Buffer.from(msg.buffer);
-    const result = await fontverter.convert(
-      buffer,
-      msg.targetFormat,
-      msg.sourceFormat
-    );
-    port.postMessage({ type: 'result', buffer: result });
-  } catch (rawErr) {
-    const err = rawErr as Error;
-    port.postMessage({ type: 'error', error: err.message });
-  }
-});
+export = convertTask;

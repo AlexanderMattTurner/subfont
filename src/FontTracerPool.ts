@@ -1,23 +1,24 @@
 import pathModule = require('path');
-import { Worker } from 'worker_threads';
+import { Piscina } from 'piscina';
+import { runWithTimeoutAndSignal } from './piscinaRunWithTimeout';
 
 /**
  * Worker pool for running fontTracer in parallel across pages.
  * Each worker re-parses HTML with jsdom and runs fontTracer independently.
+ *
+ * Wraps `piscina` to preserve the existing FontTracerPool surface (init,
+ * trace, destroy) while delegating worker lifecycle, queueing, and
+ * structured-clone handling to a battle-tested dependency.
  */
+
 // Heavy pages (large blog posts with elaborate CSS) under CPU contention on
 // CI runners can comfortably exceed a minute in jsdom + font-tracer. The
 // timer is a watchdog against truly hung workers, not a perf budget, so it
 // errs generous.
 const DEFAULT_TASK_TIMEOUT_MS = 600_000;
 
-interface TaskCallbacks {
-  // The pool is generic over the trace payload; the caller knows the
-  // concrete shape (font-tracer's textByProps Map).
-  // eslint-disable-next-line no-restricted-syntax
-  resolve: (value: unknown) => void;
-  // eslint-disable-next-line no-restricted-syntax
-  reject: (reason?: unknown) => void;
+interface FontTracerPoolOptions {
+  taskTimeoutMs?: number;
 }
 
 interface StylesheetWithPredicates {
@@ -29,374 +30,116 @@ interface StylesheetWithPredicates {
   predicates?: Record<string, unknown>;
 }
 
-interface TraceMessage {
-  type: 'trace';
-  taskId: number;
-  htmlText: string;
-  stylesheetsWithPredicates: Array<{
-    text: string;
-    // eslint-disable-next-line no-restricted-syntax
-    predicates: Record<string, unknown>;
-  }>;
+interface SerializedStylesheet {
+  text: string;
+  // eslint-disable-next-line no-restricted-syntax
+  predicates: Record<string, unknown>;
 }
 
-interface WorkerResultMessage {
-  type: 'result';
-  taskId: number;
+interface TraceTask {
+  htmlText: string;
+  stylesheetsWithPredicates: SerializedStylesheet[];
+}
+
+interface TextByPropsEntry {
+  text: string;
   // The trace result shape lives in font-tracer; the pool is unaware.
   // eslint-disable-next-line no-restricted-syntax
-  textByProps: unknown;
+  props: Record<string, unknown>;
 }
 
-interface WorkerErrorMessage {
-  type: 'error';
-  taskId: number;
-  error: string;
-  stack?: string;
-}
-
-interface WorkerReadyMessage {
-  type: 'ready';
-}
-
-type WorkerMessage =
-  | WorkerResultMessage
-  | WorkerErrorMessage
-  | WorkerReadyMessage;
-
-interface FontTracerPoolOptions {
-  taskTimeoutMs?: number;
-  respawnOnExit?: boolean;
+interface TraceOptions {
+  signal?: AbortSignal;
 }
 
 class FontTracerPool {
-  private _workerPath: string;
-  private _numWorkers: number;
+  private _pool: Piscina;
   private _taskTimeoutMs: number;
-  private _respawnOnExit: boolean;
-  private _workers: Worker[];
-  private _idle: Worker[];
-  private _pendingTasks: Array<{ message: TraceMessage }>;
-  private _taskCallbacks: Map<number, TaskCallbacks>;
-  private _taskTimers: Map<number, NodeJS.Timeout>;
-  private _taskByWorker: Map<Worker, number>;
-  private _nextTaskId: number;
-  private _destroying: boolean;
-  private _spawning: number;
 
   constructor(
     numWorkers: number,
-    {
-      taskTimeoutMs = DEFAULT_TASK_TIMEOUT_MS,
-      respawnOnExit = true,
-    }: FontTracerPoolOptions = {}
+    { taskTimeoutMs = DEFAULT_TASK_TIMEOUT_MS }: FontTracerPoolOptions = {}
   ) {
-    this._workerPath = pathModule.join(__dirname, 'fontTracerWorker.js');
-    this._numWorkers = numWorkers;
     this._taskTimeoutMs = taskTimeoutMs;
-    this._respawnOnExit = respawnOnExit;
-    this._workers = [];
-    this._idle = [];
-    this._pendingTasks = [];
-    this._taskCallbacks = new Map();
-    this._taskTimers = new Map();
-    this._taskByWorker = new Map();
-    this._nextTaskId = 0;
-    this._destroying = false;
-    this._spawning = 0;
-  }
-
-  private _spawnOne(): Promise<void> {
-    this._spawning++;
-    return new Promise<void>((resolve, reject) => {
-      let worker: Worker;
-      try {
-        worker = new Worker(this._workerPath);
-      } catch (err) {
-        this._spawning--;
-        reject(err instanceof Error ? err : new Error(String(err)));
-        return;
-      }
-      this._workers.push(worker);
-
-      const detachInitHandlers = () => {
-        worker.off('message', onMessage);
-        worker.off('error', failOnInit);
-        worker.off('exit', exitDuringInit);
-      };
-      const failOnInit = (err: Error) => {
-        detachInitHandlers();
-        const idx = this._workers.indexOf(worker);
-        if (idx !== -1) this._workers.splice(idx, 1);
-        this._spawning--;
-        worker.terminate();
-        reject(err);
-      };
-      const exitDuringInit = (code: number) => {
-        // Worker exited before sending 'ready' (e.g. terminated by destroy()
-        // mid-spawn, or crashed during init without emitting 'error'). Settle
-        // the spawn promise so the .catch() upstream can run.
-        detachInitHandlers();
-        const idx = this._workers.indexOf(worker);
-        if (idx !== -1) this._workers.splice(idx, 1);
-        this._spawning--;
-        reject(new Error(`Worker exited during init with code ${code}`));
-      };
-      const onMessage = (msg: WorkerMessage) => {
-        if (msg.type === 'ready') {
-          detachInitHandlers();
-          worker.on('message', (m: WorkerMessage) =>
-            this._onWorkerMessage(worker, m)
-          );
-          worker.on('error', (e) => this._onWorkerError(worker, e));
-          worker.on('exit', (code: number) => this._onWorkerExit(worker, code));
-          this._idle.push(worker);
-          this._spawning--;
-          resolve();
-          this._dispatchPending();
-        }
-      };
-      worker.on('message', onMessage);
-      worker.on('error', failOnInit);
-      worker.on('exit', exitDuringInit);
-      worker.postMessage({ type: 'init' });
+    this._pool = new Piscina({
+      filename: pathModule.join(__dirname, 'fontTracerWorker.js'),
+      // Pin pool size so concurrency is bounded by the caller-supplied
+      // worker count (memory and CPU contention both scale with this).
+      minThreads: numWorkers,
+      maxThreads: numWorkers,
+      concurrentTasksPerWorker: 1,
+      // Workers stay warm for the lifetime of the pool — pages on the
+      // same site share stylesheet parses through per-worker memoization.
+      idleTimeout: Infinity,
     });
   }
 
   async init(): Promise<void> {
-    const initPromises: Array<Promise<void>> = [];
-    for (let i = 0; i < this._numWorkers; i++) {
-      initPromises.push(this._spawnOne());
-    }
-    await Promise.all(initPromises);
-  }
-
-  private _onWorkerError(worker: Worker, err: Error): void {
-    // A post-init worker emitted an error. Reject the in-flight task so
-    // callers don't hang. The worker is about to exit; _onWorkerExit will
-    // remove it from _workers/_idle.
-    const taskId = this._taskByWorker.get(worker);
-    if (taskId !== undefined) {
-      this._taskByWorker.delete(worker);
-      this._clearTaskTimer(taskId);
-      const cb = this._taskCallbacks.get(taskId);
-      if (cb) {
-        this._taskCallbacks.delete(taskId);
-        cb.reject(err);
-      }
+    // Piscina spawns workers eagerly when minThreads === maxThreads, but
+    // each worker still pays a one-time `require('jsdom')` + `postcss` cost
+    // on its first message — hundreds of ms cold. Fire one warmup trace
+    // per worker so that cost lands in init() (where the phase tracker
+    // expects it) instead of in the first real `trace()` batch.
+    //
+    // Empty HTML produces an empty result quickly and exercises the full
+    // require chain. Tasks load-balance across all idle workers.
+    const minThreads = this._pool.options.minThreads;
+    if (minThreads > 0) {
+      await Promise.all(
+        Array.from({ length: minThreads }, () =>
+          this._pool.run({ htmlText: '', stylesheetsWithPredicates: [] })
+        )
+      );
     }
   }
 
-  private _clearTaskTimer(taskId: number): void {
-    const timer = this._taskTimers.get(taskId);
-    if (timer) {
-      clearTimeout(timer);
-      this._taskTimers.delete(taskId);
-    }
-  }
+  trace(
+    htmlText: string,
+    stylesheetsWithPredicates: StylesheetWithPredicates[],
+    { signal }: TraceOptions = {}
+  ): Promise<TextByPropsEntry[]> {
+    // Serialize stylesheets to plain data — asset objects contain DOM/PostCSS
+    // trees that cannot be transferred via structured clone.
+    const serialized: SerializedStylesheet[] = stylesheetsWithPredicates.map(
+      (entry) => ({
+        text: entry.text || (entry.asset && entry.asset.text) || '',
+        predicates: entry.predicates || {},
+      })
+    );
+    const task: TraceTask = {
+      htmlText,
+      stylesheetsWithPredicates: serialized,
+    };
 
-  private _onWorkerMessage(worker: Worker, msg: WorkerMessage): void {
-    if (msg.type === 'ready') return;
-    this._taskByWorker.delete(worker);
-    this._clearTaskTimer(msg.taskId);
-    const cb = this._taskCallbacks.get(msg.taskId);
-    if (cb) {
-      this._taskCallbacks.delete(msg.taskId);
-      if (msg.type === 'result') {
-        cb.resolve(msg.textByProps);
-      } else if (msg.type === 'error') {
-        const detail = msg.stack ? `${msg.error}\n${msg.stack}` : msg.error;
-        cb.reject(new Error(`Worker error: ${detail}`));
-      }
-    }
-    // Worker is now idle, check for pending tasks
-    this._idle.push(worker);
-    this._dispatchPending();
-  }
-
-  private _onWorkerExit(worker: Worker, code: number): void {
-    const workerIdx = this._workers.indexOf(worker);
-    if (workerIdx !== -1) {
-      this._workers.splice(workerIdx, 1);
-    }
-    const idleIdx = this._idle.indexOf(worker);
-    if (idleIdx !== -1) {
-      this._idle.splice(idleIdx, 1);
-    }
-
-    // Reject any task that was in-flight on this worker. A graceful exit
-    // (code 0) mid-task still leaves the caller waiting, so don't gate on
-    // code !== 0.
-    const taskId = this._taskByWorker.get(worker);
-    this._taskByWorker.delete(worker);
-    if (taskId !== undefined) {
-      this._clearTaskTimer(taskId);
-      const cb = this._taskCallbacks.get(taskId);
-      if (cb) {
-        this._taskCallbacks.delete(taskId);
-        cb.reject(new Error(`Worker exited with code ${code}`));
-      }
-    }
-
-    if (this._destroying) return;
-
-    if (this._respawnOnExit) {
-      this._spawnOne().catch((err) => {
-        // Respawn failed — fall back to draining if the pool is now empty.
-        if (
-          this._workers.length === 0 &&
-          this._spawning === 0 &&
-          this._pendingTasks.length > 0
-        ) {
-          this._drainPendingWith(
-            `All workers have crashed and respawn failed: ${(err as Error).message}`
-          );
-        }
-      });
-      return;
-    }
-
-    if (code !== 0 && this._workers.length === 0) {
-      this._drainPendingWith('All workers have crashed, no workers available');
-    }
-  }
-
-  private _drainPendingWith(message: string): void {
-    for (const task of this._pendingTasks) {
-      const cb = this._taskCallbacks.get(task.message.taskId);
-      if (cb) {
-        this._taskCallbacks.delete(task.message.taskId);
-        cb.reject(new Error(message));
-      }
-    }
-    this._pendingTasks = [];
-  }
-
-  private _startTaskTimer(taskId: number): void {
-    if (this._taskTimeoutMs <= 0) return;
-    const timer = setTimeout(() => {
-      this._taskTimers.delete(taskId);
-      const cb = this._taskCallbacks.get(taskId);
-      if (cb) {
-        this._taskCallbacks.delete(taskId);
-        cb.reject(
-          new Error(
-            `Font tracing task ${taskId} timed out after ${this._taskTimeoutMs}ms`
-          )
-        );
-      }
-      // Terminate the hung worker so it doesn't permanently consume a pool
-      // slot. _onWorkerExit will remove it from _workers and _idle.
-      for (const [worker, tid] of this._taskByWorker) {
-        if (tid === taskId) {
-          this._taskByWorker.delete(worker);
-          worker.terminate();
-          break;
-        }
-      }
-    }, this._taskTimeoutMs);
-    timer.unref();
-    this._taskTimers.set(taskId, timer);
-  }
-
-  private _dispatchPending(): void {
-    while (this._idle.length > 0 && this._pendingTasks.length > 0) {
-      const worker = this._idle.pop() as Worker;
-      const task = this._pendingTasks.shift() as { message: TraceMessage };
-      this._taskByWorker.set(worker, task.message.taskId);
-      try {
-        worker.postMessage(task.message);
-        this._startTaskTimer(task.message.taskId);
-      } catch (err) {
-        // postMessage can fail synchronously (e.g. structured clone error).
-        // Return the worker to the idle pool and reject the task.
-        this._taskByWorker.delete(worker);
-        this._idle.push(worker);
-        const cb = this._taskCallbacks.get(task.message.taskId);
-        if (cb) {
-          this._taskCallbacks.delete(task.message.taskId);
-          cb.reject(err);
-        }
-      }
-    }
+    return runWithTimeoutAndSignal(
+      this._pool,
+      task,
+      signal,
+      this._taskTimeoutMs,
+      (ms) => `Font tracing task timed out after ${ms}ms`
+    );
   }
 
   /**
-   * Run fontTracer on the given HTML text + stylesheets in a worker.
-   * Returns a promise that resolves to textByProps.
+   * Number of worker threads in the underlying piscina pool. Piscina
+   * spawns up to minThreads === maxThreads at construction time, though
+   * individual workers may still be loading their module when this is
+   * read. Exposed primarily for tests.
    */
-  // The pool is payload-agnostic; callers (subsetFonts.ts) interpret the
-  // returned textByProps according to font-tracer's contract.
-  trace(
-    htmlText: string,
-    stylesheetsWithPredicates: StylesheetWithPredicates[]
-    // eslint-disable-next-line no-restricted-syntax
-  ): Promise<unknown> {
-    const taskId = this._nextTaskId++;
-    // Serialize stylesheets to plain data — asset objects contain DOM/PostCSS
-    // trees that cannot be transferred via structured clone.
-    const serializedStylesheets = stylesheetsWithPredicates.map((entry) => ({
-      text: entry.text || (entry.asset && entry.asset.text) || '',
-      predicates: entry.predicates || {},
-    }));
-    const message: TraceMessage = {
-      type: 'trace',
-      taskId,
-      htmlText,
-      stylesheetsWithPredicates: serializedStylesheets,
-    };
+  get threadCount(): number {
+    return this._pool.threads.length;
+  }
 
-    return new Promise((resolve, reject) => {
-      this._taskCallbacks.set(taskId, { resolve, reject });
-      this._pendingTasks.push({ message });
-      this._dispatchPending();
-    });
+  /**
+   * Number of trace tasks waiting in the piscina queue (not yet dispatched
+   * to a worker).
+   */
+  get queueSize(): number {
+    return this._pool.queueSize;
   }
 
   async destroy(): Promise<void> {
-    this._destroying = true;
-    // Clear all task timers
-    for (const timer of this._taskTimers.values()) {
-      clearTimeout(timer);
-    }
-    this._taskTimers.clear();
-
-    // Reject any tasks still waiting in the queue
-    for (const task of this._pendingTasks) {
-      const cb = this._taskCallbacks.get(task.message.taskId);
-      if (cb) {
-        this._taskCallbacks.delete(task.message.taskId);
-        cb.reject(new Error('Worker pool destroyed'));
-      }
-    }
-    this._pendingTasks = [];
-
-    // Reject any in-flight tasks still assigned to workers.
-    // Clear _taskByWorker before terminate() so _onWorkerExit won't double-reject.
-    for (const [, taskId] of this._taskByWorker) {
-      const cb = this._taskCallbacks.get(taskId);
-      if (cb) {
-        this._taskCallbacks.delete(taskId);
-        cb.reject(new Error('Worker pool destroyed'));
-      }
-    }
-    this._taskByWorker.clear();
-
-    // Terminate workers with a 5-second timeout to prevent hanging
-    const TERMINATE_TIMEOUT_MS = 5000;
-    await Promise.all(
-      this._workers.map((w) =>
-        Promise.race([
-          w.terminate(),
-          new Promise<void>((resolve) => {
-            const timer = setTimeout(resolve, TERMINATE_TIMEOUT_MS);
-            timer.unref();
-          }),
-        ])
-      )
-    );
-    this._workers = [];
-    this._idle = [];
+    await this._pool.destroy();
   }
 }
 
