@@ -226,6 +226,14 @@ describe('fontFaceHelpers', function () {
       // not pay for them. The fallback path still returns [400, 400].
       expect(() => parseFontWeightRange('xyz qq abc'), 'not to throw');
     });
+
+    it('should resolve mixed numeric+keyword ranges (e.g. "400 bold")', function () {
+      // Side-effect of routing the per-token parse through
+      // normalizeFontPropertyValue: a mixed range like "400 bold" now
+      // resolves to [400, 700] instead of silently collapsing to the
+      // [400, 400] fallback the old parseFloat-only path produced.
+      expect(parseFontWeightRange('400 bold'), 'to equal', [400, 700]);
+    });
   });
 
   describe('parseFontStretchRange', function () {
@@ -243,6 +251,21 @@ describe('fontFaceHelpers', function () {
       it(`should parse ${desc}`, function () {
         expect(parseFontStretchRange(input), 'to equal', expected);
       });
+    });
+
+    it('should warn and fall back to 100 on truly malformed input', function () {
+      const warned = [];
+      const result = parseFontStretchRange('foo bar baz', (err) =>
+        warned.push(err.message)
+      );
+      expect(result, 'to equal', [100, 100]);
+      expect(warned.length, 'to equal', 1);
+      expect(warned[0], 'to contain', 'unrecognized font-stretch range');
+      expect(warned[0], 'to contain', '"foo bar baz"');
+    });
+
+    it('should not warn when no callback is provided', function () {
+      expect(() => parseFontStretchRange('foo bar baz'), 'not to throw');
     });
   });
 

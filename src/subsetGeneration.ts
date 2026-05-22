@@ -22,7 +22,7 @@ import {
 // reshaping that doesn't alter bytes (like adding a sort to a stable input)
 // does NOT need a bump — old keys just stop matching and new equivalents
 // fill in on next run; existing entries remain byte-correct.
-const SUBSET_CACHE_VERSION = '6';
+const SUBSET_CACHE_VERSION = '7';
 
 type FontBuffer = Buffer | Uint8Array;
 

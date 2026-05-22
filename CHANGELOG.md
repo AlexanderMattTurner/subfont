@@ -22,7 +22,7 @@ On [TurnTrout.com](https://github.com/alexander-turner/TurnTrout.com) (382 pages
 ### New features
 
 - **`--cache [dir]`** -- Cache subset results to disk. Speeds up repeat builds.
-- **`--chrome-flags`** -- Custom flags for headless Chrome with `--dynamic`.
+- **`--chrome-flags`** -- Custom flag for headless Chrome with `--dynamic`. Use the `=` form and repeat for multiple flags (`--chrome-flags=--no-sandbox --chrome-flags=--disable-features=Foo,Bar`); the prior comma-separated form was dropped because real flag values like `--disable-features=Foo,Bar` contain commas.
 - **`--concurrency N`** -- Control worker thread count for parallel font tracing.
 - **Parallel font tracing** -- Worker pool (up to 8 threads). Pages sharing identical CSS are traced once.
 - **`--root` validation** -- Fails early with a clear error.

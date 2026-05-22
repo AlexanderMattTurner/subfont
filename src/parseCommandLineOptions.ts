@@ -126,11 +126,17 @@ function registerExecutionOptions(y: Argv, maxConcurrency: number): Argv {
     .options('chrome-flags', {
       alias: ['chromeFlags'],
       describe:
-        'Custom flag to pass to the Chrome/Chromium browser for dynamic tracing. Repeat to pass multiple flags (e.g. --chrome-flags=--no-sandbox --chrome-flags=--disable-features=Foo,Bar). Splitting on commas was dropped because real flag values like --disable-features=Foo,Bar contain commas.',
+        'Custom flag to pass to the Chrome/Chromium browser for dynamic tracing. MUST use the "=" form and be repeated for multiple flags (e.g. --chrome-flags=--no-sandbox --chrome-flags=--disable-features=Foo,Bar). Splitting on commas was dropped because real flag values like --disable-features=Foo,Bar contain commas.',
       type: 'array',
-      // yargs number-coerces values that look numeric for `array` types
-      // unless `string: true` is set; browser flag values are always strings.
+      // `string: true` keeps yargs from number-coercing flag values that
+      // look numeric (e.g. `--js-flags=--max-old-space-size=4096`).
       string: true,
+      // `nargs: 1` prevents yargs from greedily consuming subsequent
+      // positional tokens when the space-separated form is used. Note
+      // that the dashed-followers form (`--chrome-flags --no-sandbox`)
+      // is still rejected by yargs because `--no-sandbox` looks like
+      // another option, not a value; users must always use `=`.
+      nargs: 1,
       default: [] as string[],
     })
     .options('concurrency', {

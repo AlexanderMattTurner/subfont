@@ -65,27 +65,27 @@ subfont path/to/index.html -i --cache
 
 ## Options
 
-|               Flag | Default | Description                                                                                                       |
-| -----------------: | :-----: | :---------------------------------------------------------------------------------------------------------------- |
-|   `-i, --in-place` |   off   | Modify files in-place                                                                                             |
-|     `-o, --output` |         | Output directory                                                                                                  |
-|           `--root` |         | Path to web root (deduced from input files if not specified)                                                      |
-| `--canonical-root` |         | URI root where the site will be deployed                                                                          |
-|  `-r, --recursive` |   off   | Crawl linked pages                                                                                                |
-|        `--dynamic` |   off   | Trace with headless browser                                                                                       |
-|        `--dry-run` |   off   | Preview without writing                                                                                           |
-|      `--fallbacks` |   on    | Async-load the full original font as a fallback for dynamic content                                               |
-|   `--font-display` | `swap`  | `auto`/`block`/`swap`/`fallback`/`optional`                                                                       |
-|           `--text` |         | Extra characters for every subset                                                                                 |
-|    `--cache [dir]` |   off   | Cache subset results to disk between runs                                                                         |
-|  `--concurrency N` |  auto   | Max worker threads (defaults to CPU count, max 8). Warns when exceeding memory-based estimate (~50 MB per worker) |
-|   `--chrome-flags` |         | Custom Chrome flags for `--dynamic` (comma-separated)                                                             |
-|    `--source-maps` |   off   | Preserve CSS source maps (slower)                                                                                 |
-|         `--strict` |   off   | Exit non-zero if any warnings are emitted                                                                         |
-|     `-s, --silent` |   off   | Suppress all console output                                                                                       |
-|      `-d, --debug` |   off   | Verbose timing and font glyph detection info                                                                      |
-|  `--relative-urls` |   off   | Emit relative URLs instead of root-relative                                                                       |
-|     `--inline-css` |   off   | Inline the subset @font-face CSS into HTML                                                                        |
+|               Flag | Default | Description                                                                                                                                                 |
+| -----------------: | :-----: | :---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|   `-i, --in-place` |   off   | Modify files in-place                                                                                                                                       |
+|     `-o, --output` |         | Output directory                                                                                                                                            |
+|           `--root` |         | Path to web root (deduced from input files if not specified)                                                                                                |
+| `--canonical-root` |         | URI root where the site will be deployed                                                                                                                    |
+|  `-r, --recursive` |   off   | Crawl linked pages                                                                                                                                          |
+|        `--dynamic` |   off   | Trace with headless browser                                                                                                                                 |
+|        `--dry-run` |   off   | Preview without writing                                                                                                                                     |
+|      `--fallbacks` |   on    | Async-load the full original font as a fallback for dynamic content                                                                                         |
+|   `--font-display` | `swap`  | `auto`/`block`/`swap`/`fallback`/`optional`                                                                                                                 |
+|           `--text` |         | Extra characters for every subset                                                                                                                           |
+|    `--cache [dir]` |   off   | Cache subset results to disk between runs                                                                                                                   |
+|  `--concurrency N` |  auto   | Max worker threads (defaults to CPU count, max 8). Warns when exceeding memory-based estimate (~50 MB per worker)                                           |
+|   `--chrome-flags` |         | Custom Chrome flag for `--dynamic`. Use the `=` form and repeat for multiple flags: `--chrome-flags=--no-sandbox --chrome-flags=--disable-features=Foo,Bar` |
+|    `--source-maps` |   off   | Preserve CSS source maps (slower)                                                                                                                           |
+|         `--strict` |   off   | Exit non-zero if any warnings are emitted                                                                                                                   |
+|     `-s, --silent` |   off   | Suppress all console output                                                                                                                                 |
+|      `-d, --debug` |   off   | Verbose timing and font glyph detection info                                                                                                                |
+|  `--relative-urls` |   off   | Emit relative URLs instead of root-relative                                                                                                                 |
+|     `--inline-css` |   off   | Inline the subset @font-face CSS into HTML                                                                                                                  |
 
 Run `subfont --help` for the full list.
 
