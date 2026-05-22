@@ -196,13 +196,35 @@ describe('fontFaceHelpers', function () {
       { input: '400 700', expected: [400, 700], desc: 'range' },
       {
         input: 'bold',
+        expected: [700, 700],
+        desc: '"bold" keyword (= 700)',
+      },
+      {
+        input: 'normal',
         expected: [400, 400],
-        desc: 'non-numeric (defaults to 400)',
+        desc: '"normal" keyword (= 400)',
       },
     ].forEach(({ input, expected, desc }) => {
       it(`should parse ${desc}`, function () {
         expect(parseFontWeightRange(input), 'to equal', expected);
       });
+    });
+
+    it('should warn and fall back to 400 on truly malformed input', function () {
+      const warned = [];
+      const result = parseFontWeightRange('xyz qq abc', (err) =>
+        warned.push(err.message)
+      );
+      expect(result, 'to equal', [400, 400]);
+      expect(warned.length, 'to equal', 1);
+      expect(warned[0], 'to contain', 'unrecognized font-weight range');
+      expect(warned[0], 'to contain', '"xyz qq abc"');
+    });
+
+    it('should not warn when no callback is provided', function () {
+      // Belt-and-suspenders: callers that don't care about warnings should
+      // not pay for them. The fallback path still returns [400, 400].
+      expect(() => parseFontWeightRange('xyz qq abc'), 'not to throw');
     });
   });
 

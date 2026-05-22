@@ -131,8 +131,6 @@ function scriptTagForCodepoint(
   return undefined;
 }
 
-const TOTAL_UNIQUE_SCRIPTS = new Set(SCRIPT_RANGES.map((r) => r.tag)).size;
-
 export function scriptsForText(text: string): string[] {
   const tags = new Set<string>(['DFLT', 'latn']);
   for (const ch of text) {
@@ -140,7 +138,6 @@ export function scriptsForText(text: string): string[] {
     if (cp === undefined) continue;
     const tag = scriptTagForCodepoint(cp, SCRIPT_RANGES);
     if (tag) tags.add(tag);
-    if (tags.size >= TOTAL_UNIQUE_SCRIPTS + 2) break;
   }
   return [...tags];
 }

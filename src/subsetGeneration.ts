@@ -54,9 +54,22 @@ function getFontBufferDigest(fontBuffer: FontBuffer): Buffer {
   return cached;
 }
 
-// NB: JSON.stringify silently omits `undefined` values, so {featureTags: undefined}
-// serializes identically to {}. Currently correct (undefined means "retain all",
-// a deterministic behavior), but new undefined-able fields need explicit handling.
+// JSON.stringify silently omits `undefined` values, so `{featureTags: undefined}`
+// serialises identically to `{}` — and also identically to a call that didn't
+// pass featureTags at all. That collision is currently safe because the two
+// inputs we accept produce identical subset bytes:
+//
+//   - `featureTags: undefined`  →  upstream contract: "retain ALL features"
+//                                   (no -features=… flag is sent to harfbuzz)
+//   - `featureTags: []`         →  no caller produces this today; if one did,
+//                                   it would mean "retain NO features".
+//
+// Today only the undefined case fires in practice (callers either omit the
+// field or pass a non-empty array), so the omit-vs-empty-array collision is
+// invisible. Any future field that admits `undefined` in this options bag
+// must explicitly distinguish "absent" from "empty" in the hash input — for
+// example by encoding undefined as a sentinel string — or it will silently
+// share a cache entry with a semantically different invocation.
 type ExtraSubsetCacheOptions = Record<string, boolean | string[] | undefined>;
 
 function subsetCacheKey(

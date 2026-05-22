@@ -126,12 +126,12 @@ function registerExecutionOptions(y: Argv, maxConcurrency: number): Argv {
     .options('chrome-flags', {
       alias: ['chromeFlags'],
       describe:
-        'Custom flags to pass to the Chrome/Chromium browser for dynamic tracing (comma-separated)',
-      type: 'string',
-      coerce(flags: string | undefined) {
-        if (!flags) return [];
-        return flags.split(',').map((f) => f.trim());
-      },
+        'Custom flag to pass to the Chrome/Chromium browser for dynamic tracing. Repeat to pass multiple flags (e.g. --chrome-flags=--no-sandbox --chrome-flags=--disable-features=Foo,Bar). Splitting on commas was dropped because real flag values like --disable-features=Foo,Bar contain commas.',
+      type: 'array',
+      // yargs number-coerces values that look numeric for `array` types
+      // unless `string: true` is set; browser flag values are always strings.
+      string: true,
+      default: [] as string[],
     })
     .options('concurrency', {
       describe: `Maximum number of worker threads for parallel font tracing. Defaults to the number of CPU cores (max ${MAX_POOL_SIZE}). Values above the estimated safe limit (${maxConcurrency}) will produce a warning`,

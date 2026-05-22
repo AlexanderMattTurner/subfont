@@ -1487,10 +1487,14 @@ async function runCollectAndPrepPagesPhase(ctx: PreCollectCtx): Promise<{
 
 async function runSubsetPhase(ctx: SubsetCtx): Promise<void> {
   const variationPhase = ctx.trackPhase('variation axis usage');
+  // Surface malformed @font-face range descriptors as assetGraph warnings
+  // instead of silently falling back. The bound thunks match RangeFn's
+  // single-arg shape so getVariationAxisUsage stays unaware of warnings.
+  const warnRange = (err: Error): void => ctx.assetGraph.warn(err);
   const { seenAxisValuesByFontUrlAndAxisName } = getVariationAxisUsage(
     ctx.pages,
-    parseFontWeightRange,
-    parseFontStretchRange
+    (value) => parseFontWeightRange(value, warnRange),
+    (value) => parseFontStretchRange(value, warnRange)
   );
   ctx.timings['variation axis usage'] = variationPhase.end();
 

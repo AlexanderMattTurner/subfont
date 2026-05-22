@@ -243,6 +243,22 @@ class HeadlessBrowser {
         await jsHandle.dispose();
       }
     } finally {
+      // Detach request interception before closing so puppeteer's CDP
+      // bookkeeping has a chance to flush pending intercepted requests;
+      // skipping this can leave puppeteer's internal queue waiting on a
+      // continue/abort for a request whose page just went away. Failures
+      // here are noisy but non-fatal — log and continue so they can't
+      // mask a real page.close() error that the caller does need to see.
+      try {
+        await page.setRequestInterception(false);
+      } catch (err) {
+        this.console.error(
+          `HeadlessBrowser: setRequestInterception(false) failed during cleanup: ${(err as Error).message}`
+        );
+      }
+      // Intentionally do NOT swallow a page.close() rejection — if the page
+      // can't be closed cleanly that's a real problem the orchestrator
+      // (subsetFonts.ts) needs to surface.
       await page.close();
     }
   }

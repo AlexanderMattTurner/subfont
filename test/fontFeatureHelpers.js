@@ -36,6 +36,19 @@ describe('fontFeatureHelpers', function () {
       expect(tags.size, 'to equal', 0);
     });
 
+    it('should ignore digits-only "tags" (not valid OpenType)', function () {
+      // Regression: the previous regex [a-zA-Z0-9]{4} accepted any
+      // 4-character alphanumeric sequence as a tag. OpenType tags must
+      // begin with a letter, so a CSS author writing
+      // `font-feature-settings: "1234" 1` doesn't reference a real
+      // feature and we shouldn't add anything to the retained-tag set.
+      const tags = extractFeatureTagsFromDecl(
+        'font-feature-settings',
+        '"1234" 1, "liga" 1'
+      );
+      expect(tags, 'to satisfy', new Set(['liga']));
+    });
+
     it('should extract tags from font-variant-ligatures', function () {
       const tags = extractFeatureTagsFromDecl(
         'font-variant-ligatures',
