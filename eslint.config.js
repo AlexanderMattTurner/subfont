@@ -48,6 +48,10 @@ module.exports = [
         'error',
         { ignoreVoid: true },
       ],
+      '@typescript-eslint/no-misused-promises': [
+        'error',
+        { checksVoidReturn: false },
+      ],
       'no-void': ['error', { allowAsStatement: true }],
       'no-restricted-syntax': [
         'error',

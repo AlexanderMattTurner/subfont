@@ -2,7 +2,7 @@ import * as fsPromises from 'fs/promises';
 import os = require('os');
 import pathModule = require('path');
 import sanitizeFilename = require('sanitize-filename');
-import { getMaxConcurrency } from './concurrencyLimit';
+import { getMaxConcurrency, MAX_POOL_SIZE } from './concurrencyLimit';
 import AssetGraph = require('assetgraph');
 import type { Asset, AssetQuery, Relation } from 'assetgraph';
 import prettyBytes = require('pretty-bytes');
@@ -740,7 +740,7 @@ const subfont = async function subfont(
   const maxConcurrency = getMaxConcurrency();
   if (concurrency !== undefined && concurrency > maxConcurrency) {
     warn(
-      `--concurrency ${concurrency} exceeds estimated safe limit of ${maxConcurrency} (each worker uses ~50 MB; ${Math.round(os.freemem() / (1024 * 1024 * 1024))} GB free, ${os.cpus().length} CPUs). Proceeding anyway — reduce if you hit OOM.`
+      `--concurrency ${concurrency} exceeds estimated safe limit of ${maxConcurrency} (pool cap ${MAX_POOL_SIZE}, ~50 MB per worker, ${Math.round(os.freemem() / (1024 * 1024 * 1024))} GB free, ${os.cpus().length} CPUs). Proceeding anyway — reduce if you hit OOM.`
     );
   }
 
