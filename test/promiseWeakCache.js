@@ -90,8 +90,8 @@ describe('PromiseWeakCache', function () {
     let factoryCalls = 0;
     const factory = () => {
       factoryCalls++;
-      return new Promise((r) => {
-        resolve = r;
+      return new Promise((_resolve) => {
+        resolve = _resolve;
       });
     };
 
