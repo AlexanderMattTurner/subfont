@@ -8,7 +8,12 @@ export class PromiseWeakCache<K extends object, V> {
     const cached = this._map.get(key);
     if (cached) return cached;
 
-    const promise = factory();
+    let promise: Promise<V>;
+    try {
+      promise = factory();
+    } catch (syncErr) {
+      return Promise.reject(syncErr);
+    }
     // eslint-disable-next-line no-restricted-syntax
     const tracked = promise.catch((err: unknown) => {
       if (this._map.get(key) === tracked) {

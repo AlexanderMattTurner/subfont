@@ -82,4 +82,18 @@ describe('PromiseWeakCache', function () {
     expect(await p3, 'to equal', 'new');
     expect(called, 'to be false');
   });
+
+  it('should reject without caching when factory throws synchronously', async function () {
+    const cache = new PromiseWeakCache();
+    const key = {};
+
+    const p1 = cache.getOrCreate(key, () => {
+      throw new Error('sync boom');
+    });
+    await expect(p1, 'to be rejected with', 'sync boom');
+
+    // A retry should call the factory again (nothing was cached)
+    const p2 = cache.getOrCreate(key, () => Promise.resolve('recovered'));
+    expect(await p2, 'to equal', 'recovered');
+  });
 });
