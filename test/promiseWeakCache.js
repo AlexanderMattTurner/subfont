@@ -57,7 +57,7 @@ describe('PromiseWeakCache', function () {
     expect(attempt, 'to equal', 2);
   });
 
-  it('should not evict if a concurrent caller replaced the entry', async function () {
+  it('should cache a new entry after eviction and return it on subsequent calls', async function () {
     const cache = new PromiseWeakCache();
     const key = {};
 
