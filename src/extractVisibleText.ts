@@ -29,6 +29,7 @@ const EXTRACTABLE_ATTRS = new Set<string>([
   'placeholder',
   'value',
   'aria-label',
+  'aria-description',
 ]);
 
 // parse5 nodes are typed via a heavy generic adapter map; the runtime fields

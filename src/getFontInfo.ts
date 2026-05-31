@@ -1,5 +1,6 @@
 import { toSfnt } from './sfntCache';
 import enqueueWasm = require('./wasmQueue');
+import { PromiseWeakCache } from './promiseWeakCache';
 
 interface FontInfo {
   characterSet: number[];
@@ -26,27 +27,12 @@ async function getFontInfoFromBuffer(
   return fontInfo;
 }
 
-const fontInfoPromiseByBuffer = new WeakMap<object, Promise<FontInfo>>();
+const fontInfoCache = new PromiseWeakCache<Buffer | Uint8Array, FontInfo>();
 
 function getFontInfo(buffer: Buffer | Uint8Array): Promise<FontInfo> {
-  const key = buffer as object;
-  let cached = fontInfoPromiseByBuffer.get(key);
-  if (!cached) {
-    const promise = enqueueWasm(() => getFontInfoFromBuffer(buffer));
-    // Only evict if the map still points to this exact promise — a concurrent
-    // caller may have already replaced it with a fresh retry.
-    cached = promise.catch(
-      // eslint-disable-next-line no-restricted-syntax
-      (err: unknown) => {
-        if (fontInfoPromiseByBuffer.get(key) === cached) {
-          fontInfoPromiseByBuffer.delete(key);
-        }
-        throw err;
-      }
-    );
-    fontInfoPromiseByBuffer.set(key, cached);
-  }
-  return cached;
+  return fontInfoCache.getOrCreate(buffer, () =>
+    enqueueWasm(() => getFontInfoFromBuffer(buffer))
+  );
 }
 
 export = getFontInfo;
