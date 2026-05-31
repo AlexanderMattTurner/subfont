@@ -83,6 +83,29 @@ describe('PromiseWeakCache', function () {
     expect(called, 'to be false');
   });
 
+  it('should deduplicate concurrent calls for the same key', async function () {
+    const cache = new PromiseWeakCache();
+    const key = {};
+    let resolve;
+    let factoryCalls = 0;
+    const factory = () => {
+      factoryCalls++;
+      return new Promise((r) => {
+        resolve = r;
+      });
+    };
+
+    const p1 = cache.getOrCreate(key, factory);
+    const p2 = cache.getOrCreate(key, () => Promise.resolve('wrong'));
+
+    // Only the first factory should have been called
+    expect(factoryCalls, 'to equal', 1);
+
+    resolve('right');
+    expect(await p1, 'to equal', 'right');
+    expect(await p2, 'to equal', 'right');
+  });
+
   it('should reject without caching when factory throws synchronously', async function () {
     const cache = new PromiseWeakCache();
     const key = {};

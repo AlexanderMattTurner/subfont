@@ -98,7 +98,10 @@ describe('piscinaRunWithTimeout', function () {
     const controller = new AbortController();
 
     // Set a very short timeout; abort the signal well after
-    setTimeout(() => controller.abort(new Error('user abort')), 2000);
+    const abortTimer = setTimeout(
+      () => controller.abort(new Error('user abort')),
+      2000
+    );
 
     await expect(
       runWithTimeoutAndSignal(
@@ -111,6 +114,7 @@ describe('piscinaRunWithTimeout', function () {
       'to be rejected with',
       'Timed out after 30ms'
     );
+    clearTimeout(abortTimer);
   });
 
   it('should clean up the timer and listener after a successful task', async function () {
