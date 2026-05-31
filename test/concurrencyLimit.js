@@ -60,12 +60,12 @@ describe('concurrencyLimit', function () {
       expect(getMaxConcurrency(), 'to equal', 4);
     });
 
-    it('should cap at MAX_POOL_SIZE even with high core counts and ample memory', function () {
-      const { getMaxConcurrency, MAX_POOL_SIZE } = createModule({
+    it('should scale to high core counts when memory is ample', function () {
+      const { getMaxConcurrency } = createModule({
         freemem: 100 * 1024 * 1024 * 1024,
         cpus: 256,
       });
-      expect(getMaxConcurrency(), 'to equal', MAX_POOL_SIZE);
+      expect(getMaxConcurrency(), 'to equal', 256);
     });
   });
 });

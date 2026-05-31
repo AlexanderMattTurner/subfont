@@ -16,5 +16,5 @@ export function getMaxConcurrency(): number {
   const freeMem = positiveOrOne(os.freemem());
   const byCpu = positiveOrOne(os.cpus().length);
   const byMemory = Math.floor(freeMem / WORKER_MEMORY_BYTES);
-  return Math.max(1, Math.min(byMemory, byCpu, MAX_POOL_SIZE));
+  return Math.max(1, Math.min(byMemory, byCpu));
 }
