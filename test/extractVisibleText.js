@@ -72,6 +72,14 @@ describe('extractVisibleText', function () {
     expect(result, 'to contain', 'X');
   });
 
+  it('should extract aria-description attributes', function () {
+    const result = extractVisibleText(
+      '<button aria-description="Saves all pending changes">Save</button>'
+    );
+    expect(result, 'to contain', 'Saves all pending changes');
+    expect(result, 'to contain', 'Save');
+  });
+
   it('should strip HTML comments', function () {
     const result = extractVisibleText(
       '<p>visible</p><!-- hidden comment --><p>also visible</p>'
