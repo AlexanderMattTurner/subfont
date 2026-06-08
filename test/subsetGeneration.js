@@ -450,5 +450,42 @@ describe('subsetGeneration', function () {
       await cache.set('second', buf);
       expect(await cache.get('second'), 'to equal', buf);
     });
+
+    it('should not leave temp files behind after a successful write', async function () {
+      const cache = new SubsetDiskCache(tmpDir);
+      await cache.set('mykey', Buffer.from('hello'));
+      const entries = fs.readdirSync(tmpDir);
+      // Only the final cache entry should remain; no .tmp scratch files.
+      expect(entries, 'to equal', ['mykey']);
+    });
+
+    it('should never expose a partial entry to a concurrent reader during overwrite', async function () {
+      // Large, distinct buffers so a non-atomic truncate-then-write would
+      // leave an observable partial/empty file mid-write. With atomic
+      // rename, every concurrent read sees one complete buffer or the other.
+      const bufA = Buffer.alloc(2 * 1024 * 1024, 0xaa);
+      const bufB = Buffer.alloc(2 * 1024 * 1024, 0xbb);
+      const cache = new SubsetDiskCache(tmpDir);
+      await cache.set('hot', bufA);
+
+      const writes = [];
+      const reads = [];
+      for (let i = 0; i < 20; i++) {
+        writes.push(cache.set('hot', i % 2 === 0 ? bufB : bufA));
+        for (let r = 0; r < 5; r++) reads.push(cache.get('hot'));
+      }
+      await Promise.all(writes);
+      const readResults = await Promise.all(reads);
+      for (const result of readResults) {
+        const isComplete =
+          result !== undefined && (result.equals(bufA) || result.equals(bufB));
+        expect(isComplete, 'to be true');
+      }
+      // And no temp files should be left over after the churn.
+      const leftovers = fs
+        .readdirSync(tmpDir)
+        .filter((name) => name.endsWith('.tmp'));
+      expect(leftovers, 'to equal', []);
+    });
   });
 });
