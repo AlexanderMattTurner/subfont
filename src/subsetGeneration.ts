@@ -154,18 +154,39 @@ class SubsetDiskCache {
     }
   }
 
+  // Write to a unique temp file and atomically rename it into place. A plain
+  // writeFile truncates the destination before writing, so a concurrent reader
+  // (e.g. a parallel subfont process sharing a persistent --cache dir in CI)
+  // could readFile a half-written entry and treat the partial bytes as a valid
+  // subset, silently injecting a corrupt font. rename(2) is atomic within a
+  // filesystem, so readers always see either the previous complete file or the
+  // new one — never a torn write.
+  private async _atomicWrite(filePath: string, buffer: Buffer): Promise<void> {
+    const tmpPath = `${filePath}.${process.pid}.${crypto
+      .randomBytes(6)
+      .toString('hex')}.tmp`;
+    try {
+      await fs.writeFile(tmpPath, buffer);
+      await fs.rename(tmpPath, filePath);
+    } catch (err) {
+      // Best-effort cleanup so a failed write doesn't leak a temp file.
+      await fs.rm(tmpPath, { force: true }).catch(() => {});
+      throw err;
+    }
+  }
+
   async set(key: string, buffer: Buffer): Promise<void> {
     await this._ensureDir();
     const filePath = pathModule.join(this._cacheDir, key);
     try {
-      await fs.writeFile(filePath, buffer);
+      await this._atomicWrite(filePath, buffer);
     } catch (err) {
       const errno = err as NodeJS.ErrnoException;
       // If the directory was removed after init, retry once
       if (errno.code === 'ENOENT') {
         try {
           await fs.mkdir(this._cacheDir, { recursive: true });
-          await fs.writeFile(filePath, buffer);
+          await this._atomicWrite(filePath, buffer);
           return;
         } catch {
           // Fall through to warning below
