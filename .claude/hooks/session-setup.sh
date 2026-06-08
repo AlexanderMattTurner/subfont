@@ -168,16 +168,31 @@ if [ -f "$PROJECT_DIR/package.json" ]; then
 	# and break every subsequent `pnpm test`/`pnpm run lint` in the session.
 	install_log=$(mktemp "${TMPDIR:-/tmp}/subfont-install-XXXXXX.log")
 	install_ok=0
+	# Pick the installer once, then retry it with backoff. A single transient
+	# failure (network blip, registry hiccup) otherwise leaves node_modules
+	# missing for the entire session, which makes every later `pnpm test` /
+	# `pnpm run lint` fail in a way that looks like a code break, not a setup
+	# problem (see the verify_ci.py guard, which catches the residual case).
 	if command -v pnpm &>/dev/null; then
-		if pnpm install >"$install_log" 2>&1; then
-			install_ok=1
-		fi
+		install_cmd="pnpm install"
 	elif command -v npm &>/dev/null; then
-		if npm install >"$install_log" 2>&1; then
-			install_ok=1
-		fi
+		install_cmd="npm install"
 	else
+		install_cmd=""
 		warn "Neither pnpm nor npm is available — Node dependencies cannot be installed"
+	fi
+
+	if [ -n "$install_cmd" ]; then
+		for attempt in 1 2 3; do
+			if $install_cmd >"$install_log" 2>&1; then
+				install_ok=1
+				break
+			fi
+			echo "WARNING: '$install_cmd' attempt $attempt failed" >&2
+			if [ "$attempt" -lt 3 ]; then
+				sleep $((2 ** attempt))
+			fi
+		done
 	fi
 
 	if [ "$install_ok" = "1" ] && [ ! -d "$PROJECT_DIR/node_modules" ]; then
