@@ -61,51 +61,10 @@ def _pluralize(n: int, word: str) -> str:
     return f"{n} {word}" if n == 1 else f"{n} {word}s"
 
 
-def _ensure_node_deps() -> str | None:
-    """Ensure node_modules exists before running Node checks.
-
-    A missing node_modules makes `pnpm test`/`pnpm run lint` fail with
-    "Cannot find module" / "Cannot find type definition" noise that looks like
-    a code break but is really an un-provisioned environment. The SessionStart
-    hook (session-setup.sh) normally installs deps; this is the last-resort
-    guard for sessions where that didn't happen (hook skipped, container not
-    seeded, or a transient install failure).
-
-    Returns None if deps are present (or were successfully installed), else a
-    human-readable error string describing the environment problem.
-    """
-    if Path("node_modules").is_dir():
-        return None
-    installer = next(
-        (tool for tool in ("pnpm", "npm") if shutil.which(tool)), None
-    )
-    if installer is None:
-        return (
-            "node_modules is missing and neither pnpm nor npm is available to "
-            "install it — this is an environment setup problem, not a code failure."
-        )
-    result = subprocess.run(
-        [installer, "install"], capture_output=True, text=True, check=False
-    )
-    if result.returncode == 0 and Path("node_modules").is_dir():
-        return None
-    return (
-        f"node_modules is missing and `{installer} install` failed — this is an "
-        "environment setup problem, not a code failure. Fix the SessionStart "
-        f"hook / dependency install before trusting test results.\n\n{result.stdout}{result.stderr}"
-    )
-
-
-def _check_nodejs(check_fn, fail_fn) -> None:
+def _check_nodejs(check_fn) -> None:
     """Run Node.js checks (test, lint, typecheck)."""
     pkg_path = Path("package.json")
     if not pkg_path.exists():
-        return
-    dep_error = _ensure_node_deps()
-    if dep_error is not None:
-        # Report the real problem instead of running checks that would fail with
-        # misleading module-resolution errors.
-        fail_fn("environment", f"=== environment FAILED ===\n{dep_error}\n")
         return
     pkg = json.loads(pkg_path.read_text())
     checks = [("test", "tests"), ("lint", "lint"), ("check", "typecheck")]
@@ -158,12 +117,7 @@ def main() -> None:
             failures.append(name)
             outputs.append(output)
 
-    def fail(name: str, output: str) -> None:
-        checks_run.append(name)
-        failures.append(name)
-        outputs.append(output)
-
-    _check_nodejs(check, fail)
+    _check_nodejs(check)
     _check_python(check)
 
     # --- Produce result ---
