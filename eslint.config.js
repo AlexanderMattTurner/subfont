@@ -15,6 +15,9 @@ module.exports = [
     },
     rules: {
       'prefer-template': 'error',
+      // Forbid index-based regex group access: every capturing group must be
+      // named, so matches are read via `m.groups.name` instead of `m[1]`.
+      'prefer-named-capture-group': 'error',
       'mocha/no-exclusive-tests': 'error',
       'mocha/no-nested-tests': 'error',
       'mocha/no-identical-title': 'error',

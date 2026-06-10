@@ -83,6 +83,52 @@ describe('subsetFonts fast-path (shared CSS optimization)', function () {
     });
   });
 
+  describe('family-aware page-text attribution', function () {
+    it('should not attribute a fast-path page’s body text to a font whose selector cannot match that page', async function () {
+      httpception();
+
+      // styles.css defines two webfonts: 'IBM Plex Sans' on `body` (page-wide)
+      // and 'JetBrains Mono' on `.code`. page1 (the representative) is the only
+      // page with a `.code` element ("XYZ"); page2/page3 are fast-pathed and
+      // contain only body text. The mono font's selector cannot match page2/3,
+      // so their body text must stay out of the mono subset — otherwise every
+      // fast-path page's whole text would inflate every font.
+      const assetGraph = createGraph('multi-page-fast-multi-font');
+      await loadAndPopulate(assetGraph, 'page*.html', { crossorigin: false });
+      await subsetFontsWithTestDefaults(assetGraph);
+
+      const monoFonts = assetGraph.findAssets({
+        fileName: { $regex: /^JetBrains_Mono-400-/ },
+        extension: '.woff2',
+      });
+      expect(monoFonts, 'to have length', 1);
+      const monoChars = (
+        await getFontInfo(monoFonts[0].rawSrc)
+      ).characterSet.map((cp) => String.fromCodePoint(cp));
+      // The mono subset keeps the representative's traced `.code` text...
+      for (const ch of 'XYZ') {
+        expect(monoChars, 'to contain', ch);
+      }
+      // ...but not the body-only text of the fast-path pages.
+      for (const ch of 'GHIJKLMNOPQR') {
+        expect(monoChars, 'not to contain', ch);
+      }
+
+      // The body font still receives every page's body text.
+      const bodyFonts = assetGraph.findAssets({
+        fileName: { $regex: /^IBM_Plex_Sans-400-/ },
+        extension: '.woff2',
+      });
+      expect(bodyFonts, 'to have length', 1);
+      const bodyChars = (
+        await getFontInfo(bodyFonts[0].rawSrc)
+      ).characterSet.map((cp) => String.fromCodePoint(cp));
+      for (const ch of 'ABCDEFGHIJKLMNOPQR') {
+        expect(bodyChars, 'to contain', ch);
+      }
+    });
+  });
+
   describe('single page per CSS group', function () {
     it('should work identically when each page has unique CSS', async function () {
       httpception();

@@ -49,11 +49,11 @@ describe('extractVisibleText', function () {
     expect(result, 'to contain', 'descriptive text');
   });
 
-  it('should extract title attributes', function () {
+  it('should not extract title attributes (rendered in the OS font, not webfonts)', function () {
     const result = extractVisibleText(
       '<a title="link tooltip" href="#">click</a>'
     );
-    expect(result, 'to contain', 'link tooltip');
+    expect(result, 'not to contain', 'link tooltip');
     expect(result, 'to contain', 'click');
   });
 
@@ -64,19 +64,19 @@ describe('extractVisibleText', function () {
     expect(result, 'to contain', 'Enter name');
   });
 
-  it('should extract aria-label attributes', function () {
+  it('should not extract aria-label attributes (not visually rendered)', function () {
     const result = extractVisibleText(
       '<button aria-label="Close dialog">X</button>'
     );
-    expect(result, 'to contain', 'Close dialog');
+    expect(result, 'not to contain', 'Close dialog');
     expect(result, 'to contain', 'X');
   });
 
-  it('should extract aria-description attributes', function () {
+  it('should not extract aria-description attributes (not visually rendered)', function () {
     const result = extractVisibleText(
       '<button aria-description="Saves all pending changes">Save</button>'
     );
-    expect(result, 'to contain', 'Saves all pending changes');
+    expect(result, 'not to contain', 'Saves all pending changes');
     expect(result, 'to contain', 'Save');
   });
 
@@ -259,12 +259,15 @@ describe('extractVisibleText', function () {
     expect(result, 'not to contain', 'hidden-attr');
   });
 
-  it('should not extract title attributes from inside style blocks', function () {
+  it('should not leak attributes from inside style blocks', function () {
     const result = extractVisibleText(
       '<style title="style-title">body { color: red; }</style><p title="visible-title">text</p>'
     );
-    expect(result, 'to contain', 'visible-title');
     expect(result, 'to contain', 'text');
+    // title is no longer extracted at all (OS-font tooltip, never painted in
+    // a webfont), so neither the style-block title nor the paragraph title
+    // should appear.
+    expect(result, 'not to contain', 'visible-title');
     expect(result, 'not to contain', 'style-title');
   });
 
