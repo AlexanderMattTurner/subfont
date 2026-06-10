@@ -798,7 +798,7 @@ function buildFamilyApplicability(
 const ATTR_VALUE = `(?:"(?<dq>[^"]*)"|'(?<sq>[^']*)'|(?<uq>[^\\s"'>]+))`;
 const CLASS_ATTR_RE = new RegExp(`\\bclass\\s*=\\s*${ATTR_VALUE}`, 'gi');
 const ID_ATTR_RE = new RegExp(`\\bid\\s*=\\s*${ATTR_VALUE}`, 'gi');
-const TAG_RE = /<(?<tag>[a-zA-Z][\w-]*)/g;
+const TAG_RE = /<(?<tag>[a-z][\w-]*)/gi;
 function collectPageTokens(html: string): Set<string> {
   const tokens = new Set<string>();
   // Element tag names.

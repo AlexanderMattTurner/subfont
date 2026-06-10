@@ -22,7 +22,7 @@ export function escapeCssStringContent(
 }
 
 export function stringifyFontFamily(name: string): string {
-  if (/[^a-z0-9_-]/i.test(name)) {
+  if (/[^\w-]/.test(name)) {
     return `"${escapeCssStringContent(name, '"')}"`;
   } else {
     return name;
@@ -32,7 +32,7 @@ export function stringifyFontFamily(name: string): string {
 export function maybeCssQuote(value: string): string {
   // CSS identifiers must start with a letter or underscore (or hyphen
   // followed by a letter/underscore), not a digit or bare hyphen.
-  if (/^[a-zA-Z_][a-zA-Z0-9_-]*$|^-[a-zA-Z_][a-zA-Z0-9_-]*$/.test(value)) {
+  if (/^[a-z_][\w-]*$|^-[a-z_][\w-]*$/i.test(value)) {
     return value;
   } else {
     return `'${escapeCssStringContent(value, "'")}'`;
