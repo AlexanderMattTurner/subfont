@@ -253,8 +253,8 @@ class HeadlessBrowser {
       if (err instanceof Error && err.stack) {
         // Normalize "at <anonymous> (url:line:col)" to "at url:line:col"
         const normalized = err.stack.replace(
-          /at <anonymous> \((.+)\)/g,
-          'at $1'
+          /at <anonymous> \((?<location>.+)\)/g,
+          'at $<location>'
         );
         this.console.error(normalized);
       } else if (err instanceof Error) {

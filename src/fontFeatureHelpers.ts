@@ -70,7 +70,7 @@ function addIndexedTags(
 ): void {
   let m: RegExpExecArray | null;
   while ((m = callRe.exec(value)) !== null) {
-    const args = m[1];
+    const args = m.groups?.args ?? '';
     let sawNumeric = false;
     for (const arg of args.split(',')) {
       const trimmed = arg.trim();
@@ -118,10 +118,10 @@ export function extractFeatureTagsFromDecl(
     // beginning with a letter and continuing with letters or digits;
     // digits-only tags ("1234") are invalid and `[a-zA-Z0-9]{4}` would
     // have wrongly accepted them as features.
-    const re = /["']([a-zA-Z][a-zA-Z0-9]{3})["']/g;
+    const re = /["'](?<tag>[a-zA-Z][a-zA-Z0-9]{3})["']/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(value)) !== null) {
-      tags.add(m[1]);
+      if (m.groups?.tag) tags.add(m.groups.tag);
     }
     if (hasUnresolvedToken) tags.add(UNRESOLVED_FEATURES_SENTINEL);
     return tags;
@@ -134,8 +134,14 @@ export function extractFeatureTagsFromDecl(
     if (/swash\s*\(/.test(v)) tags.add('swsh');
     if (/ornaments\s*\(/.test(v)) tags.add('ornm');
     if (/annotation\s*\(/.test(v)) tags.add('nalt');
-    addIndexedTags(v, /styleset\s*\(([^)]*)\)/g, 'ss', 20, tags);
-    addIndexedTags(v, /character-variant\s*\(([^)]*)\)/g, 'cv', 99, tags);
+    addIndexedTags(v, /styleset\s*\((?<args>[^)]*)\)/g, 'ss', 20, tags);
+    addIndexedTags(
+      v,
+      /character-variant\s*\((?<args>[^)]*)\)/g,
+      'cv',
+      99,
+      tags
+    );
     if (hasUnresolvedToken) tags.add(UNRESOLVED_FEATURES_SENTINEL);
     return tags;
   }

@@ -617,7 +617,7 @@ describe('subfont', function () {
       expect(mockConsole.error, 'to have a call satisfying', [
         expect.it(
           'to match',
-          /GET https:\/\/domainthatdoesnotexist12873621321312\.com\/blablabla\.js failed: net::ERR_(NAME_NOT_RESOLVED|FAILED)/
+          /GET https:\/\/domainthatdoesnotexist12873621321312\.com\/blablabla\.js failed: net::ERR_(?:NAME_NOT_RESOLVED|FAILED)/
         ),
       ])
         .and('to have a call satisfying', [
@@ -626,7 +626,7 @@ describe('subfont', function () {
         .and('to have a call satisfying', [
           expect.it(
             'to match',
-            /GET https:\/\/assetgraph\.org\/nonexistent12345\.js (returned 404|failed: net::ERR_(BLOCKED_BY_ORB|FAILED))/
+            /GET https:\/\/assetgraph\.org\/nonexistent12345\.js (?:returned 404|failed: net::ERR_(?:BLOCKED_BY_ORB|FAILED))/
           ),
         ]);
     });

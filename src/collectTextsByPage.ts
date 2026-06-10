@@ -714,16 +714,19 @@ function subjectRequiredTokens(selector: string): Set<string> | null {
   let subject = compounds[compounds.length - 1] || '';
   // Drop pseudo-classes/elements and attribute selectors from the subject.
   subject = subject
-    .replace(/::?[\w-]+(\([^)]*\))?/g, '')
+    .replace(/::?[\w-]+(?:\([^)]*\))?/g, '')
     .replace(/\[[^\]]*\]/g, '');
   if (PAGE_WIDE_SUBJECTS.has(subject.toLowerCase())) return null;
 
   const tokens = new Set<string>();
-  for (const m of subject.matchAll(/([.#]?)([\w-]+)/g)) {
-    const [, sigil, name] = m;
-    if (sigil === '.') tokens.add(`.${name.toLowerCase()}`);
-    else if (sigil === '#') tokens.add(`#${name.toLowerCase()}`);
-    else tokens.add(name.toLowerCase());
+  for (const { groups } of subject.matchAll(
+    /(?<sigil>[.#]?)(?<name>[\w-]+)/g
+  )) {
+    const sigil = groups?.sigil ?? '';
+    const name = (groups?.name ?? '').toLowerCase();
+    if (sigil === '.') tokens.add(`.${name}`);
+    else if (sigil === '#') tokens.add(`#${name}`);
+    else tokens.add(name);
   }
   return tokens.size === 0 ? null : tokens;
 }
@@ -792,23 +795,24 @@ function buildFamilyApplicability(
 // Matches double-, single-, and unquoted attribute values so a class/id can
 // never be silently missed (a missed token could withhold page text from a
 // font that genuinely styles it — tofu); over-counting tokens is harmless.
-const ATTR_VALUE = `(?:"([^"]*)"|'([^']*)'|([^\\s"'>]+))`;
+const ATTR_VALUE = `(?:"(?<dq>[^"]*)"|'(?<sq>[^']*)'|(?<uq>[^\\s"'>]+))`;
 const CLASS_ATTR_RE = new RegExp(`\\bclass\\s*=\\s*${ATTR_VALUE}`, 'gi');
 const ID_ATTR_RE = new RegExp(`\\bid\\s*=\\s*${ATTR_VALUE}`, 'gi');
+const TAG_RE = /<(?<tag>[a-zA-Z][\w-]*)/g;
 function collectPageTokens(html: string): Set<string> {
   const tokens = new Set<string>();
   // Element tag names.
-  for (const m of html.matchAll(/<([a-zA-Z][\w-]*)/g)) {
-    tokens.add(m[1].toLowerCase());
+  for (const { groups } of html.matchAll(TAG_RE)) {
+    if (groups?.tag) tokens.add(groups.tag.toLowerCase());
   }
-  for (const m of html.matchAll(CLASS_ATTR_RE)) {
-    const value = m[1] ?? m[2] ?? m[3] ?? '';
+  for (const { groups } of html.matchAll(CLASS_ATTR_RE)) {
+    const value = groups?.dq ?? groups?.sq ?? groups?.uq ?? '';
     for (const cls of value.split(/\s+/)) {
       if (cls) tokens.add(`.${cls.toLowerCase()}`);
     }
   }
-  for (const m of html.matchAll(ID_ATTR_RE)) {
-    const value = (m[1] ?? m[2] ?? m[3] ?? '').trim();
+  for (const { groups } of html.matchAll(ID_ATTR_RE)) {
+    const value = (groups?.dq ?? groups?.sq ?? groups?.uq ?? '').trim();
     if (value) tokens.add(`#${value.toLowerCase()}`);
   }
   return tokens;

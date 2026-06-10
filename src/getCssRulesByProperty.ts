@@ -64,7 +64,7 @@ function unwrapNamespace(str: string): string {
   if (/^["']/.test(str)) {
     return unquote(str);
   } else if (/^url\(.*\)$/i.test(str)) {
-    return unquote(str.replace(/^url\((.*)\)$/i, '$1'));
+    return unquote(str.replace(/^url\((?<inner>.*)\)$/i, '$<inner>'));
   } else {
     throw new Error(`Cannot parse CSS namespace: ${str}`);
   }
