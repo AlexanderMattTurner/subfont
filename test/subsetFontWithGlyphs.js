@@ -2,10 +2,18 @@ const expect = require('unexpected');
 const fs = require('fs');
 const pathModule = require('path');
 const subsetFontWithGlyphs = require('../lib/subsetFontWithGlyphs');
+const getFontInfo = require('../lib/getFontInfo');
 
 const ttfPath = pathModule.resolve(
   __dirname,
   '../testdata/subsetFonts/Roboto-400.ttf'
+);
+
+// JetBrainsMono ships a glyph for U+2126 OHM SIGN but none for U+03A9 GREEK
+// CAPITAL OMEGA, which is exactly what U+2126 canonically decomposes to.
+const ohmFontPath = pathModule.resolve(
+  __dirname,
+  '../testdata/subsetFonts/multi-page-with-same-local-style-file/fonts/JetBrainsMono-Regular.ttf'
 );
 
 const variableFontPath = pathModule.resolve(
@@ -141,6 +149,22 @@ describe('subsetFontWithGlyphs', function () {
     expect(result.length, 'to be greater than', 0);
     expect(resultDecomposed, 'to be a', Buffer);
     expect(resultDecomposed.length, 'to be greater than', 0);
+  });
+
+  it('should retain a Unicode singleton codepoint whose NFC and NFD forms both differ (U+2126 OHM SIGN)', async function () {
+    // U+2126 canonically decomposes to U+03A9 under BOTH NFC and NFD, so a
+    // subset built only from normalized forms would drop the raw codepoint
+    // from the cmap and the browser — which does not normalize before glyph
+    // lookup — would render tofu. JetBrainsMono has U+2126 but not U+03A9, so
+    // a normalize-only subset would contain neither.
+    const ohmBuffer = fs.readFileSync(ohmFontPath);
+    const subset = await subsetFontWithGlyphs(
+      ohmBuffer,
+      `${String.fromCodePoint(0x2126)}A`,
+      { targetFormat: 'truetype' }
+    );
+    const { characterSet } = await getFontInfo(subset);
+    expect(characterSet, 'to contain', 0x2126);
   });
 
   it('should pin a variation axis to a specific value', async function () {

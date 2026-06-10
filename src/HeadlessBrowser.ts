@@ -6,6 +6,7 @@ import type {
 } from 'puppeteer-core';
 import pathModule = require('path');
 import os = require('os');
+import { fileURLToPath } from 'url';
 import {
   install,
   Browser,
@@ -21,37 +22,94 @@ type TraceResult = Record<string, unknown>;
 
 interface JsHandleLike {
   jsonValue(): Promise<TraceResult[]>;
-  getProperty(name: string): Promise<JsHandleLike>;
   dispose(): Promise<void>;
-}
-
-async function transferResults(jsHandle: JsHandleLike): Promise<TraceResult[]> {
-  const results = await jsHandle.jsonValue();
-  for (const [i, result] of results.entries()) {
-    const resultHandle = await jsHandle.getProperty(String(i));
-    try {
-      const elementHandle = await resultHandle.getProperty('node');
-      result.node = elementHandle;
-    } finally {
-      await resultHandle.dispose();
-    }
-  }
-  return results;
 }
 
 // Variadic console.log; eslint-disable-next-line — unknown is correct here.
 // eslint-disable-next-line no-restricted-syntax
 type LogFn = (...args: unknown[]) => void;
 
+// The Chromium setuid sandbox cannot run as uid 0, so unconditionally
+// disabling it would be required only there. Unprivileged users can and
+// should keep the sandbox, which is the only thing isolating traced
+// third-party page scripts. Auto-disable solely when running as root;
+// callers needing it elsewhere pass --no-sandbox explicitly via chromeFlags
+// (those extraArgs are appended after this and take effect regardless).
+function defaultSandboxArgs(extraArgs: string[]): string[] {
+  const callerDisabledSandbox = extraArgs.some(
+    (arg) => arg === '--no-sandbox' || arg.startsWith('--no-sandbox=')
+  );
+  const runningAsRoot = process.getuid?.() === 0;
+  if (runningAsRoot && !callerDisabledSandbox) {
+    return ['--no-sandbox', '--disable-setuid-sandbox'];
+  }
+  return [];
+}
+
+// True only when `fileUrl` resolves to a filesystem path at or below
+// `rootDir`. Both inputs are decoded to real paths first so percent-encoded
+// or `..` traversal sequences cannot escape the root. Used to gate which
+// file: requests the traced page may load: a file:-rooted page's scripts
+// must not be able to read arbitrary local files outside the web root.
+function isFileUrlUnderRoot(fileUrl: string, rootDir: string): boolean {
+  let fsPath: string;
+  try {
+    fsPath = pathModule.resolve(fileURLToPath(fileUrl));
+  } catch {
+    return false;
+  }
+  const rel = pathModule.relative(rootDir, fsPath);
+  return rel === '' || (!rel.startsWith('..') && !pathModule.isAbsolute(rel));
+}
+
+// puppeteer.launch with a one-shot sandbox fallback. Keeping the sandbox is
+// the secure default (see defaultSandboxArgs), but an unprivileged container
+// can lack the kernel capabilities Chromium needs to start it, in which case
+// the launch fails outright. Rather than refuse to run there, retry exactly
+// once with the sandbox disabled — but only when the failure is actually a
+// sandbox error and the caller hasn't already opted out, so a non-root user
+// on a capable host still keeps the sandbox.
+async function launchWithSandboxFallback(
+  launchOptions: Parameters<typeof puppeteer.launch>[0],
+  extraArgs: string[],
+  log: { log: LogFn }
+): Promise<PuppeteerBrowser> {
+  const sandboxArgs = defaultSandboxArgs(extraArgs);
+  const callerDisabledSandbox = extraArgs.some(
+    (arg) => arg === '--no-sandbox' || arg.startsWith('--no-sandbox=')
+  );
+  try {
+    return await puppeteer.launch({
+      ...launchOptions,
+      args: [...sandboxArgs, ...extraArgs],
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const sandboxAlreadyOff =
+      sandboxArgs.includes('--no-sandbox') || callerDisabledSandbox;
+    if (sandboxAlreadyOff || !/sandbox/i.test(message)) {
+      throw err;
+    }
+    log.log(
+      `Chromium could not start its sandbox (${message.trim()}); retrying with --no-sandbox. Run subfont as a user whose environment supports the Chromium sandbox to keep it enabled.`
+    );
+    return puppeteer.launch({
+      ...launchOptions,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', ...extraArgs],
+    });
+  }
+}
+
 async function downloadOrLocatePreferredBrowserRevision(
   extraArgs: string[] = [],
   log: { log: LogFn } = console
 ): Promise<PuppeteerBrowser> {
   if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-    return puppeteer.launch({
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', ...extraArgs],
-    });
+    return launchWithSandboxFallback(
+      { executablePath: process.env.PUPPETEER_EXECUTABLE_PATH },
+      extraArgs,
+      log
+    );
   }
   const cacheDir = pathModule.resolve(__dirname, '..', 'puppeteer-browsers');
   const platform = detectBrowserPlatform();
@@ -86,10 +144,7 @@ async function downloadOrLocatePreferredBrowserRevision(
       executablePath = result.executablePath;
     }
   }
-  return puppeteer.launch({
-    executablePath,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', ...extraArgs],
-  });
+  return launchWithSandboxFallback({ executablePath }, extraArgs, log);
 }
 
 interface HeadlessBrowserOptions {
@@ -134,6 +189,19 @@ class HeadlessBrowser {
     // (e.g. request already handled, page closing) don't become
     // unhandled-rejection crashes.
     const noop = () => {};
+    // The local web root, as a filesystem directory, when the assetgraph is
+    // rooted on disk. file: requests are only allowed to continue() when they
+    // resolve under this directory; a remote (non-file) root yields undefined,
+    // so every file: request is aborted (a remote page must not read local
+    // files). This blocks a traced page's scripts from escaping the web root.
+    let rootDir: string | undefined;
+    if (assetGraph.root.startsWith('file:')) {
+      try {
+        rootDir = pathModule.resolve(fileURLToPath(assetGraph.root));
+      } catch {
+        rootDir = undefined;
+      }
+    }
     page.on('request', (request) => {
       const url = request.url();
       if (url.startsWith(baseUrl)) {
@@ -159,7 +227,13 @@ class HeadlessBrowser {
         return;
       }
       if (url.startsWith('file:')) {
-        void request.continue().catch(noop);
+        if (rootDir !== undefined && isFileUrlUnderRoot(url, rootDir)) {
+          void request.continue().catch(noop);
+        } else {
+          // Escapes the web root (or no local root at all): refuse so page
+          // scripts cannot read arbitrary local files.
+          void request.abort('accessdenied').catch(noop);
+        }
         return;
       }
       void request.abort('failed').catch(noop);
@@ -238,9 +312,12 @@ class HeadlessBrowser {
       );
       try {
         // puppeteer's evaluateHandle return type is generic over the page
-        // closure; bridge it to the local minimal shape.
+        // closure; bridge it to the local minimal shape. Only text + props
+        // are consumed downstream (collectTextsByPage treats results as
+        // {text, props}); the per-result `node` ElementHandle was never
+        // read and leaked CDP remote-object references, so it is not fetched.
         // eslint-disable-next-line no-restricted-syntax
-        return await transferResults(jsHandle as unknown as JsHandleLike);
+        return await (jsHandle as unknown as JsHandleLike).jsonValue();
       } finally {
         await jsHandle.dispose();
       }

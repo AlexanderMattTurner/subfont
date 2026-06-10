@@ -54,6 +54,30 @@ const fontFaceTraversalTypes = new Set<string>([
 // the overhead of worker thread startup exceeds the parallelism benefit).
 const MIN_PAGES_FOR_WORKER_POOL = 4;
 
+// Default number of headless-browser tabs traced in parallel under --dynamic.
+// Each tab is an independent puppeteer page, so a handful of concurrent traces
+// overlaps page load / script-injection latency without overwhelming Chromium.
+const DEFAULT_DYNAMIC_CONCURRENCY = 4;
+
+// Run an async worker over each item with a bounded number of in-flight tasks.
+// Tasks may complete out of order; the first rejection propagates (matching the
+// previous serial loop's fail-fast behavior).
+async function runWithConcurrency<T>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<void>
+): Promise<void> {
+  const effectiveLimit = Math.max(1, Math.min(limit, items.length));
+  let nextIndex = 0;
+  async function runner(): Promise<void> {
+    while (nextIndex < items.length) {
+      const item = items[nextIndex++];
+      await worker(item);
+    }
+  }
+  await Promise.all(Array.from({ length: effectiveLimit }, () => runner()));
+}
+
 const initialValueByProp: Record<string, string> = {
   'font-style': allInitialValues['font-style'],
   'font-weight': allInitialValues['font-weight'],
@@ -154,104 +178,138 @@ function getDeclarationsKey(declarations: FontFaceDeclaration[]): string {
   return key;
 }
 
-// Snap each globalTextByProps entry against font-face declarations
-// to determine which font URL and properties each text segment maps to.
-function computeSnappedGlobalEntries(
-  declarations: FontFaceDeclaration[],
-  globalTextByProps: TextByPropsEntry[]
-): SnappedEntry[] {
-  const entries: SnappedEntry[] = [];
-  // Cache snapping results per unique props key within this declarations
-  // set. Many globalTextByProps entries share the same font properties
-  // (only text differs), so we avoid redundant fontSnapper + family
-  // parsing calls.
-  const snappingResultCache = new Map<string, SnappedEntry[]>();
+// A single set of font properties plus every text entry that shares it. Many
+// globalTextByProps entries differ only in text, so bucketing by props once
+// lets each font-face declaration group snap per unique props key instead of
+// rescanning the whole global array.
+interface PropsBucket {
+  props: Record<string, string>;
+  entries: TextByPropsEntry[];
+}
 
+// Group every globalTextByProps entry by its font property key. Computed once
+// and reused across all declaration groups so snapping stays O(declGroups ×
+// uniquePropsKeys) instead of O(declGroups × allTextEntries).
+function bucketTextByPropsKey(
+  globalTextByProps: TextByPropsEntry[]
+): Map<string, PropsBucket> {
+  const buckets = new Map<string, PropsBucket>();
   for (const textAndProps of globalTextByProps) {
     const family = textAndProps.props['font-family'];
     if (family === undefined) {
       continue;
     }
-
     const propsKey = fontPropsKey(
       family,
       textAndProps.props['font-weight'] || '',
       textAndProps.props['font-style'] || '',
       textAndProps.props['font-stretch'] || ''
     );
+    let bucket = buckets.get(propsKey);
+    if (!bucket) {
+      bucket = { props: textAndProps.props, entries: [] };
+      buckets.set(propsKey, bucket);
+    }
+    bucket.entries.push(textAndProps);
+  }
+  return buckets;
+}
 
-    let snappedResults = snappingResultCache.get(propsKey);
-    if (!snappedResults) {
-      snappedResults = [];
-      const families = cssFontParser.parseFontFamily(family).filter((fam) =>
-        declarations.some((fontFace) => {
-          // collectFontFaceDeclarations only retains rows with a non-
-          // empty font-family, but the field is optional in the type.
-          const ffName = fontFace['font-family'];
-          return (
-            typeof ffName === 'string' &&
-            ffName.toLowerCase() === fam.toLowerCase()
-          );
-        })
+// Snap a single props bucket against the font-face declarations, yielding the
+// snapped result template(s) for that props key (text-independent).
+function snapBucket(
+  declarations: FontFaceDeclaration[],
+  bucketProps: Record<string, string>
+): SnappedEntry[] {
+  const family = bucketProps['font-family'] as string;
+  const snappedResults: SnappedEntry[] = [];
+  const families = cssFontParser.parseFontFamily(family).filter((fam) =>
+    declarations.some((fontFace) => {
+      // collectFontFaceDeclarations only retains rows with a non-
+      // empty font-family, but the field is optional in the type.
+      const ffName = fontFace['font-family'];
+      return (
+        typeof ffName === 'string' && ffName.toLowerCase() === fam.toLowerCase()
       );
+    })
+  );
 
-      for (const fam of families) {
-        const activeFontFaceDeclaration = fontSnapper(declarations, {
-          ...textAndProps.props,
-          'font-family': stringifyFontFamily(fam),
-        });
+  for (const fam of families) {
+    const activeFontFaceDeclaration = fontSnapper(declarations, {
+      ...bucketProps,
+      'font-family': stringifyFontFamily(fam),
+    });
 
-        if (!activeFontFaceDeclaration) {
-          continue;
-        }
+    if (!activeFontFaceDeclaration) {
+      continue;
+    }
 
-        // Drop relations + the CSS-injected -subfont-text descriptor before
-        // forwarding the rest of the props downstream. The leading-underscore
-        // name signals "intentionally unused" to eslint.
-        const {
-          relations,
-          '-subfont-text': _subfontText,
-          ...props
-        } = activeFontFaceDeclaration;
-        const fontUrl = getPreferredFontUrl(relations);
-        if (!fontUrl) {
-          continue;
-        }
+    // Drop relations + the CSS-injected -subfont-text descriptor before
+    // forwarding the rest of the props downstream. The leading-underscore
+    // name signals "intentionally unused" to eslint.
+    const {
+      relations,
+      '-subfont-text': _subfontText,
+      ...props
+    } = activeFontFaceDeclaration;
+    const fontUrl = getPreferredFontUrl(relations);
+    if (!fontUrl) {
+      continue;
+    }
 
-        let fontWeight = normalizeFontPropertyValue(
-          'font-weight',
-          textAndProps.props['font-weight']
-        );
-        if (fontWeight === 'normal') {
-          fontWeight = 400;
-        }
+    let fontWeight = normalizeFontPropertyValue(
+      'font-weight',
+      bucketProps['font-weight']
+    );
+    if (fontWeight === 'normal') {
+      fontWeight = 400;
+    }
 
-        snappedResults.push({
-          fontUrl,
-          props: props as Record<string, string>,
-          fontRelations: relations,
-          fontStyle: normalizeFontPropertyValue(
-            'font-style',
-            textAndProps.props['font-style']
-          ),
-          fontWeight,
-          fontStretch: normalizeFontPropertyValue(
-            'font-stretch',
-            textAndProps.props['font-stretch']
-          ),
+    snappedResults.push({
+      fontUrl,
+      props: props as Record<string, string>,
+      fontRelations: relations,
+      fontStyle: normalizeFontPropertyValue(
+        'font-style',
+        bucketProps['font-style']
+      ),
+      fontWeight,
+      fontStretch: normalizeFontPropertyValue(
+        'font-stretch',
+        bucketProps['font-stretch']
+      ),
+      // Placeholder; rebound per text entry by the caller.
+      textAndProps: { text: '', props: bucketProps },
+      fontVariationSettings: bucketProps['font-variation-settings'],
+    });
+  }
+  return snappedResults;
+}
+
+// Snap each font-face declaration group against the pre-bucketed text entries
+// to determine which font URL and properties each text segment maps to.
+// fontSnapper + family parsing runs once per unique props key (iterating the
+// buckets, not every text entry), then fans out across that key's entries.
+// The per-bucket entries keep their original global order, and the global
+// character set each font ends up subsetting is order-independent, so subset
+// output is unchanged.
+function computeSnappedGlobalEntries(
+  declarations: FontFaceDeclaration[],
+  textByPropsBuckets: Map<string, PropsBucket>
+): SnappedEntry[] {
+  const entries: SnappedEntry[] = [];
+
+  for (const bucket of textByPropsBuckets.values()) {
+    const snappedResults = snapBucket(declarations, bucket.props);
+    if (snappedResults.length === 0) continue;
+    for (const textAndProps of bucket.entries) {
+      for (const snapped of snappedResults) {
+        entries.push({
+          ...snapped,
           textAndProps,
           fontVariationSettings: textAndProps.props['font-variation-settings'],
         });
       }
-      snappingResultCache.set(propsKey, snappedResults);
-    }
-
-    for (const snapped of snappedResults) {
-      entries.push({
-        ...snapped,
-        textAndProps,
-        fontVariationSettings: textAndProps.props['font-variation-settings'],
-      });
     }
   }
   return entries;
@@ -548,9 +606,50 @@ async function tracePages(
     } finally {
       await pool.destroy();
     }
+  } else if (headlessBrowser) {
+    // --dynamic: each page needs a real browser trace. tracePage opens its own
+    // puppeteer tab per call, so several can run concurrently — bounded to
+    // avoid overwhelming Chromium. The static font-tracer pass is synchronous
+    // and CPU-bound, so it runs inline before each (cheap) page's browser pass.
+    // Pin to a local so the narrowing survives inside the async closure below.
+    const browser = headlessBrowser;
+    const dynamicConcurrency =
+      concurrency && concurrency > 0
+        ? Math.min(concurrency, MAX_POOL_SIZE)
+        : DEFAULT_DYNAMIC_CONCURRENCY;
+    const numTabs = Math.min(dynamicConcurrency, totalPages);
+    progress.banner(
+      `  Tracing fonts across ${totalPages} page${totalPages === 1 ? '' : 's'} (headless browser, ${numTabs} tab${numTabs === 1 ? '' : 's'})...`
+    );
+    await runWithConcurrency(pagesNeedingFullTrace, numTabs, async (pd) => {
+      if (signal?.aborted) return;
+      const pageStart = debug ? Date.now() : 0;
+      pd.textByProps = fontTracer(pd.htmlOrSvgAsset.parseTree, {
+        stylesheetsWithPredicates: pd.stylesheetsWithPredicates,
+        getCssRulesByProperty: memoizedGetCssRulesByProperty,
+        asset: pd.htmlOrSvgAsset,
+      });
+      // HeadlessBrowser returns puppeteer-shaped trace results that
+      // share text + props with TextByPropsEntry but are typed as
+      // Record<string, unknown> at the seam.
+      const dynamicResults = await browser.tracePage(pd.htmlOrSvgAsset);
+      (pd.textByProps as TextByPropsEntry[]).push(
+        ...(dynamicResults as unknown as TextByPropsEntry[]) // eslint-disable-line no-restricted-syntax
+      );
+      const idx = progress.tick();
+      logTracedPage(
+        console,
+        debug,
+        idx,
+        totalPages,
+        pd.htmlOrSvgAsset,
+        pageStart
+      );
+    });
+    progress.done();
   } else {
     progress.banner(
-      `  Tracing fonts across ${totalPages} page${totalPages === 1 ? '' : 's'} (single-threaded${headlessBrowser ? ' + headless browser' : ''})...`
+      `  Tracing fonts across ${totalPages} page${totalPages === 1 ? '' : 's'} (single-threaded)...`
     );
     for (let pi = 0; pi < totalPages; pi++) {
       const pd = pagesNeedingFullTrace[pi];
@@ -560,17 +659,6 @@ async function tracePages(
         getCssRulesByProperty: memoizedGetCssRulesByProperty,
         asset: pd.htmlOrSvgAsset,
       });
-      if (headlessBrowser) {
-        // HeadlessBrowser returns puppeteer-shaped trace results that
-        // share text + props with TextByPropsEntry but are typed as
-        // Record<string, unknown> at the seam.
-        const dynamicResults = await headlessBrowser.tracePage(
-          pd.htmlOrSvgAsset
-        );
-        (pd.textByProps as TextByPropsEntry[]).push(
-          ...(dynamicResults as unknown as TextByPropsEntry[]) // eslint-disable-line no-restricted-syntax
-        );
-      }
       const idx = progress.tick();
       logTracedPage(
         console,
@@ -585,10 +673,166 @@ async function tracePages(
   }
 }
 
+// Per-group classification of where the group's font-family can render text
+// on a page, derived from the representative's font-family CSS rules. Lets the
+// fast path attribute a page's visible text only to the font groups that
+// actually style some element on that page, instead of every group.
+interface FamilyApplicability {
+  // Family names (lowercased) set by a selector that matches any non-empty
+  // page (html/body/:root/universal, or one we couldn't gate conservatively).
+  pageWideFamilies: Set<string>;
+  // Family name (lowercased) -> alternative required simple-token sets. The
+  // family renders text on a page iff at least one set is fully present in the
+  // page's element/class/id tokens (a necessary condition for the gating
+  // selectors to match — combinator context is ignored, which can only
+  // over-include, never drop).
+  tokenGatedFamilies: Map<string, Array<Set<string>>>;
+}
+
 interface AttributableEntry {
   pd: PageData;
   uniquePropsMap: Map<string, Record<string, string>>;
   textPerPropsKey: Map<string, string[]>;
+  familyApplicability: FamilyApplicability | null;
+}
+
+// Selectors whose subject matches any non-empty document: the font-family they
+// set is treated as page-wide.
+const PAGE_WIDE_SUBJECTS = new Set<string>(['html', 'body', ':root', '*', '']);
+
+// Extract the required simple tokens (lowercased `tag`, `.class`, `#id`) of a
+// selector's subject (rightmost compound). Returns null when the subject
+// matches any document (universal/html/body), meaning "no gate". Pseudo and
+// attribute fragments are stripped: they're not safe to gate on, but dropping
+// them only widens matching (a necessary-condition check stays sound).
+function subjectRequiredTokens(selector: string): Set<string> | null {
+  const compounds = selector.trim().split(/\s*[>+~]\s*|\s+/);
+  let subject = compounds[compounds.length - 1] || '';
+  // Drop pseudo-classes/elements and attribute selectors from the subject.
+  subject = subject
+    .replace(/::?[\w-]+(\([^)]*\))?/g, '')
+    .replace(/\[[^\]]*\]/g, '');
+  if (PAGE_WIDE_SUBJECTS.has(subject.toLowerCase())) return null;
+
+  const tokens = new Set<string>();
+  for (const m of subject.matchAll(/([.#]?)([\w-]+)/g)) {
+    const [, sigil, name] = m;
+    if (sigil === '.') tokens.add(`.${name.toLowerCase()}`);
+    else if (sigil === '#') tokens.add(`#${name.toLowerCase()}`);
+    else tokens.add(name.toLowerCase());
+  }
+  return tokens.size === 0 ? null : tokens;
+}
+
+// Parse the representative's stylesheets for font-family rules, classifying
+// each *webfont* family as page-wide or gated by simple subject tokens. Only
+// families backed by an @font-face matter: generic/system fallbacks (e.g.
+// `sans-serif`) appear in nearly every stack, so registering them would mark
+// every webfont page-wide and defeat the partition. Returns null (caller falls
+// back to attributing page text to every group) when no relevant rule could be
+// parsed, so the optimization never causes tofu.
+function buildFamilyApplicability(
+  stylesheets: StylesheetEntry[],
+  webfontFamilies: Set<string>,
+  memoizedGetCssRulesByProperty: typeof getCssRulesByProperty
+): FamilyApplicability | null {
+  if (webfontFamilies.size === 0) return null;
+  const pageWideFamilies = new Set<string>();
+  const tokenGatedFamilies = new Map<string, Array<Set<string>>>();
+  let sawAnyRule = false;
+
+  for (const sheet of stylesheets) {
+    const rulesByProperty = memoizedGetCssRulesByProperty(
+      ['font-family'],
+      sheet.text,
+      sheet.predicates
+    );
+    const rules = rulesByProperty['font-family'];
+    if (!Array.isArray(rules)) continue;
+    for (const rule of rules) {
+      const value = (rule as { value?: string }).value;
+      const selector = (rule as { selector?: string }).selector;
+      if (typeof value !== 'string') continue;
+      const familyNames = cssFontParser
+        .parseFontFamily(value)
+        .map((fam) => fam.toLowerCase())
+        .filter((fam) => webfontFamilies.has(fam));
+      if (familyNames.length === 0) continue;
+      sawAnyRule = true;
+
+      // Inline style attributes (undefined selector) match a specific element
+      // that may carry text; treat as page-wide rather than risk dropping it.
+      const tokens =
+        selector === undefined ? null : subjectRequiredTokens(selector);
+      for (const fam of familyNames) {
+        if (tokens === null) {
+          pageWideFamilies.add(fam);
+          tokenGatedFamilies.delete(fam);
+        } else if (!pageWideFamilies.has(fam)) {
+          let sets = tokenGatedFamilies.get(fam);
+          if (!sets) {
+            sets = [];
+            tokenGatedFamilies.set(fam, sets);
+          }
+          sets.push(tokens);
+        }
+      }
+    }
+  }
+
+  return sawAnyRule ? { pageWideFamilies, tokenGatedFamilies } : null;
+}
+
+// Collect the set of simple tokens (`tag`, `.class`, `#id`, lowercased) that
+// appear in a page's HTML, used to test selector subjects against the page.
+// Matches double-, single-, and unquoted attribute values so a class/id can
+// never be silently missed (a missed token could withhold page text from a
+// font that genuinely styles it — tofu); over-counting tokens is harmless.
+const ATTR_VALUE = `(?:"([^"]*)"|'([^']*)'|([^\\s"'>]+))`;
+const CLASS_ATTR_RE = new RegExp(`\\bclass\\s*=\\s*${ATTR_VALUE}`, 'gi');
+const ID_ATTR_RE = new RegExp(`\\bid\\s*=\\s*${ATTR_VALUE}`, 'gi');
+function collectPageTokens(html: string): Set<string> {
+  const tokens = new Set<string>();
+  // Element tag names.
+  for (const m of html.matchAll(/<([a-zA-Z][\w-]*)/g)) {
+    tokens.add(m[1].toLowerCase());
+  }
+  for (const m of html.matchAll(CLASS_ATTR_RE)) {
+    const value = m[1] ?? m[2] ?? m[3] ?? '';
+    for (const cls of value.split(/\s+/)) {
+      if (cls) tokens.add(`.${cls.toLowerCase()}`);
+    }
+  }
+  for (const m of html.matchAll(ID_ATTR_RE)) {
+    const value = (m[1] ?? m[2] ?? m[3] ?? '').trim();
+    if (value) tokens.add(`#${value.toLowerCase()}`);
+  }
+  return tokens;
+}
+
+// Whether a font-family (any of a group's declared names) renders text on the
+// page given the representative's applicability analysis and the page's tokens.
+function familyAppliesToPage(
+  familyNames: string[],
+  applicability: FamilyApplicability,
+  pageTokens: Set<string>
+): boolean {
+  for (const fam of familyNames) {
+    if (applicability.pageWideFamilies.has(fam)) return true;
+    const sets = applicability.tokenGatedFamilies.get(fam);
+    if (!sets) continue;
+    for (const required of sets) {
+      let allPresent = true;
+      for (const token of required) {
+        if (!pageTokens.has(token)) {
+          allPresent = false;
+          break;
+        }
+      }
+      if (allPresent) return true;
+    }
+  }
+  return false;
 }
 
 interface FastPathPlan {
@@ -602,7 +846,10 @@ interface FastPathPlan {
 // be cheaply attributed from the rep's traced output. The actual tracing of
 // fallback pages is deferred to tracePages so it benefits from the worker
 // pool — running fontTracer here, on the main thread, serializes the work.
-function planFastPathPages(fastPathPages: PageData[]): FastPathPlan {
+function planFastPathPages(
+  fastPathPages: PageData[],
+  memoizedGetCssRulesByProperty: typeof getCssRulesByProperty
+): FastPathPlan {
   const fallbackPages: PageData[] = [];
   const attributablePages: AttributableEntry[] = [];
   if (fastPathPages.length === 0) {
@@ -613,6 +860,7 @@ function planFastPathPages(fastPathPages: PageData[]): FastPathPlan {
     uniquePropsMap: Map<string, Record<string, string>>;
     textPerPropsKey: Map<string, string[]>;
     seenVariantKeys: Set<string>;
+    familyApplicability: FamilyApplicability | null;
   }
   const repDataCache = new Map<PageData, RepData>();
   function getRepData(representativePd: PageData): RepData {
@@ -649,7 +897,24 @@ function planFastPathPages(fastPathPages: PageData[]): FastPathPlan {
         }
       }
     }
-    const data: RepData = { uniquePropsMap, textPerPropsKey, seenVariantKeys };
+    const webfontFamilies = new Set<string>();
+    for (const decl of representativePd.accumulatedFontFaceDeclarations) {
+      const declFamily = decl['font-family'];
+      if (typeof declFamily === 'string') {
+        webfontFamilies.add(declFamily.toLowerCase());
+      }
+    }
+    const familyApplicability = buildFamilyApplicability(
+      representativePd.stylesheetsWithPredicates,
+      webfontFamilies,
+      memoizedGetCssRulesByProperty
+    );
+    const data: RepData = {
+      uniquePropsMap,
+      textPerPropsKey,
+      seenVariantKeys,
+      familyApplicability,
+    };
     repDataCache.set(representativePd, data);
     return data;
   }
@@ -660,9 +925,12 @@ function planFastPathPages(fastPathPages: PageData[]): FastPathPlan {
       continue;
     }
 
-    const { uniquePropsMap, textPerPropsKey, seenVariantKeys } = getRepData(
-      pd.representativePd as PageData
-    );
+    const {
+      uniquePropsMap,
+      textPerPropsKey,
+      seenVariantKeys,
+      familyApplicability,
+    } = getRepData(pd.representativePd as PageData);
 
     let hasUnseenVariant = false;
     for (const decl of pd.accumulatedFontFaceDeclarations) {
@@ -687,7 +955,12 @@ function planFastPathPages(fastPathPages: PageData[]): FastPathPlan {
       continue;
     }
 
-    attributablePages.push({ pd, uniquePropsMap, textPerPropsKey });
+    attributablePages.push({
+      pd,
+      uniquePropsMap,
+      textPerPropsKey,
+      familyApplicability,
+    });
   }
   return { fallbackPages, attributablePages };
 }
@@ -695,14 +968,44 @@ function planFastPathPages(fastPathPages: PageData[]): FastPathPlan {
 // Apply the rep's traced font props to each fast-path-attributable page,
 // overlaying that page's visible text. Pages routed here have already been
 // classified as safe to attribute (no inline styles, no unseen variants).
+//
+// Byte-affecting: the page's whole visible text is attributed only to the font
+// groups whose family actually styles some element on the page (per the rep's
+// font-family CSS rules), instead of to every group. On a multi-font site this
+// stops e.g. body text from inflating the heading/code font subsets. Each
+// group still keeps the rep's own traced text for that group (`repTexts`),
+// which covers content unreachable via extractVisibleText (CSS `content`,
+// counters); the page text is only ever withheld from groups proven not to
+// render it, so this never drops glyphs a font genuinely renders.
 function attributeFastPathPages(entries: AttributableEntry[]): void {
-  for (const { pd, uniquePropsMap, textPerPropsKey } of entries) {
+  for (const {
+    pd,
+    uniquePropsMap,
+    textPerPropsKey,
+    familyApplicability,
+  } of entries) {
     const pageText = extractVisibleText(pd.htmlOrSvgAsset.text || '');
+    const pageTokens = familyApplicability
+      ? collectPageTokens(pd.htmlOrSvgAsset.text || '')
+      : null;
     pd.textByProps = [];
     for (const [propsKey, props] of uniquePropsMap) {
       const repTexts = textPerPropsKey.get(propsKey) || [];
+      // With no applicability analysis (no parseable font-family rules) fall
+      // back to attributing page text to every group, never risking tofu.
+      let includePageText = true;
+      if (familyApplicability && pageTokens) {
+        const familyNames = cssFontParser
+          .parseFontFamily(props['font-family'] || '')
+          .map((fam) => fam.toLowerCase());
+        // A group with no resolvable family is unexpected; keep page text to
+        // avoid dropping glyphs a font might render.
+        includePageText =
+          familyNames.length === 0 ||
+          familyAppliesToPage(familyNames, familyApplicability, pageTokens);
+      }
       pd.textByProps.push({
-        text: pageText + repTexts.join(''),
+        text: (includePageText ? pageText : '') + repTexts.join(''),
         props: { ...props },
       });
     }
@@ -1028,7 +1331,7 @@ interface BuildPerPageTimings {
 function getOrSnapDeclCacheEntry(
   declCache: Map<string, DeclCacheEntry>,
   accumulatedFontFaceDeclarations: FontFaceDeclaration[],
-  globalTextByProps: TextByPropsEntry[]
+  textByPropsBuckets: Map<string, PropsBucket>
 ): { entry: DeclCacheEntry; elapsedSnap: number } {
   const declKey = getDeclarationsKey(accumulatedFontFaceDeclarations);
   let elapsedSnap = 0;
@@ -1037,7 +1340,7 @@ function getOrSnapDeclCacheEntry(
     declCache.set(declKey, {
       snappedEntries: computeSnappedGlobalEntries(
         accumulatedFontFaceDeclarations,
-        globalTextByProps
+        textByPropsBuckets
       ),
       fontUsageTemplates: null,
       pageTextIndex: null,
@@ -1117,6 +1420,10 @@ function buildPerPageFontUsages(
 ): BuildPerPageTimings {
   const declCache = new Map<string, DeclCacheEntry>();
   const uniqueCharsCache = new Map<string, string>();
+  // Bucket the global text entries by props key once, then reuse across every
+  // declaration group so snapping is O(declGroups x uniquePropsKeys) rather
+  // than rescanning the whole array per group.
+  const textByPropsBuckets = bucketTextByPropsKey(globalTextByProps);
   let snappingTime = 0;
   let globalUsageTime = 0;
   let cloningTime = 0;
@@ -1125,7 +1432,7 @@ function buildPerPageFontUsages(
     const { entry: declCacheEntry, elapsedSnap } = getOrSnapDeclCacheEntry(
       declCache,
       entry.accumulatedFontFaceDeclarations,
-      globalTextByProps
+      textByPropsBuckets
     );
     snappingTime += elapsedSnap;
 
@@ -1323,8 +1630,10 @@ async function collectTextsByPage(
     subTimings['Full tracing'] = fullTracing.end();
 
     const planPhase = trackPhase('Fast-path planning');
-    const { fallbackPages, attributablePages } =
-      planFastPathPages(fastPathPages);
+    const { fallbackPages, attributablePages } = planFastPathPages(
+      fastPathPages,
+      memoizedGetCssRulesByProperty
+    );
     subTimings['Fast-path planning'] = planPhase.end(
       `${attributablePages.length} via cached rep, ${fallbackPages.length} need full trace`
     );

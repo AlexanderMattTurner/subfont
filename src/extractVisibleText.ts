@@ -21,16 +21,13 @@ const INVISIBLE_ELEMENTS = new Set<string>([
   'datalist',
 ]);
 
-// Attributes whose values render as visible text in the page (typically
-// surfaced as tooltips, alternative text, or input value labels).
-const EXTRACTABLE_ATTRS = new Set<string>([
-  'alt',
-  'title',
-  'placeholder',
-  'value',
-  'aria-label',
-  'aria-description',
-]);
+// Attributes whose values render as visible text in the page using web fonts.
+// `alt` renders in place of a broken/missing image; `placeholder` and `value`
+// render inside form controls — all styled with the page's font stack.
+// Excluded: `title` (OS-native tooltip, never drawn with web fonts),
+// `aria-label`/`aria-description` (accessibility labels consumed by AT, not
+// painted on screen).
+const EXTRACTABLE_ATTRS = new Set<string>(['alt', 'placeholder', 'value']);
 
 // parse5 nodes are typed via a heavy generic adapter map; the runtime fields
 // we touch are this minimal shape, present on every visited node.

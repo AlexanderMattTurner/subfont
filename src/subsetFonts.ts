@@ -301,7 +301,42 @@ async function getOrCreateSubsetCssAsset({
 
   await cssAsset.minify();
 
-  for (const [i, fontRelation] of cssAsset.outgoingRelations.entries()) {
+  // Map each subset @font-face back to its fontUsage by descriptor identity
+  // rather than by relation index: getFontFaceForFontUsage emits one src
+  // relation per output format, and minify() may reorder relations, so the
+  // i-th relation is not reliably the i-th fontUsage. The (family, weight,
+  // style, stretch) tuple uniquely identifies a subset usage and never
+  // collides with an unused variant (those are, by construction, variants
+  // absent from subsetFontUsages). Family is stored unsuffixed to match the
+  // node value once its `__subset` suffix is stripped.
+  const fontUsageByDescriptorKey = new Map<string, SubsettedFontUsage>();
+  const descriptorKey = (
+    family: string,
+    weight: string,
+    style: string,
+    stretch: string
+  ): string =>
+    [
+      unquote(family)
+        .replace(/__subset$/, '')
+        .toLowerCase(),
+      String(normalizeFontPropertyValue('font-weight', weight || 'normal')),
+      (style || 'normal').toLowerCase(),
+      (stretch || 'normal').toLowerCase(),
+    ].join('\0');
+  for (const fontUsage of subsetFontUsages) {
+    fontUsageByDescriptorKey.set(
+      descriptorKey(
+        String(fontUsage.props['font-family'] ?? ''),
+        String(fontUsage.props['font-weight'] ?? ''),
+        String(fontUsage.props['font-style'] ?? ''),
+        String(fontUsage.props['font-stretch'] ?? '')
+      ),
+      fontUsage
+    );
+  }
+
+  for (const fontRelation of cssAsset.outgoingRelations) {
     const fontAsset = fontRelation.to;
     if (!fontAsset.isLoaded) {
       // An unused variant that does not exist, don't try to hash
@@ -309,7 +344,16 @@ async function getOrCreateSubsetCssAsset({
       continue;
     }
 
-    const fontUsage = subsetFontUsages[i];
+    const readDescriptor = (prop: string): string =>
+      fontRelation.node.nodes?.find((decl) => decl.prop === prop)?.value ?? '';
+    const fontUsage = fontUsageByDescriptorKey.get(
+      descriptorKey(
+        readDescriptor('font-family'),
+        readDescriptor('font-weight'),
+        readDescriptor('font-style'),
+        readDescriptor('font-stretch')
+      )
+    );
     if (
       formats.length === 1 &&
       fontUsage &&

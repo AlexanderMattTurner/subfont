@@ -22,7 +22,7 @@ import {
 // reshaping that doesn't alter bytes (like adding a sort to a stable input)
 // does NOT need a bump — old keys just stop matching and new equivalents
 // fill in on next run; existing entries remain byte-correct.
-const SUBSET_CACHE_VERSION = '7';
+const SUBSET_CACHE_VERSION = '8';
 
 type FontBuffer = Buffer | Uint8Array;
 
@@ -84,17 +84,42 @@ function subsetCacheKey(
   // the remaining per-subset fields. This avoids re-hashing the full
   // font binary on each call while remaining safe across Node versions
   // (crypto.Hash objects are single-use after digest()).
+  // Each field is length-prefixed before its content so adjacent
+  // concatenations cannot collide: ("xwoff","2") vs ("x","woff2") differ
+  // in their length prefixes and therefore produce distinct digests.
+  // Optional fields always emit a presence marker ('0'/'1') so
+  // absent-vs-present cannot alias following bytes.
+  function hashField(h: crypto.Hash, value: string): void {
+    const len = Buffer.byteLength(value, 'utf8');
+    const lenBuf = Buffer.allocUnsafe(4);
+    lenBuf.writeUInt32BE(len, 0);
+    h.update(lenBuf);
+    h.update(value, 'utf8');
+  }
+
   const hash = crypto.createHash('sha256');
   hash.update(getFontBufferDigest(fontBuffer));
-  hash.update(text);
-  hash.update(targetFormat);
-  if (variationAxes) hash.update(JSON.stringify(variationAxes));
-  // Sort so the cache key is stable regardless of iteration order in the
-  // upstream Set traversal (and across V8 versions / Map seeds).
-  if (featureGlyphIds)
-    hash.update(JSON.stringify([...featureGlyphIds].sort((a, b) => a - b)));
-  if (extraOptions)
-    hash.update(JSON.stringify(normalizeExtraOptions(extraOptions)));
+  hashField(hash, text);
+  hashField(hash, targetFormat);
+  // Sort so the cache key is stable regardless of iteration order.
+  if (variationAxes) {
+    hash.update('1');
+    hashField(hash, JSON.stringify(variationAxes));
+  } else {
+    hash.update('0');
+  }
+  if (featureGlyphIds) {
+    hash.update('1');
+    hashField(hash, JSON.stringify([...featureGlyphIds].sort((a, b) => a - b)));
+  } else {
+    hash.update('0');
+  }
+  if (extraOptions) {
+    hash.update('1');
+    hashField(hash, JSON.stringify(normalizeExtraOptions(extraOptions)));
+  } else {
+    hash.update('0');
+  }
   return hash.digest('hex');
 }
 
@@ -111,6 +136,22 @@ function normalizeExtraOptions(
     out[key] = Array.isArray(v) ? [...v].sort() : v;
   }
   return out;
+}
+
+// Recognised font container magic bytes (first 4 bytes of the file).
+// Checked before trusting any cached value so a tampered cache entry
+// cannot silently inject arbitrary bytes into a build.
+const KNOWN_FONT_MAGIC = new Set([
+  0x774f4632, // wOF2
+  0x774f4646, // wOFF
+  0x00010000, // sfnt 1.0 (TrueType)
+  0x4f54544f, // OTTO (CFF/OTF)
+  0x74727565, // 'true' (Apple TrueType)
+  0x74746366, // 'ttcf' (TTC collection)
+]);
+
+function isKnownFontMagic(buf: Buffer): boolean {
+  return KNOWN_FONT_MAGIC.has(buf.readUInt32BE(0));
 }
 
 class SubsetDiskCache {
@@ -146,12 +187,24 @@ class SubsetDiskCache {
 
   async get(key: string): Promise<Buffer | undefined> {
     const filePath = pathModule.join(this._cacheDir, key);
+    let buf: Buffer;
     try {
-      return await fs.readFile(filePath);
+      buf = await fs.readFile(filePath);
     } catch {
       // ENOENT (cache miss) or permission error — treat as a miss.
       return undefined;
     }
+    // Reject bytes that don't carry a recognised sfnt/woff/woff2 magic so a
+    // tampered or truncated cache entry can never inject arbitrary font data.
+    // wOF2 = 0x774F4632, wOFF = 0x774F4646, sfnt 1.0 = 0x00010000,
+    // CFF/OTF = 'OTTO' (0x4F54544F), TrueType 'true' = 0x74727565,
+    // TTC = 'ttcf' (0x74746366).
+    if (buf.length < 4 || !isKnownFontMagic(buf)) {
+      // Delete so the next run doesn't pay the validation cost again.
+      await fs.rm(filePath, { force: true }).catch(() => {});
+      return undefined;
+    }
+    return buf;
   }
 
   // Write to a unique temp file and atomically rename it into place. A plain

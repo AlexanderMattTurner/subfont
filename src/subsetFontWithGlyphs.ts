@@ -367,22 +367,28 @@ function configureDropTables(
   }
 }
 
-// Include codepoints from both NFC and NFD normalized forms so the
-// subsetter covers precomposed and decomposed character variants. This
-// guards against harfbuzz subsetter not always expanding codepoints to
-// their NFC/NFD equivalents (harfbuzz issue #2283).
+// Include codepoints from the raw text and from both NFC and NFD
+// normalized forms so the subsetter covers precomposed and decomposed
+// character variants. This guards against harfbuzz subsetter not always
+// expanding codepoints to their NFC/NFD equivalents (harfbuzz issue #2283).
+// The raw text must be added too: Unicode singletons (U+2126 OHM,
+// U+212A KELVIN, U+212B ANGSTROM) decompose to other characters under both
+// NFC and NFD, so the original codepoint would otherwise be absent from the
+// subset's cmap. Browsers do not normalize before glyph lookup, so a missing
+// raw codepoint renders as tofu.
 function configureUnicodeCodepoints(
   exports: HarfbuzzExports,
   input: number,
   text: string
 ): void {
   const inputUnicodes = exports.hb_subset_input_unicode_set(input);
-  const nfc = text.normalize('NFC');
-  const nfd = text.normalize('NFD');
-  for (const c of nfc) {
+  for (const c of text) {
     exports.hb_set_add(inputUnicodes, c.codePointAt(0)!);
   }
-  for (const c of nfd) {
+  for (const c of text.normalize('NFC')) {
+    exports.hb_set_add(inputUnicodes, c.codePointAt(0)!);
+  }
+  for (const c of text.normalize('NFD')) {
     exports.hb_set_add(inputUnicodes, c.codePointAt(0)!);
   }
 }
@@ -505,6 +511,11 @@ async function subsetFontWithGlyphs(
   let released = false;
   try {
     const fontBuffer = exports.malloc(ttf.byteLength);
+    // A zero pointer means malloc failed; writing at offset 0 would stomp the
+    // low heap and yield corrupt output instead of a clean error.
+    if (!fontBuffer) {
+      throw new Error(`WASM malloc failed for ${ttf.byteLength} bytes`);
+    }
     // Fresh view — memory.buffer may have been detached by a prior malloc/grow.
     getHeapu8(exports).set(new Uint8Array(ttf), fontBuffer);
 
