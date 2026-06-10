@@ -3,10 +3,12 @@ const eslintConfigPrettier = require('eslint-config-prettier');
 const mochaPlugin = require('eslint-plugin-mocha');
 const tseslint = require('typescript-eslint');
 const globals = require('globals');
+const regexpPlugin = require('eslint-plugin-regexp');
 
 module.exports = [
   ...neostandard(),
   eslintConfigPrettier,
+  regexpPlugin.configs['flat/recommended'],
   {
     plugins: {
       mocha: mochaPlugin,

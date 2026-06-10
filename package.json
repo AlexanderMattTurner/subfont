@@ -97,6 +97,7 @@
     "eslint": "^9.0.0",
     "eslint-config-prettier": "^10.0.0",
     "eslint-plugin-mocha": "^10.0.0",
+    "eslint-plugin-regexp": "^3.1.0",
     "globals": "^16.0.0",
     "html-generators": "^1.0.3",
     "httpception": "^3.0.0",

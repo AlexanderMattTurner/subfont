@@ -338,7 +338,7 @@ async function getOrCreateSubsetCssAsset({
     );
     const fileNamePrefix = `${unquote(parsedFamily[0] ?? 'unknown')
       .replace(/__subset$/, '')
-      .replace(/[^a-z0-9_-]/gi, '_')}-${fontWeightRangeStr}${
+      .replace(/[^\w-]/g, '_')}-${fontWeightRangeStr}${
       nameProps[2] === 'italic' ? 'i' : ''
     }`;
 

@@ -118,7 +118,7 @@ export function extractFeatureTagsFromDecl(
     // beginning with a letter and continuing with letters or digits;
     // digits-only tags ("1234") are invalid and `[a-zA-Z0-9]{4}` would
     // have wrongly accepted them as features.
-    const re = /["']([a-zA-Z][a-zA-Z0-9]{3})["']/g;
+    const re = /["']([a-z][a-z0-9]{3})["']/gi;
     let m: RegExpExecArray | null;
     while ((m = re.exec(value)) !== null) {
       tags.add(m[1]);

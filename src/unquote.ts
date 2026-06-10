@@ -15,7 +15,7 @@ import postcssValueParser = require('postcss-value-parser');
 //     bytes; emitting U+FFFD or a lone surrogate would silently corrupt
 //     downstream font-tracing / unicode-range output.
 const CSS_ESCAPE_RE =
-  /\\(?:([0-9a-fA-F]{1,6})([ \t\n\r\f]?)|(\r\n|[\n\r\f])|([^\n\r\f0-9a-fA-F]))/g;
+  /\\(?:([0-9a-f]{1,6})([ \t\n\r\f]?)|(\r\n|[\n\r\f])|([^\n\r\f0-9a-f]))/gi;
 
 function unescapeCssString(str: string): string {
   return str.replace(
