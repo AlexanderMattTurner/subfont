@@ -34,11 +34,9 @@ type LogFn = (...args: unknown[]) => void;
 // should keep the sandbox, which is the only thing isolating traced
 // third-party page scripts. Auto-disable solely when running as root;
 // callers needing it elsewhere pass --no-sandbox explicitly via chromeFlags
-// (those extraArgs are appended after this and take effect regardless).
-function defaultSandboxArgs(extraArgs: string[]): string[] {
-  const callerDisabledSandbox = extraArgs.some(
-    (arg) => arg === '--no-sandbox' || arg.startsWith('--no-sandbox=')
-  );
+// (those extraArgs are appended after this and take effect regardless), which
+// the caller signals with `callerDisabledSandbox`.
+function defaultSandboxArgs(callerDisabledSandbox: boolean): string[] {
   const runningAsRoot = process.getuid?.() === 0;
   if (runningAsRoot && !callerDisabledSandbox) {
     return ['--no-sandbox', '--disable-setuid-sandbox'];
@@ -74,10 +72,10 @@ async function launchWithSandboxFallback(
   extraArgs: string[],
   log: { log: LogFn }
 ): Promise<PuppeteerBrowser> {
-  const sandboxArgs = defaultSandboxArgs(extraArgs);
   const callerDisabledSandbox = extraArgs.some(
     (arg) => arg === '--no-sandbox' || arg.startsWith('--no-sandbox=')
   );
+  const sandboxArgs = defaultSandboxArgs(callerDisabledSandbox);
   try {
     return await puppeteer.launch({
       ...launchOptions,
@@ -85,8 +83,9 @@ async function launchWithSandboxFallback(
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    const sandboxAlreadyOff =
-      sandboxArgs.includes('--no-sandbox') || callerDisabledSandbox;
+    // The sandbox is already off if the caller disabled it or we added
+    // --no-sandbox as root, so there's nothing left to retry.
+    const sandboxAlreadyOff = callerDisabledSandbox || sandboxArgs.length > 0;
     if (sandboxAlreadyOff || !/sandbox/i.test(message)) {
       throw err;
     }

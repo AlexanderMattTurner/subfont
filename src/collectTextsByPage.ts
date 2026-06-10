@@ -114,6 +114,13 @@ interface SnappedEntry {
   fontVariationSettings?: string;
 }
 
+// What snapBucket resolves once per props bucket: everything in a SnappedEntry
+// except the two fields that vary per text entry (filled in during fan-out).
+type SnappedBucketEntry = Omit<
+  SnappedEntry,
+  'textAndProps' | 'fontVariationSettings'
+>;
+
 interface FontUsageTemplate {
   smallestOriginalSize: number;
   smallestOriginalFormat: string | undefined;
@@ -220,9 +227,9 @@ function bucketTextByPropsKey(
 function snapBucket(
   declarations: FontFaceDeclaration[],
   bucketProps: Record<string, string>
-): SnappedEntry[] {
+): SnappedBucketEntry[] {
   const family = bucketProps['font-family'] as string;
-  const snappedResults: SnappedEntry[] = [];
+  const snappedResults: SnappedBucketEntry[] = [];
   const families = cssFontParser.parseFontFamily(family).filter((fam) =>
     declarations.some((fontFace) => {
       // collectFontFaceDeclarations only retains rows with a non-
@@ -278,9 +285,6 @@ function snapBucket(
         'font-stretch',
         bucketProps['font-stretch']
       ),
-      // Placeholder; rebound per text entry by the caller.
-      textAndProps: { text: '', props: bucketProps },
-      fontVariationSettings: bucketProps['font-variation-settings'],
     });
   }
   return snappedResults;
@@ -822,14 +826,7 @@ function familyAppliesToPage(
     const sets = applicability.tokenGatedFamilies.get(fam);
     if (!sets) continue;
     for (const required of sets) {
-      let allPresent = true;
-      for (const token of required) {
-        if (!pageTokens.has(token)) {
-          allPresent = false;
-          break;
-        }
-      }
-      if (allPresent) return true;
+      if ([...required].every((token) => pageTokens.has(token))) return true;
     }
   }
   return false;
@@ -978,16 +975,32 @@ function planFastPathPages(
 // counters); the page text is only ever withheld from groups proven not to
 // render it, so this never drops glyphs a font genuinely renders.
 function attributeFastPathPages(entries: AttributableEntry[]): void {
+  // familyNames depend only on props['font-family'], which is identical for a
+  // given propsKey across every page, so parse each font-family at most once.
+  const familyNamesByPropsKey = new Map<string, string[]>();
+  const familyNamesFor = (
+    propsKey: string,
+    props: Record<string, string>
+  ): string[] => {
+    let names = familyNamesByPropsKey.get(propsKey);
+    if (!names) {
+      names = cssFontParser
+        .parseFontFamily(props['font-family'] || '')
+        .map((fam) => fam.toLowerCase());
+      familyNamesByPropsKey.set(propsKey, names);
+    }
+    return names;
+  };
+
   for (const {
     pd,
     uniquePropsMap,
     textPerPropsKey,
     familyApplicability,
   } of entries) {
-    const pageText = extractVisibleText(pd.htmlOrSvgAsset.text || '');
-    const pageTokens = familyApplicability
-      ? collectPageTokens(pd.htmlOrSvgAsset.text || '')
-      : null;
+    const html = pd.htmlOrSvgAsset.text || '';
+    const pageText = extractVisibleText(html);
+    const pageTokens = familyApplicability ? collectPageTokens(html) : null;
     pd.textByProps = [];
     for (const [propsKey, props] of uniquePropsMap) {
       const repTexts = textPerPropsKey.get(propsKey) || [];
@@ -995,9 +1008,7 @@ function attributeFastPathPages(entries: AttributableEntry[]): void {
       // back to attributing page text to every group, never risking tofu.
       let includePageText = true;
       if (familyApplicability && pageTokens) {
-        const familyNames = cssFontParser
-          .parseFontFamily(props['font-family'] || '')
-          .map((fam) => fam.toLowerCase());
+        const familyNames = familyNamesFor(propsKey, props);
         // A group with no resolvable family is unexpected; keep page text to
         // avoid dropping glyphs a font might render.
         includePageText =

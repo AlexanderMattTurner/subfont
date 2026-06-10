@@ -194,11 +194,9 @@ class SubsetDiskCache {
       // ENOENT (cache miss) or permission error — treat as a miss.
       return undefined;
     }
-    // Reject bytes that don't carry a recognised sfnt/woff/woff2 magic so a
-    // tampered or truncated cache entry can never inject arbitrary font data.
-    // wOF2 = 0x774F4632, wOFF = 0x774F4646, sfnt 1.0 = 0x00010000,
-    // CFF/OTF = 'OTTO' (0x4F54544F), TrueType 'true' = 0x74727565,
-    // TTC = 'ttcf' (0x74746366).
+    // Reject bytes that don't carry a recognised font magic (see
+    // KNOWN_FONT_MAGIC) so a tampered or truncated cache entry can never
+    // inject arbitrary font data.
     if (buf.length < 4 || !isKnownFontMagic(buf)) {
       // Delete so the next run doesn't pay the validation cost again.
       await fs.rm(filePath, { force: true }).catch(() => {});
