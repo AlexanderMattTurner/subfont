@@ -75,8 +75,10 @@ fuzzLoop('stripLocalTokens', 5000, (rng) => {
 fuzzLoop('injectSubsetDefinitions', 5000, (rng) => {
   const input = randomCssValue(rng);
   const map = {};
-  if (rng.bool(0.8)) map['Open Sans'] = 'Open Sans__subset';
-  if (rng.bool(0.3)) map[randomString(rng, 8)] = 'Fuzz__subset';
+  // injectSubsetDefinitions looks families up via webfontNameMap[name.toLowerCase()],
+  // so keys must be lowercase to exercise the injection path.
+  if (rng.bool(0.8)) map['open sans'] = 'Open Sans__subset';
+  if (rng.bool(0.3)) map[randomString(rng, 8).toLowerCase()] = 'Fuzz__subset';
   const replaceOriginal = rng.bool(0.3);
   const output = injectSubsetDefinitions(input, map, replaceOriginal);
   if (typeof output !== 'string') {
