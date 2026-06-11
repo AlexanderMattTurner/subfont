@@ -162,4 +162,39 @@ describe('unquote', function () {
       expect(unquote("'foo"), 'to equal', "'foo");
     });
   });
+
+  describe('with out-of-range or surrogate hex escapes', function () {
+    // Mutation testing (Stryker) showed every boundary in the
+    // `cp === 0 || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)` guard
+    // survived mutation — none of the edges were pinned down. These tests
+    // lock in the documented behaviour: invalid escapes are left as the
+    // raw source bytes instead of decoding to U+FFFD or a lone surrogate.
+    it('should decode the maximum valid codepoint U+10FFFF', function () {
+      expect(unquote("'\\10FFFF x'"), 'to equal', '\u{10ffff} x');
+    });
+
+    it('should leave an out-of-range escape (> U+10FFFF) as raw source', function () {
+      expect(unquote("'\\110000 x'"), 'to equal', '\\110000 x');
+    });
+
+    it('should leave a NUL escape as raw source', function () {
+      expect(unquote("'\\0 x'"), 'to equal', '\\0 x');
+    });
+
+    it('should leave the first high surrogate U+D800 as raw source', function () {
+      expect(unquote("'\\d800 x'"), 'to equal', '\\d800 x');
+    });
+
+    it('should leave the last low surrogate U+DFFF as raw source', function () {
+      expect(unquote("'\\dfff x'"), 'to equal', '\\dfff x');
+    });
+
+    it('should decode U+D7FF, just below the surrogate range', function () {
+      expect(unquote("'\\d7ff x'"), 'to equal', '\ud7ff' + 'x');
+    });
+
+    it('should decode U+E000, just above the surrogate range', function () {
+      expect(unquote("'\\e000 x'"), 'to equal', '\ue000' + 'x');
+    });
+  });
 });
