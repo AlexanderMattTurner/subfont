@@ -84,8 +84,26 @@ describe('warnAboutMissingGlyphs', function () {
 
     expect(assetGraph.info, 'was called once');
     const err = assetGraph.info.firstCall.args[0];
-    expect(err.message, 'to contain', '\\u{43}');
+    expect(
+      err.message,
+      'to contain',
+      "- \\u{43} (C) in font-family 'TestFont' (400/normal) at test.html:1:6"
+    );
     expect(err.message, 'to contain', 'Missing glyph fallback detected');
+    // A single occurrence gets no "(+N more)" suffix or any other trailer
+    expect(err.message, 'to match', /at test\.html:1:6$/);
+  });
+
+  it('should separate multiple missing glyph entries with newlines', async function () {
+    // Subset only has A; B and C are both missing
+    getFontInfoStub.resolves({ characterSet: [0x41] });
+
+    const input = makeInput({ text: 'ABC', sourceText: '<p>ABC</p>' });
+    await warnAboutMissingGlyphs([input], assetGraph);
+
+    expect(assetGraph.info, 'was called once');
+    const { message } = assetGraph.info.firstCall.args[0];
+    expect(message, 'to contain', 'at test.html:1:5\n- \\u{43}');
   });
 
   it('should skip tab and newline characters', async function () {
@@ -109,6 +127,30 @@ describe('warnAboutMissingGlyphs', function () {
 
     expect(assetGraph.info, 'was not called');
     expect(getFontInfoStub, 'was not called');
+  });
+
+  it('should skip font usages with an empty subsets object', async function () {
+    getFontInfoStub.resolves({ characterSet: [0x41] });
+
+    const input = makeInput({ text: 'AB' });
+    input.fontUsages[0].subsets = {};
+    await warnAboutMissingGlyphs([input], assetGraph);
+
+    expect(assetGraph.info, 'was not called');
+    expect(getFontInfoStub, 'was not called');
+  });
+
+  it('should treat font usages without pageText as having no missing glyphs', async function () {
+    getFontInfoStub.resolves({ characterSet: [0x41] });
+
+    const input = makeInput({ text: 'AB' });
+    input.fontUsages[0].pageText = undefined;
+    await warnAboutMissingGlyphs([input], assetGraph);
+
+    expect(assetGraph.info, 'was not called');
+    const fontFaceNode =
+      input.accumulatedFontFaceDeclarations[0].relations[0].node;
+    expect(fontFaceNode.append, 'was not called');
   });
 
   it('should handle getFontInfo failure gracefully', async function () {
@@ -247,6 +289,75 @@ describe('warnAboutMissingGlyphs', function () {
     const value = fontFaceNode.append.firstCall.args[0].value;
     // Union of [0x42, 0x43, 0x44, 0x45] -> U+42-45
     expect(value, 'to equal', 'U+42-45');
+  });
+
+  it('should not add unicode-range to @font-face when no glyphs are missing', async function () {
+    getFontInfoStub.resolves({ characterSet: [0x41, 0x42, 0x43] });
+
+    const input = makeInput({ text: 'ABC' });
+    await warnAboutMissingGlyphs([input], assetGraph);
+
+    const fontFaceNode =
+      input.accumulatedFontFaceDeclarations[0].relations[0].node;
+    const cssAsset = input.accumulatedFontFaceDeclarations[0].relations[0].from;
+    expect(fontFaceNode.append, 'was not called');
+    expect(cssAsset.markDirty, 'was not called');
+  });
+
+  it('should not add unicode-range to @font-face declarations of unused families', async function () {
+    getFontInfoStub.resolves({ characterSet: [0x41] });
+
+    const input = makeInput({ text: 'AB' });
+    const otherFontFaceNode = { some: () => false, append: sinon.stub() };
+    const otherCssAsset = { markDirty: sinon.stub() };
+    input.accumulatedFontFaceDeclarations.push({
+      'font-family': 'OtherFont',
+      relations: [{ node: otherFontFaceNode, from: otherCssAsset }],
+    });
+    await warnAboutMissingGlyphs([input], assetGraph);
+
+    // The used family still gets its unicode-range
+    const usedFontFaceNode =
+      input.accumulatedFontFaceDeclarations[0].relations[0].node;
+    expect(usedFontFaceNode.append, 'was called once');
+    // The unused family must be left alone
+    expect(otherFontFaceNode.append, 'was not called');
+    expect(otherCssAsset.markDirty, 'was not called');
+  });
+
+  it('should append unicode-range when other declarations exist but none is unicode-range', async function () {
+    getFontInfoStub.resolves({ characterSet: [0x41] });
+
+    const input = makeInput({ text: 'AB' });
+    // A realistic PostCSS-style node: an array of existing declarations
+    // whose Array.prototype.some actually evaluates the predicate.
+    const fontFaceNode = [{ prop: 'font-display', value: 'swap' }];
+    fontFaceNode.append = sinon.stub();
+    input.accumulatedFontFaceDeclarations[0].relations[0].node = fontFaceNode;
+    await warnAboutMissingGlyphs([input], assetGraph);
+
+    expect(fontFaceNode.append, 'was called once');
+    expect(
+      fontFaceNode.append.firstCall.args[0].prop,
+      'to equal',
+      'unicode-range'
+    );
+  });
+
+  it('should handle font usages without recorded codepoints', async function () {
+    getFontInfoStub.resolves({ characterSet: [0x41] });
+
+    const input = makeInput({ text: 'AB' });
+    input.fontUsages[0].codepoints = undefined;
+    await warnAboutMissingGlyphs([input], assetGraph);
+
+    // The missing glyph is still reported...
+    expect(assetGraph.info, 'was called once');
+    // ...and the appended unicode-range covers no codepoints
+    const fontFaceNode =
+      input.accumulatedFontFaceDeclarations[0].relations[0].node;
+    expect(fontFaceNode.append, 'was called once');
+    expect(fontFaceNode.append.firstCall.args[0].value, 'to equal', '');
   });
 
   it('should not add unicode-range to @font-face when one already exists', async function () {
