@@ -65,7 +65,8 @@
       "test/subsetFontWithGlyphs.js",
       "test/fontConverter.js",
       "test/featureTagExtraction.js",
-      "test/fontVariantGsub.js"
+      "test/fontVariantGsub.js",
+      "test/propertyBased.js"
     ]
   },
   "timeoutMS": 10000,
