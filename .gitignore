@@ -1,6 +1,8 @@
 node_modules
 coverage
 .nyc_output
+.stryker-tmp
+reports
 puppeteer-browsers
 package-lock.json
 *.tgz

@@ -16,6 +16,8 @@
     "test": "mocha && pnpm run lint",
     "prepublishOnly": "pnpm test",
     "coverage": "nyc --reporter=lcov --reporter=text -- mocha",
+    "mutation": "stryker run",
+    "fuzz": "node fuzz/run-all.js",
     "check-coverage": "nyc check-coverage",
     "preversion": "offline-github-changelog --next=${npm_new_version} > CHANGELOG.md && git add CHANGELOG.md"
   },
@@ -87,6 +89,8 @@
   "devDependencies": {
     "@commitlint/cli": "^21.0.2",
     "@commitlint/config-conventional": "^21.0.2",
+    "@stryker-mutator/core": "^9.6.1",
+    "@stryker-mutator/mocha-runner": "^9.6.1",
     "@types/jsdom": "^28.0.1",
     "@types/node": "^20.0.0",
     "@types/yargs": "^17.0.0",
