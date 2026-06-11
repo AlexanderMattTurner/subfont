@@ -1,4 +1,4 @@
-const expect = require('unexpected');
+const expect = require('unexpected').clone().use(require('unexpected-set'));
 const {
   extractFeatureTagsFromDecl,
   ruleFeatureTags,
