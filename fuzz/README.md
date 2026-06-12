@@ -16,6 +16,12 @@ Every property-based harness uses a seeded PRNG (`_helpers.js`); a failure
 prints the seed and the offending input so it can be reproduced
 deterministically.
 
+Both suites gate CI (see `.github/workflows/ci.yml`): the fuzz harnesses
+run as one job, and mutation testing runs as two parallel shards that fail
+below the `break` threshold in `stryker.conf.json`. The shard file lists in
+the workflow must stay an exact partition of the config's `mutate` list —
+update both when adding a module.
+
 ## Harnesses
 
 | Harness                         | Properties checked                                                                                                                                                                                                                                                                                             |

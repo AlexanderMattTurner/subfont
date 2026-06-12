@@ -71,6 +71,11 @@
   },
   "timeoutMS": 10000,
   "concurrency": 3,
+  "thresholds": {
+    "high": 90,
+    "low": 80,
+    "break": 80
+  },
   "reporters": ["clear-text", "progress", "json"],
   "clearTextReporter": {
     "allowColor": false,

@@ -126,16 +126,66 @@ jobs:
           npm init -y
           npm install "$GITHUB_WORKSPACE/$TARBALL"
 
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    name: Fuzz
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build TypeScript
+        run: pnpm run build
+      - run: pnpm run fuzz
+
+  mutation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    name: Mutation (${{ matrix.shard.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          # Shards are balanced by runtime (shard 1 carries the slow WASM
+          # subsetting mutants) and by expected score, so each stays clear
+          # of the break threshold in stryker.conf.json.
+          - name: 1/2
+            mutate: >-
+              lib/subsetFontWithGlyphs.js,lib/sfntCache.js,lib/fontConverter.js,lib/wasmQueue.js,lib/collectFeatureGlyphIds.js,lib/fontFeatureHelpers.js,lib/variationAxes.js,lib/warnAboutMissingGlyphs.js,lib/extractVisibleText.js,lib/progress.js,lib/promiseWeakCache.js
+          - name: 2/2
+            mutate: >-
+              lib/getCssRulesByProperty.js,lib/fontFaceHelpers.js,lib/codepointMaps.js,lib/escapeJsStringLiteral.js,lib/extractReferencedCustomPropertyNames.js,lib/findCustomPropertyDefinitions.js,lib/gatherStylesheetsWithPredicates.js,lib/getFontInfo.js,lib/injectSubsetDefinitions.js,lib/normalizeFontPropertyValue.js,lib/parseCommandLineOptions.js,lib/parseFontVariationSettings.js,lib/stripLocalTokens.js,lib/unicodeRange.js,lib/unquote.js,lib/concurrencyLimit.js,lib/piscinaRunWithTimeout.js
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build TypeScript
+        run: pnpm run build
+      - name: Run mutation tests
+        # Concurrency 4 saturates the 4-vCPU runner; the config default of 3
+        # is tuned for local machines doing other work.
+        run: pnpm exec stryker run --concurrency 4 --mutate "${{ matrix.shard.mutate }}"
+
   ci-gate:
     name: CI Gate
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [test, lint, typecheck, coverage, install-check]
+    needs: [test, lint, typecheck, coverage, install-check, fuzz, mutation]
     if: always()
     steps:
       - name: Check results
         run: |
-          if [[ "${{ needs.test.result }}" != "success" || "${{ needs.lint.result }}" != "success" || "${{ needs.typecheck.result }}" != "success" || "${{ needs.coverage.result }}" != "success" || "${{ needs.install-check.result }}" != "success" ]]; then
+          if [[ "${{ needs.test.result }}" != "success" || "${{ needs.lint.result }}" != "success" || "${{ needs.typecheck.result }}" != "success" || "${{ needs.coverage.result }}" != "success" || "${{ needs.install-check.result }}" != "success" || "${{ needs.fuzz.result }}" != "success" || "${{ needs.mutation.result }}" != "success" ]]; then
             echo "One or more required jobs failed"
             exit 1
           fi
