@@ -1,4 +1,4 @@
-const expect = require('unexpected');
+const expect = require('unexpected').clone().use(require('unexpected-set'));
 const {
   extractFeatureTagsFromDecl,
   ruleFeatureTags,
@@ -6,9 +6,16 @@ const {
   recordRuleFeatureTags,
   resolveFeatureSettings,
   addTagsToMapEntry,
+  findFontFamiliesWithFeatureSettings,
 
   UNRESOLVED_FEATURES_SENTINEL,
 } = require('../lib/fontFeatureHelpers');
+
+// unexpected@11 compares Sets as opaque objects, so Set-vs-Set assertions
+// pass vacuously. Convert to a sorted array for exact comparisons.
+function sortedTags(set) {
+  return [...set].sort();
+}
 
 describe('fontFeatureHelpers', function () {
   describe('extractFeatureTagsFromDecl', function () {
@@ -122,6 +129,172 @@ describe('fontFeatureHelpers', function () {
       expect(tags.size, 'to equal', 99);
     });
 
+    it('should resolve numeric styleset() arguments to exactly those tags', function () {
+      const tags = extractFeatureTagsFromDecl(
+        'font-variant-alternates',
+        'styleset(2, 5)'
+      );
+      expect(sortedTags(tags), 'to equal', ['ss02', 'ss05']);
+    });
+
+    it('should resolve multi-digit styleset() indices', function () {
+      const tags = extractFeatureTagsFromDecl(
+        'font-variant-alternates',
+        'styleset(12)'
+      );
+      expect(sortedTags(tags), 'to equal', ['ss12']);
+    });
+
+    it('should accept the styleset() boundary indices 1 and 20', function () {
+      expect(
+        sortedTags(
+          extractFeatureTagsFromDecl('font-variant-alternates', 'styleset(1)')
+        ),
+        'to equal',
+        ['ss01']
+      );
+      expect(
+        sortedTags(
+          extractFeatureTagsFromDecl('font-variant-alternates', 'styleset(20)')
+        ),
+        'to equal',
+        ['ss20']
+      );
+    });
+
+    it('should fall back to all styleset indices for an out-of-range index', function () {
+      const tags = extractFeatureTagsFromDecl(
+        'font-variant-alternates',
+        'styleset(25)'
+      );
+      expect(tags.size, 'to equal', 20);
+      expect(tags.has('ss25'), 'to be false');
+      expect(tags.has('ss01'), 'to be true');
+      expect(tags.has('ss20'), 'to be true');
+    });
+
+    it('should fall back to all styleset indices for a non-integer argument', function () {
+      const tags = extractFeatureTagsFromDecl(
+        'font-variant-alternates',
+        'styleset(2.5)'
+      );
+      expect(tags.size, 'to equal', 20);
+      expect(tags.has('ss2.5'), 'to be false');
+      expect(tags.has('ss01'), 'to be true');
+      expect(tags.has('ss20'), 'to be true');
+    });
+
+    it('should allow whitespace between styleset and its parenthesis', function () {
+      const tags = extractFeatureTagsFromDecl(
+        'font-variant-alternates',
+        'styleset (3)'
+      );
+      expect(sortedTags(tags), 'to equal', ['ss03']);
+    });
+
+    it('should resolve numeric character-variant() arguments including whitespace and the 99 boundary', function () {
+      expect(
+        sortedTags(
+          extractFeatureTagsFromDecl(
+            'font-variant-alternates',
+            'character-variant (4)'
+          )
+        ),
+        'to equal',
+        ['cv04']
+      );
+      expect(
+        sortedTags(
+          extractFeatureTagsFromDecl(
+            'font-variant-alternates',
+            'character-variant(99)'
+          )
+        ),
+        'to equal',
+        ['cv99']
+      );
+    });
+
+    it('should allow whitespace before the parenthesis in alternates functions', function () {
+      expect(
+        sortedTags(
+          extractFeatureTagsFromDecl(
+            'font-variant-alternates',
+            'stylistic (flowing)'
+          )
+        ),
+        'to equal',
+        ['salt']
+      );
+      expect(
+        sortedTags(
+          extractFeatureTagsFromDecl('font-variant-alternates', 'swash (flowy)')
+        ),
+        'to equal',
+        ['swsh']
+      );
+      expect(
+        sortedTags(
+          extractFeatureTagsFromDecl(
+            'font-variant-alternates',
+            'ornaments (leaves)'
+          )
+        ),
+        'to equal',
+        ['ornm']
+      );
+      expect(
+        sortedTags(
+          extractFeatureTagsFromDecl(
+            'font-variant-alternates',
+            'annotation (circled)'
+          )
+        ),
+        'to equal',
+        ['nalt']
+      );
+    });
+
+    it('should map ornaments() and annotation() without whitespace to exactly one tag', function () {
+      expect(
+        sortedTags(
+          extractFeatureTagsFromDecl(
+            'font-variant-alternates',
+            'ornaments(leaves)'
+          )
+        ),
+        'to equal',
+        ['ornm']
+      );
+      expect(
+        sortedTags(
+          extractFeatureTagsFromDecl(
+            'font-variant-alternates',
+            'annotation(circled)'
+          )
+        ),
+        'to equal',
+        ['nalt']
+      );
+    });
+
+    it('should map font-variant-* keywords case-insensitively to exactly their tags', function () {
+      expect(
+        sortedTags(
+          extractFeatureTagsFromDecl('font-variant-caps', 'SMALL-CAPS')
+        ),
+        'to equal',
+        ['smcp']
+      );
+      expect(
+        sortedTags(
+          extractFeatureTagsFromDecl('font-variant-caps', 'small-caps')
+        ),
+        'to equal',
+        ['smcp']
+      );
+    });
+
     it('should return empty set for an unrecognized property', function () {
       const tags = extractFeatureTagsFromDecl('color', 'red');
       expect(tags.size, 'to equal', 0);
@@ -165,6 +338,20 @@ describe('fontFeatureHelpers', function () {
       };
       expect(ruleFeatureTags(rule), 'to be null');
     });
+
+    it('should collect exactly the declared tags', function () {
+      const rule = {
+        nodes: [
+          {
+            type: 'decl',
+            prop: 'font-feature-settings',
+            value: '"liga" 1',
+          },
+          { type: 'decl', prop: 'font-variant-caps', value: 'small-caps' },
+        ],
+      };
+      expect(sortedTags(ruleFeatureTags(rule)), 'to equal', ['liga', 'smcp']);
+    });
   });
 
   describe('ruleFontFamily', function () {
@@ -182,6 +369,16 @@ describe('fontFeatureHelpers', function () {
       };
       expect(ruleFontFamily(rule), 'to equal', 'Roboto, sans-serif');
     });
+
+    it('should skip trailing non-font-family declarations', function () {
+      const rule = {
+        nodes: [
+          { type: 'decl', prop: 'font-family', value: 'Arial' },
+          { type: 'decl', prop: 'color', value: 'red' },
+        ],
+      };
+      expect(ruleFontFamily(rule), 'to equal', 'Arial');
+    });
   });
 
   describe('addTagsToMapEntry', function () {
@@ -195,6 +392,12 @@ describe('fontFeatureHelpers', function () {
       const map = new Map([['test', new Set(['a'])]]);
       addTagsToMapEntry(map, 'test', ['b', 'c']);
       expect(map.get('test'), 'to satisfy', new Set(['a', 'b', 'c']));
+    });
+
+    it('should preserve existing members when adding to an existing set', function () {
+      const map = new Map([['test', new Set(['a'])]]);
+      addTagsToMapEntry(map, 'test', ['b', 'c']);
+      expect(sortedTags(map.get('test')), 'to equal', ['a', 'b', 'c']);
     });
   });
 
@@ -248,6 +451,107 @@ describe('fontFeatureHelpers', function () {
       };
       const result = recordRuleFeatureTags(rule, null);
       expect(result, 'to be an', 'array');
+    });
+  });
+
+  describe('findFontFamiliesWithFeatureSettings', function () {
+    function makeStylesheet(rules) {
+      return {
+        asset: {
+          parseTree: {
+            walkRules(cb) {
+              for (const rule of rules) {
+                cb(rule);
+              }
+            },
+          },
+        },
+      };
+    }
+
+    const colorRule = {
+      nodes: [{ type: 'decl', prop: 'color', value: 'red' }],
+    };
+    const robotoRule = {
+      nodes: [
+        { type: 'decl', prop: 'font-family', value: 'Roboto' },
+        { type: 'decl', prop: 'font-variant-caps', value: 'small-caps' },
+      ],
+    };
+    const arialRule = {
+      nodes: [
+        { type: 'decl', prop: 'font-family', value: 'Arial' },
+        { type: 'decl', prop: 'font-feature-settings', value: '"liga" 1' },
+      ],
+    };
+    const globalRule = {
+      nodes: [{ type: 'decl', prop: 'font-feature-settings', value: '"dlig"' }],
+    };
+
+    it('should return null for entries without a usable parse tree', function () {
+      const result = findFontFamiliesWithFeatureSettings(
+        [{}, { asset: {} }, { asset: { parseTree: {} } }],
+        null
+      );
+      expect(result, 'to be null');
+    });
+
+    it('should collect lowercased families and skip non-feature rules', function () {
+      const result = findFontFamiliesWithFeatureSettings(
+        [makeStylesheet([colorRule, robotoRule])],
+        null
+      );
+      expect(result, 'to be a', Set);
+      expect(sortedTags(result), 'to equal', ['roboto']);
+    });
+
+    it('should accumulate families across rules', function () {
+      const result = findFontFamiliesWithFeatureSettings(
+        [makeStylesheet([robotoRule, arialRule])],
+        null
+      );
+      expect(sortedTags(result), 'to equal', ['arial', 'roboto']);
+    });
+
+    it('should return true for a feature rule without font-family', function () {
+      const result = findFontFamiliesWithFeatureSettings(
+        [makeStylesheet([globalRule])],
+        null
+      );
+      expect(result, 'to be true');
+    });
+
+    it('should keep recording tags into the map after seeing a global rule', function () {
+      const featureTagsByFamily = new Map();
+      const result = findFontFamiliesWithFeatureSettings(
+        [makeStylesheet([globalRule, robotoRule])],
+        featureTagsByFamily
+      );
+      expect(result, 'to be true');
+      expect(sortedTags(featureTagsByFamily.get('*')), 'to equal', ['dlig']);
+      expect(sortedTags(featureTagsByFamily.get('roboto')), 'to equal', [
+        'smcp',
+      ]);
+    });
+
+    it('should process every stylesheet', function () {
+      const result = findFontFamiliesWithFeatureSettings(
+        [makeStylesheet([robotoRule]), makeStylesheet([arialRule])],
+        null
+      );
+      expect(sortedTags(result), 'to equal', ['arial', 'roboto']);
+    });
+
+    it('should keep processing later stylesheets when a map is provided', function () {
+      const featureTagsByFamily = new Map();
+      const result = findFontFamiliesWithFeatureSettings(
+        [makeStylesheet([globalRule]), makeStylesheet([robotoRule])],
+        featureTagsByFamily
+      );
+      expect(result, 'to be true');
+      expect(sortedTags(featureTagsByFamily.get('roboto')), 'to equal', [
+        'smcp',
+      ]);
     });
   });
 
@@ -306,6 +610,33 @@ describe('fontFeatureHelpers', function () {
         featureTagsByFamily
       );
       expect(result.fontFeatureTags, 'to be undefined');
+    });
+
+    it('should collect exactly the union of wildcard and per-family tags', function () {
+      const featureTagsByFamily = new Map([
+        ['*', new Set(['liga'])],
+        ['roboto', new Set(['smcp', 'dlig'])],
+      ]);
+      const result = resolveFeatureSettings(
+        ['Roboto'],
+        true,
+        featureTagsByFamily
+      );
+      expect([...result.fontFeatureTags].sort(), 'to equal', [
+        'dlig',
+        'liga',
+        'smcp',
+      ]);
+    });
+
+    it('should pick up tags recorded only under the * wildcard', function () {
+      const featureTagsByFamily = new Map([['*', new Set(['liga'])]]);
+      const result = resolveFeatureSettings(
+        ['Roboto'],
+        true,
+        featureTagsByFamily
+      );
+      expect(result.fontFeatureTags, 'to equal', ['liga']);
     });
   });
 

@@ -1,8 +1,11 @@
 const expect = require('unexpected');
 const fs = require('fs');
 const pathModule = require('path');
+const proxyquire = require('proxyquire');
+const realFsPromises = require('fs/promises');
 const subsetFontWithGlyphs = require('../lib/subsetFontWithGlyphs');
 const getFontInfo = require('../lib/getFontInfo');
+const { MAX_POOL_SIZE } = require('../lib/concurrencyLimit');
 
 const ttfPath = pathModule.resolve(
   __dirname,
@@ -39,6 +42,60 @@ function findSfntTable(buf, tag) {
       const off = buf.readUInt32BE(o + 8);
       const len = buf.readUInt32BE(o + 12);
       return buf.slice(off, off + len);
+    }
+  }
+  return null;
+}
+
+// Append an extra table to an sfnt buffer, shifting the existing table
+// offsets by one directory entry. Checksums are left at zero — harfbuzz
+// does not verify them.
+function addSfntTable(buf, tag, data) {
+  const numTables = buf.readUInt16BE(4);
+  const newNumTables = numTables + 1;
+  const header = Buffer.alloc(12 + newNumTables * 16);
+  buf.copy(header, 0, 0, 12);
+  header.writeUInt16BE(newNumTables, 4);
+  let entrySelector = 0;
+  while (2 << entrySelector <= newNumTables) entrySelector++;
+  const searchRange = (1 << entrySelector) * 16;
+  header.writeUInt16BE(searchRange, 6);
+  header.writeUInt16BE(entrySelector, 8);
+  header.writeUInt16BE(newNumTables * 16 - searchRange, 10);
+  for (let i = 0; i < numTables; i++) {
+    const recordOffset = 12 + i * 16;
+    buf.copy(header, recordOffset, recordOffset, recordOffset + 16);
+    header.writeUInt32BE(
+      buf.readUInt32BE(recordOffset + 8) + 16,
+      recordOffset + 8
+    );
+  }
+  const body = buf.slice(12 + numTables * 16);
+  const newRecordOffset = 12 + numTables * 16;
+  header.write(tag, newRecordOffset, 'latin1');
+  header.writeUInt32BE(0, newRecordOffset + 4);
+  header.writeUInt32BE(header.length + body.length, newRecordOffset + 8);
+  header.writeUInt32BE(data.length, newRecordOffset + 12);
+  const padding = Buffer.alloc((4 - (data.length % 4)) % 4);
+  return Buffer.concat([header, body, data, padding]);
+}
+
+// Extract { min, def, max } of the wght axis from the fvar table, or null
+// when the table or the axis is absent.
+function wghtAxis(buf) {
+  const fvar = findSfntTable(buf, 'fvar');
+  if (!fvar) return null;
+  const axesOffset = fvar.readUInt16BE(4);
+  const axisCount = fvar.readUInt16BE(8);
+  const axisSize = fvar.readUInt16BE(10);
+  for (let i = 0; i < axisCount; i++) {
+    const off = axesOffset + i * axisSize;
+    if (fvar.slice(off, off + 4).toString('latin1') === 'wght') {
+      return {
+        min: fvar.readInt32BE(off + 4) / 65536,
+        def: fvar.readInt32BE(off + 8) / 65536,
+        max: fvar.readInt32BE(off + 12) / 65536,
+      };
     }
   }
   return null;
@@ -371,5 +428,207 @@ describe('subsetFontWithGlyphs', function () {
       expect(result, 'to be a', Buffer);
       expect(result.length, 'to be greater than', 0);
     }
+  });
+
+  it('should include the precomposed NFC form when given decomposed text', async function () {
+    // JetBrainsMono maps U+00E9 but not U+0301, so only the NFC expansion
+    // of the decomposed input can pull the precomposed codepoint in.
+    const ohmBuffer = fs.readFileSync(ohmFontPath);
+    const subsetBuf = await subsetFontWithGlyphs(ohmBuffer, 'e\u0301', {
+      targetFormat: 'truetype',
+    });
+    const { characterSet } = await getFontInfo(subsetBuf);
+    expect(characterSet, 'to contain', 0xe9);
+  });
+
+  it('should include the decomposed NFD form when given precomposed text', async function () {
+    // NFD of U+00E9 is U+0065 + U+0301; the base letter must end up in the
+    // subset's cmap even though the raw text never mentions it.
+    const ohmBuffer = fs.readFileSync(ohmFontPath);
+    const subsetBuf = await subsetFontWithGlyphs(ohmBuffer, '\u00e9', {
+      targetFormat: 'truetype',
+    });
+    const { characterSet } = await getFontInfo(subsetBuf);
+    expect(characterSet, 'to contain', 0x65);
+  });
+
+  it('should add the requested glyphIds to the subset', async function () {
+    const numGlyphs = (buf) => findSfntTable(buf, 'maxp').readUInt16BE(4);
+    const without = await subsetFontWithGlyphs(ttfBuffer, '', {
+      targetFormat: 'truetype',
+    });
+    const withGlyphIds = await subsetFontWithGlyphs(ttfBuffer, '', {
+      targetFormat: 'truetype',
+      glyphIds: [0, 1, 2, 3],
+    });
+    expect(numGlyphs(without), 'to equal', 1);
+    expect(numGlyphs(withGlyphIds), 'to equal', 4);
+  });
+
+  it('should retain more layout data for explicitly listed scripts than for an empty script list', async function () {
+    const text = 'The quick brown fox';
+    const noScripts = await subsetFontWithGlyphs(ttfBuffer, text, {
+      targetFormat: 'woff2',
+      featureTags: [],
+      scriptTags: [],
+    });
+    const latnOnly = await subsetFontWithGlyphs(ttfBuffer, text, {
+      targetFormat: 'woff2',
+      featureTags: [],
+      scriptTags: ['DFLT', 'latn'],
+    });
+    expect(latnOnly.length, 'to be greater than', noScripts.length);
+  });
+
+  it('should restrict the fvar wght axis to the requested range', async function () {
+    const result = await subsetFontWithGlyphs(variableFontBuffer, 'Hi', {
+      targetFormat: 'truetype',
+      variationAxes: { wght: { min: 300, max: 500 } },
+    });
+    // RobotoFlex ships wght 100..1000 with default 400; the default is
+    // preserved when not overridden.
+    expect(wghtAxis(result), 'to equal', { min: 300, def: 400, max: 500 });
+  });
+
+  it('should apply an explicit default when restricting an axis range', async function () {
+    const result = await subsetFontWithGlyphs(variableFontBuffer, 'Hi', {
+      targetFormat: 'truetype',
+      variationAxes: { wght: { min: 300, max: 500, default: 500 } },
+    });
+    expect(wghtAxis(result), 'to equal', { min: 300, def: 500, max: 500 });
+  });
+
+  it('should remove a pinned axis from fvar while keeping the other axes', async function () {
+    const result = await subsetFontWithGlyphs(variableFontBuffer, 'Hi', {
+      targetFormat: 'truetype',
+      variationAxes: { wght: 400 },
+    });
+    expect(findSfntTable(result, 'fvar'), 'not to be null');
+    expect(wghtAxis(result), 'to be null');
+  });
+
+  it('should ignore a null variation axis value', async function () {
+    const result = await subsetFontWithGlyphs(variableFontBuffer, 'Hi', {
+      targetFormat: 'truetype',
+      variationAxes: { wght: null },
+    });
+    // The axis is left untouched: RobotoFlex's full wght range survives.
+    expect(wghtAxis(result), 'to equal', { min: 100, def: 400, max: 1000 });
+  });
+
+  it('should throw when setting a range for an axis that does not exist in the font', async function () {
+    await expect(
+      subsetFontWithGlyphs(variableFontBuffer, 'A', {
+        targetFormat: 'truetype',
+        variationAxes: { ZZZZ: { min: 0, max: 1 } },
+      }),
+      'to be rejected with',
+      /Failed to set axis range for ZZZZ/
+    );
+  });
+
+  describe('with a font containing a corrupt MATH table', function () {
+    // A MATH table with null subtable offsets makes harfbuzz's subsetter
+    // fail — unless the table is added to the drop set, in which case it
+    // is never parsed at all.
+    let mathFontBuffer;
+    before(function () {
+      mathFontBuffer = addSfntTable(
+        ttfBuffer,
+        'MATH',
+        Buffer.from([0, 1, 0, 0, 0, 0, 0, 0, 0, 0])
+      );
+    });
+
+    it('should fail to subset when the MATH table is kept (the default)', async function () {
+      await expect(
+        subsetFontWithGlyphs(mathFontBuffer, 'A', {
+          targetFormat: 'truetype',
+        }),
+        'to be rejected with',
+        /hb_subset_or_fail returned zero/
+      );
+    });
+
+    it('should subset successfully when dropMathTable is given', async function () {
+      const result = await subsetFontWithGlyphs(mathFontBuffer, 'A', {
+        targetFormat: 'truetype',
+        dropMathTable: true,
+      });
+      expect(result.length, 'to be greater than', 0);
+      expect(listSfntTables(result).has('MATH'), 'to be false');
+    });
+  });
+
+  it('should serve more concurrent requests than the WASM pool size by queueing waiters', async function () {
+    const results = await Promise.all(
+      Array.from({ length: MAX_POOL_SIZE + 2 }, () =>
+        subsetFontWithGlyphs(ttfBuffer, 'Dak', { targetFormat: 'truetype' })
+      )
+    );
+    for (const result of results) {
+      expect(result, 'to be a', Buffer);
+      expect(result.length, 'to be greater than', 0);
+    }
+  });
+
+  it('should release WASM instances when subsetting fails, so later calls still get one', async function () {
+    // More failures than the pool has instances: if a failing call leaked
+    // its instance, the pool would be exhausted and the final call would
+    // hang waiting for an idle instance.
+    for (let i = 0; i < MAX_POOL_SIZE + 1; i++) {
+      await expect(
+        subsetFontWithGlyphs(ttfBuffer, 'A', {
+          targetFormat: 'truetype',
+          variationAxes: { ZZZZ: 100 },
+        }),
+        'to be rejected with',
+        /Failed to pin axis ZZZZ/
+      );
+    }
+    const result = await subsetFontWithGlyphs(ttfBuffer, 'Dak', {
+      targetFormat: 'truetype',
+    });
+    expect(result, 'to be a', Buffer);
+    expect(result.length, 'to be greater than', 0);
+  });
+
+  describe('WASM pool initialization', function () {
+    it('should recover after a failed module compile and then subset successfully', async function () {
+      // Load a fresh copy of the module (fresh pool state) whose first
+      // wasm read fails; the cached compile promise must be evicted so the
+      // retry can succeed.
+      let readFileCalls = 0;
+      const freshSubsetFontWithGlyphs = proxyquire.noPreserveCache()(
+        '../lib/subsetFontWithGlyphs',
+        {
+          'fs/promises': {
+            readFile(...args) {
+              readFileCalls += 1;
+              if (readFileCalls === 1) {
+                return Promise.reject(new Error('synthetic wasm read failure'));
+              }
+              return realFsPromises.readFile(...args);
+            },
+          },
+        }
+      );
+
+      await expect(
+        freshSubsetFontWithGlyphs.warmup(),
+        'to be rejected with',
+        'synthetic wasm read failure'
+      );
+
+      // The failure must not be sticky: warming up again re-reads the wasm.
+      await freshSubsetFontWithGlyphs.warmup();
+      expect(readFileCalls, 'to equal', 2);
+
+      const result = await freshSubsetFontWithGlyphs(ttfBuffer, 'Dak', {
+        targetFormat: 'truetype',
+      });
+      expect(result, 'to be a', Buffer);
+      expect(result.length, 'to be greater than', 0);
+    });
   });
 });

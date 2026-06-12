@@ -95,6 +95,9 @@ module.exports = [
       'puppeteer-browsers/',
       // Compiled TypeScript output — source lives under src/.
       'lib/',
+      // Mutation-testing artifacts (Stryker sandbox + reports).
+      '.stryker-tmp/',
+      'reports/',
     ],
   },
 ];

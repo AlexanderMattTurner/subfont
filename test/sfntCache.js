@@ -29,6 +29,41 @@ describe('sfntCache', function () {
     expect(result, 'to be', converted);
   });
 
+  it('should ask the worker for sfnt output and bypass fontverter.convert for woff2 input', async function () {
+    const buffer = Buffer.from('woff2-routing');
+    const workerConverted = Buffer.from('worker-converted');
+    const convertStub = sinon.stub().resolves(workerConverted);
+    const fontverterConvertStub = sinon
+      .stub()
+      .resolves(Buffer.from('fontverter-converted'));
+    const { toSfnt } = proxyquire('../lib/sfntCache', {
+      fontverter: {
+        detectFormat: sinon.stub().returns('woff2'),
+        convert: fontverterConvertStub,
+      },
+      './fontConverter': { convert: convertStub },
+    });
+
+    const result = await toSfnt(buffer);
+    expect(result, 'to be', workerConverted);
+    expect(fontverterConvertStub, 'was not called');
+    expect(convertStub, 'to have a call satisfying', [buffer, 'sfnt']);
+  });
+
+  it('should request sfnt output from the worker in the detectFormat fallback', async function () {
+    const buffer = Buffer.from('garbage-fallback-args');
+    const convertStub = sinon.stub().resolves(Buffer.from('converted'));
+    const { toSfnt } = proxyquire('../lib/sfntCache', {
+      fontverter: {
+        detectFormat: sinon.stub().throws(new Error('Unknown format')),
+      },
+      './fontConverter': { convert: convertStub },
+    });
+
+    await toSfnt(buffer);
+    expect(convertStub, 'to have a call satisfying', [buffer, 'sfnt']);
+  });
+
   it('should convert non-woff2 non-sfnt via fontverter directly', async function () {
     const buffer = Buffer.from('test');
     const converted = Buffer.from('converted');

@@ -10,6 +10,7 @@ const {
   uniqueCharsFromArray,
   hashHexPrefix,
   cssAssetIsEmpty,
+  getFontFaceDeclarationText,
   getFontFaceForFontUsage,
   getFontUsageStylesheet,
   getUnusedVariantsStylesheet,
@@ -87,6 +88,16 @@ describe('fontFaceHelpers', function () {
         expected: "'foo\\\\\\'bar'",
         desc: 'backslash followed by single quote (both escaped, in order)',
       },
+      {
+        input: '1-a',
+        expected: "'1-a'",
+        desc: 'digit followed by hyphenated identifier tail (anchored at start)',
+      },
+      {
+        input: '-a!',
+        expected: "'-a!'",
+        desc: 'hyphen-led identifier with trailing junk (anchored at end)',
+      },
     ].forEach(({ input, expected, desc }) => {
       it(`should handle ${desc}: ${JSON.stringify(input)}`, function () {
         expect(maybeCssQuote(input), 'to equal', expected);
@@ -162,6 +173,78 @@ describe('fontFaceHelpers', function () {
         expect(getPreferredFontUrl(relations), 'to equal', expected);
       });
     });
+
+    it('should skip relations with unknown format and type', function () {
+      expect(
+        getPreferredFontUrl([
+          { format: 'woff2', to: { url: 'b.woff2' } },
+          { format: 'svg', to: { url: 'a.svg', type: 'Svg' } },
+        ]),
+        'to equal',
+        'b.woff2'
+      );
+    });
+
+    it('should keep the first relation on a priority tie', function () {
+      expect(
+        getPreferredFontUrl([
+          { format: 'woff2', to: { url: 'first.woff2' } },
+          { format: 'woff2', to: { url: 'second.woff2' } },
+        ]),
+        'to equal',
+        'first.woff2'
+      );
+    });
+  });
+
+  describe('getFontFaceDeclarationText', function () {
+    it('should stringify the node with all relation hrefTypes set to absolute', function () {
+      const relations = [
+        { hrefType: 'relative' },
+        { hrefType: 'rootRelative' },
+      ];
+      const node = {
+        toString: () => relations.map((r) => r.hrefType).join('|'),
+      };
+
+      expect(
+        getFontFaceDeclarationText(node, relations),
+        'to equal',
+        'absolute|absolute'
+      );
+    });
+
+    it('should restore the original hrefTypes afterwards', function () {
+      const relations = [
+        { hrefType: 'relative' },
+        { hrefType: 'rootRelative' },
+      ];
+      const node = { toString: () => 'irrelevant' };
+
+      getFontFaceDeclarationText(node, relations);
+
+      expect(
+        relations.map((r) => r.hrefType),
+        'to equal',
+        ['relative', 'rootRelative']
+      );
+    });
+
+    it('should restore the original hrefTypes even when toString throws', function () {
+      const relations = [{ hrefType: 'relative' }];
+      const node = {
+        toString() {
+          throw new Error('boom');
+        },
+      };
+
+      expect(
+        () => getFontFaceDeclarationText(node, relations),
+        'to throw',
+        'boom'
+      );
+      expect(relations[0].hrefType, 'to equal', 'relative');
+    });
   });
 
   describe('getCodepoints', function () {
@@ -234,6 +317,28 @@ describe('fontFaceHelpers', function () {
       // [400, 400] fallback the old parseFloat-only path produced.
       expect(parseFontWeightRange('400 bold'), 'to equal', [400, 700]);
     });
+
+    it('should split tokens on runs of whitespace', function () {
+      expect(parseFontWeightRange('400  700'), 'to equal', [400, 700]);
+    });
+
+    it('should warn and fall back for three valid numeric tokens', function () {
+      const warned = [];
+      const result = parseFontWeightRange('100 200 300', (err) =>
+        warned.push(err.message)
+      );
+      expect(result, 'to equal', [400, 400]);
+      expect(warned, 'to have length', 1);
+    });
+
+    it('should warn and fall back when one of two tokens is not a weight', function () {
+      const warned = [];
+      const result = parseFontWeightRange('abc 700', (err) =>
+        warned.push(err.message)
+      );
+      expect(result, 'to equal', [400, 400]);
+      expect(warned, 'to have length', 1);
+    });
   });
 
   describe('parseFontStretchRange', function () {
@@ -267,6 +372,14 @@ describe('fontFaceHelpers', function () {
     it('should not warn when no callback is provided', function () {
       expect(() => parseFontStretchRange('foo bar baz'), 'not to throw');
     });
+
+    it('should split tokens on runs of whitespace', function () {
+      expect(parseFontStretchRange('75%  125%'), 'to equal', [75, 125]);
+    });
+
+    it('should resolve font-stretch keywords (e.g. "condensed" = 75%)', function () {
+      expect(parseFontStretchRange('condensed'), 'to equal', [75, 75]);
+    });
   });
 
   describe('uniqueChars', function () {
@@ -286,6 +399,11 @@ describe('fontFaceHelpers', function () {
       { input: ['abc', 'cde'], expected: 'abcde', desc: 'overlapping strings' },
       { input: [], expected: '', desc: 'empty array' },
       { input: ['', ''], expected: '', desc: 'array of empty strings' },
+      {
+        input: ['cba'],
+        expected: 'abc',
+        desc: 'unsorted input (sorted output)',
+      },
     ].forEach(({ input, expected, desc }) => {
       it(`should handle ${desc}`, function () {
         expect(uniqueCharsFromArray(input), 'to equal', expected);
@@ -352,6 +470,18 @@ describe('fontFaceHelpers', function () {
         expect(cssAssetIsEmpty({ parseTree: { nodes } }), 'to equal', expected);
       });
     });
+
+    it('should return true when the parse tree has no nodes property', function () {
+      expect(cssAssetIsEmpty({ parseTree: {} }), 'to equal', true);
+    });
+
+    it('should treat a comment without text as non-important', function () {
+      expect(
+        cssAssetIsEmpty({ parseTree: { nodes: [{ type: 'comment' }] } }),
+        'to equal',
+        true
+      );
+    });
   });
 
   describe('getFontFaceForFontUsage', function () {
@@ -415,6 +545,66 @@ describe('fontFaceHelpers', function () {
       };
       expect(getFontFaceForFontUsage(fontUsage), 'to contain', 'U+41-43');
     });
+
+    it('should emit sorted props and intersect used codepoints with the original character set', function () {
+      const fontUsage = {
+        // src deliberately listed first: the output must be sorted by prop
+        props: { src: 'url(x)', 'font-family': 'Test', 'font-weight': '400' },
+        subsets: { woff2: Buffer.from('ab') },
+        codepoints: { used: [65, 66, 67], original: [65, 66] },
+      };
+
+      expect(
+        getFontFaceForFontUsage(fontUsage),
+        'to equal',
+        '@font-face {\n' +
+          '  font-family: Test__subset;\n' +
+          '  font-weight: 400;\n' +
+          "  src: url(data:font/woff2;base64,YWI=) format('woff2');\n" +
+          '  unicode-range: U+41-42;\n' +
+          '}'
+      );
+    });
+
+    it('should keep the used codepoints when they do not overlap with the original character set', function () {
+      const fontUsage = {
+        props: { 'font-family': 'Test', src: 'url(x)' },
+        subsets: { woff2: Buffer.from('ab') },
+        codepoints: { used: [67], original: [65, 66] },
+      };
+
+      expect(getFontFaceForFontUsage(fontUsage), 'to contain', 'U+43');
+    });
+
+    it('should omit unicode-range when there are no codepoints', function () {
+      const fontUsage = {
+        props: { 'font-family': 'Test', src: 'url(x)' },
+        subsets: { woff2: Buffer.from('ab') },
+      };
+
+      expect(
+        getFontFaceForFontUsage(fontUsage),
+        'to equal',
+        '@font-face {\n' +
+          '  font-family: Test__subset;\n' +
+          "  src: url(data:font/woff2;base64,YWI=) format('woff2');\n" +
+          '}'
+      );
+    });
+
+    it('should separate multiple src formats with a comma and a space', function () {
+      const fontUsage = {
+        props: { 'font-family': 'Test', src: 'url(x)' },
+        subsets: { woff2: Buffer.from('ab'), woff: Buffer.from('cd') },
+        codepoints: { used: [65] },
+      };
+
+      expect(
+        getFontFaceForFontUsage(fontUsage),
+        'to contain',
+        "src: url(data:font/woff2;base64,YWI=) format('woff2'), url(data:font/woff;base64,Y2Q=) format('woff');"
+      );
+    });
   });
 
   describe('getFontUsageStylesheet', function () {
@@ -454,6 +644,28 @@ describe('fontFaceHelpers', function () {
         },
       ];
       expect(getFontUsageStylesheet(fontUsages), 'to equal', '');
+    });
+
+    it('should concatenate @font-face blocks without a separator', function () {
+      const fontUsages = [
+        {
+          props: { 'font-family': 'Arial', src: 'url(a.woff2)' },
+          subsets: { woff2: Buffer.from('data1') },
+          codepoints: { used: [65] },
+        },
+        {
+          props: { 'font-family': 'Times', src: 'url(b.woff2)' },
+          subsets: { woff2: Buffer.from('data2') },
+          codepoints: { used: [66] },
+        },
+      ];
+
+      expect(
+        getFontUsageStylesheet(fontUsages),
+        'to equal',
+        getFontFaceForFontUsage(fontUsages[0]) +
+          getFontFaceForFontUsage(fontUsages[1])
+      );
     });
   });
 
@@ -532,6 +744,182 @@ describe('fontFaceHelpers', function () {
       );
       // The font-family value must be quoted in CSS when it contains spaces
       expect(result, 'to contain', "'Open Sans__subset'");
+    });
+
+    it('should include a variant that differs only in font-weight', function () {
+      const result = getUnusedVariantsStylesheet(
+        [makeFontUsage('Arial', 'normal', '400')],
+        [makeDeclaration('Arial', 'normal', '700')]
+      );
+      expect(result, 'to contain', 'font-weight:700');
+    });
+
+    it('should include a variant that differs only in font-style', function () {
+      const result = getUnusedVariantsStylesheet(
+        [makeFontUsage('Arial', 'normal', '400')],
+        [makeDeclaration('Arial', 'italic', '400')]
+      );
+      expect(result, 'to contain', 'font-style:italic');
+    });
+
+    it('should include a variant that differs only in font-stretch', function () {
+      const decl = makeDeclaration('Arial', 'normal', '400');
+      decl['font-stretch'] = 'condensed';
+      const result = getUnusedVariantsStylesheet(
+        [makeFontUsage('Arial', 'normal', '400')],
+        [decl]
+      );
+      expect(result, 'to contain', 'font-stretch:condensed');
+    });
+
+    it('should include a variant whose font-family matches no used variant of a multi-family usage', function () {
+      const fontUsage = {
+        fontFamilies: new Set(['Arial', 'Helvetica']),
+        props: {
+          'font-family': 'arial',
+          'font-style': 'normal',
+          'font-weight': '400',
+          'font-stretch': 'normal',
+        },
+      };
+      const result = getUnusedVariantsStylesheet(
+        [fontUsage],
+        [makeDeclaration('Helvetica', 'normal', '400')]
+      );
+      expect(result, 'to contain', 'Helvetica__subset');
+    });
+
+    it('should include a variant when any (not all) font usages reference its family', function () {
+      const result = getUnusedVariantsStylesheet(
+        [
+          makeFontUsage('Other', 'normal', '400'),
+          makeFontUsage('Arial', 'normal', '400'),
+        ],
+        [makeDeclaration('Arial', 'italic', '700')]
+      );
+      expect(result, 'to contain', 'Arial__subset');
+    });
+
+    it('should exclude a variant when any (not all) font usages match it exactly', function () {
+      const result = getUnusedVariantsStylesheet(
+        [
+          makeFontUsage('Arial', 'normal', '400'),
+          makeFontUsage('Arial', 'italic', '700'),
+        ],
+        [makeDeclaration('Arial', 'italic', '700')]
+      );
+      expect(result, 'to equal', '');
+    });
+
+    it('should emit unicode-range and metric descriptors and pad missing relation URLs', function () {
+      const result = getUnusedVariantsStylesheet(
+        [makeFontUsage('Arial', 'normal', '400')],
+        [
+          makeDeclaration('Arial', 'italic', '700', {
+            src: "url('a.woff2') format('woff2'), url('b.woff') format('woff')",
+            relations: [
+              {
+                to: { url: 'https://x/real.woff2' },
+                tokenRegExp: /url\([^)]+\)/g,
+              },
+            ],
+          }),
+        ].map((decl) =>
+          Object.assign(decl, {
+            'unicode-range': 'U+0-7F',
+            'size-adjust': '105%',
+            'ascent-override': '90%',
+            'descent-override': '20%',
+            'line-gap-override': '0%',
+          })
+        )
+      );
+
+      expect(
+        result,
+        'to equal',
+        '@font-face{font-family:Arial__subset;font-stretch:normal;' +
+          'font-style:italic;font-weight:700;' +
+          "src:url('https://x/real.woff2') format('woff2'), url('') format('woff');" +
+          'unicode-range:U+0-7F;size-adjust:105%;ascent-override:90%;' +
+          'descent-override:20%;line-gap-override:0%}'
+      );
+    });
+
+    it('should rewrite multiple src tokens with the relation URLs in order', function () {
+      const result = getUnusedVariantsStylesheet(
+        [makeFontUsage('Arial', 'normal', '400')],
+        [
+          makeDeclaration('Arial', 'italic', '700', {
+            src: "url('a.woff2') format('woff2'), url('b.woff') format('woff')",
+            relations: [
+              {
+                to: { url: 'https://x/first.woff2' },
+                tokenRegExp: /url\([^)]+\)/g,
+              },
+              { to: { url: 'https://x/second.woff' } },
+            ],
+          }),
+        ]
+      );
+
+      expect(
+        result,
+        'to contain',
+        "src:url('https://x/first.woff2') format('woff2'), " +
+          "url('https://x/second.woff') format('woff')"
+      );
+    });
+
+    it('should emit an empty src for declarations without src', function () {
+      const decl = makeDeclaration('Arial', 'italic', '700');
+      delete decl.src;
+      const result = getUnusedVariantsStylesheet(
+        [makeFontUsage('Arial', 'normal', '400')],
+        [decl]
+      );
+
+      expect(
+        result,
+        'to equal',
+        '@font-face{font-family:Arial__subset;font-stretch:normal;' +
+          'font-style:italic;font-weight:700;src:}'
+      );
+    });
+
+    it('should not rewrite src when the relations have no tokenRegExp', function () {
+      // The src deliberately contains the literal text "undefined" to prove
+      // that no replacement pass runs when tokenRegExp is missing.
+      const result = getUnusedVariantsStylesheet(
+        [makeFontUsage('Arial', 'normal', '400')],
+        [
+          makeDeclaration('Arial', 'italic', '700', {
+            src: "url('undefined.woff2')",
+            relations: [{ to: { url: 'https://x/real.woff2' } }],
+          }),
+        ]
+      );
+
+      expect(result, 'to contain', "src:url('undefined.woff2')}");
+    });
+
+    it('should concatenate multiple unused variants without a separator', function () {
+      const result = getUnusedVariantsStylesheet(
+        [makeFontUsage('Arial', 'normal', '400')],
+        [
+          makeDeclaration('Arial', 'italic', '700'),
+          makeDeclaration('Arial', 'oblique', '900'),
+        ]
+      );
+
+      expect(
+        result,
+        'to equal',
+        '@font-face{font-family:Arial__subset;font-stretch:normal;' +
+          "font-style:italic;font-weight:700;src:url('font.woff2') format('woff2')}" +
+          '@font-face{font-family:Arial__subset;font-stretch:normal;' +
+          "font-style:oblique;font-weight:900;src:url('font.woff2') format('woff2')}"
+      );
     });
   });
 });
