@@ -1691,6 +1691,10 @@ async function subsetFonts(
 
   const { pages, fontFaceDeclarationsByHtmlOrSvgAsset } =
     await runCollectAndPrepPagesPhase(preCtx);
+  // Tracing honors the signal by stopping early and returning partial
+  // results; surface that as a rejection so a cancelled run doesn't go on to
+  // subset and emit output built from incomplete data.
+  signal?.throwIfAborted();
   const ctx: SubsetCtx = {
     ...preCtx,
     pages,
@@ -1711,6 +1715,11 @@ async function subsetFonts(
   }
 
   await runSubsetPhase(ctx);
+  // Per-font subset failures (including aborts) are caught and downgraded to
+  // warnings so one bad font can't fail an entire run. That means an abort
+  // mid-subset leaves null results rather than throwing, so re-check here to
+  // turn a cancelled run into a clean rejection before inserting/writing.
+  ctx.signal?.throwIfAborted();
 
   const insertPhase = trackPhase(`insert subsets loop (${pages.length} pages)`);
   const { numFontUsagesWithSubset } = await insertSubsets({

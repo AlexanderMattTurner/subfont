@@ -123,6 +123,25 @@ const assetGraph = await subfont(
 
 The package ships CommonJS with TypeScript declarations (`subfont.d.ts`). Returns the [Assetgraph](https://github.com/assetgraph/assetgraph) instance.
 
+Long runs can be cancelled with an `AbortSignal` (e.g. a timeout budget in CI):
+
+```js
+const controller = new AbortController();
+setTimeout(
+  () => controller.abort(new Error('subfont budget exceeded')),
+  600000
+);
+
+await subfont(
+  {
+    inputFiles: ['path/to/index.html'],
+    inPlace: true,
+    signal: controller.signal,
+  },
+  console
+);
+```
+
 ### Parameters
 
 `subfont(options, console)` — the second argument is an optional logger (anything
@@ -153,6 +172,7 @@ The `options` object accepts the following keys:
 | `strict`        | `boolean`           | `false`  | Resolve with a non-zero exit (via the CLI) if any warnings are emitted.                                                                    |
 | `silent`        | `boolean`           | `false`  | Suppress all log output to `console`.                                                                                                      |
 | `debug`         | `boolean`           | `false`  | Emit verbose timing and glyph-detection info.                                                                                              |
+| `signal`        | `AbortSignal`       | —        | Abort the run early. Cancels in-flight font tracing and subsetting; the returned promise rejects with the signal's reason.                 |
 
 ## License
 
