@@ -154,22 +154,39 @@ async function initPool(): Promise<void> {
 const _waiters: Array<(inst: PoolInstance) => void> = [];
 const ACQUIRE_TIMEOUT_MS = 120_000;
 
-async function acquireInstance(): Promise<PoolInstance> {
+async function acquireInstance(signal?: AbortSignal): Promise<PoolInstance> {
+  // throwIfAborted() rejects with signal.reason verbatim, matching how the
+  // worker pools (piscinaRunWithTimeout) and the subsetFonts/subfont phase
+  // checks surface a cancellation, so the reason a caller sees is the same
+  // no matter which layer first observes the abort.
+  signal?.throwIfAborted();
   await initPool();
+  // initPool yields to the microtask queue; the caller may have aborted
+  // while WASM compilation was in flight.
+  signal?.throwIfAborted();
   const idle = _pool.find((inst) => !inst.busy);
   if (idle) {
     idle.busy = true;
     return idle;
   }
-  // All instances busy — wait for one to be released.
+  // All instances busy — wait for one to be released, the watchdog to
+  // elapse, or the caller's signal to abort.
   return new Promise<PoolInstance>((resolve, reject) => {
-    const entry = (inst: PoolInstance) => {
+    const removeWaiter = () => {
+      const idx = _waiters.indexOf(entry);
+      if (idx !== -1) _waiters.splice(idx, 1);
+    };
+    const cleanup = () => {
       clearTimeout(timer);
+      if (abortListener) signal?.removeEventListener('abort', abortListener);
+    };
+    const entry = (inst: PoolInstance) => {
+      cleanup();
       resolve(inst);
     };
     const timer = setTimeout(() => {
-      const idx = _waiters.indexOf(entry);
-      if (idx !== -1) _waiters.splice(idx, 1);
+      removeWaiter();
+      cleanup();
       reject(
         new Error(
           `Timed out waiting for a WASM subsetting instance after ${ACQUIRE_TIMEOUT_MS}ms`
@@ -177,6 +194,18 @@ async function acquireInstance(): Promise<PoolInstance> {
       );
     }, ACQUIRE_TIMEOUT_MS);
     timer.unref();
+    let abortListener: (() => void) | undefined;
+    if (signal) {
+      abortListener = () => {
+        // Drop ourselves from the queue so a later releaseInstance never
+        // hands an instance to an abandoned waiter (which would mark it busy
+        // forever and leak it from the pool).
+        removeWaiter();
+        cleanup();
+        reject(signal.reason);
+      };
+      signal.addEventListener('abort', abortListener, { once: true });
+    }
     _waiters.push(entry);
   });
 }
@@ -485,6 +514,11 @@ interface SubsetFontWithGlyphsFn {
     options?: SubsetFontWithGlyphsOptions
   ): Promise<Buffer>;
   warmup(): Promise<void>;
+  // Test-only handles on the WASM instance pool, mirroring the `_`-prefixed
+  // internal exports used elsewhere (e.g. _SubsetDiskCache) for white-box
+  // tests of the acquire/release/abort machinery.
+  _acquireInstance(signal?: AbortSignal): Promise<PoolInstance>;
+  _releaseInstance(inst: PoolInstance): void;
 }
 
 async function subsetFontWithGlyphs(
@@ -501,12 +535,15 @@ async function subsetFontWithGlyphs(
     signal,
   }: SubsetFontWithGlyphsOptions = {}
 ): Promise<Buffer> {
+  // Bail out before any work if the caller has already cancelled.
+  signal?.throwIfAborted();
+
   // Reuse cached sfnt conversion when available (same buffer may have
   // been converted by getFontInfo or collectFeatureGlyphIds already).
   // sfntCache routes woff2 decompression through the worker pool.
   const ttf = await toSfnt(originalFont);
 
-  const inst = await acquireInstance();
+  const inst = await acquireInstance(signal);
   const { exports } = inst;
   let released = false;
   try {
@@ -568,11 +605,15 @@ async function subsetFontWithGlyphs(
     // Route woff2 compression to a worker thread (each spawns its own
     // wawoff2 WASM instance).  Non-woff2 formats use JS-based converters
     // that are safe to call concurrently in the main thread.
-    return targetFormat === 'woff2'
-      ? convertInWorker(subsetFont as Buffer, targetFormat, 'truetype', {
-          signal,
-        })
-      : fontverter.convert(subsetFont as Buffer, targetFormat, 'truetype');
+    if (targetFormat === 'woff2') {
+      return convertInWorker(subsetFont as Buffer, targetFormat, 'truetype', {
+        signal,
+      });
+    }
+    // The synchronous JS converters don't take a signal; honor cancellation
+    // explicitly so an abort during subsetting isn't ignored on this path.
+    signal?.throwIfAborted();
+    return fontverter.convert(subsetFont as Buffer, targetFormat, 'truetype');
   } finally {
     if (!released) releaseInstance(inst);
   }
@@ -580,5 +621,9 @@ async function subsetFontWithGlyphs(
 
 // Pre-warm the WASM pool: call early to overlap compilation with other work.
 (subsetFontWithGlyphs as SubsetFontWithGlyphsFn).warmup = () => initPool();
+(subsetFontWithGlyphs as SubsetFontWithGlyphsFn)._acquireInstance =
+  acquireInstance;
+(subsetFontWithGlyphs as SubsetFontWithGlyphsFn)._releaseInstance =
+  releaseInstance;
 
 export = subsetFontWithGlyphs as SubsetFontWithGlyphsFn;

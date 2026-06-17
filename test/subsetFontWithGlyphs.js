@@ -417,6 +417,134 @@ describe('subsetFontWithGlyphs', function () {
     );
   });
 
+  it('should reject the truetype path when given an already-aborted signal', async function () {
+    // The JS converter used for non-woff2 output takes no signal, so the
+    // abort must be honored explicitly rather than ignored on this path.
+    const controller = new AbortController();
+    controller.abort(new Error('cancelled before run'));
+
+    await expect(
+      subsetFontWithGlyphs(ttfBuffer, 'Hello', {
+        targetFormat: 'truetype',
+        signal: controller.signal,
+      }),
+      'to be rejected'
+    );
+  });
+
+  it('should surface the abort reason verbatim when it is an Error', async function () {
+    const controller = new AbortController();
+    const reason = new Error('caller went away');
+    controller.abort(reason);
+
+    await expect(
+      subsetFontWithGlyphs(ttfBuffer, 'Hello', {
+        targetFormat: 'truetype',
+        signal: controller.signal,
+      }),
+      'to be rejected with',
+      reason
+    );
+  });
+
+  describe('WASM instance pool acquire/abort', function () {
+    // White-box tests of the acquire/release/abort machinery. Driving this
+    // through full subsets is racy because the WASM work releases instances
+    // far too quickly to keep the pool saturated, so we exercise the pool
+    // primitives directly. The pool is process-global, so every test here
+    // releases everything it acquired in a finally block.
+    async function drainPool() {
+      // Warm the pool first so initPool()'s one-time WASM compile/instantiate
+      // is already resolved. Otherwise the very first acquire would await that
+      // (slow) work and lose the setImmediate race below, making us
+      // misclassify an idle pool as saturated and acquire nothing.
+      await subsetFontWithGlyphs.warmup();
+      const held = [];
+      try {
+        // MAX_POOL_SIZE is the cap; the real pool is min(cpus, MAX_POOL_SIZE).
+        // Keep acquiring until the next acquire has to wait — at that point
+        // the pool is fully saturated. With the pool warmed, an idle acquire
+        // resolves on a microtask and beats setImmediate, while a queued one
+        // stays pending and loses, so the classification is deterministic.
+        // Each acquire carries its own signal so the one that queues can be
+        // cancelled cleanly instead of dangling.
+        for (let i = 0; i < MAX_POOL_SIZE; i++) {
+          const controller = new AbortController();
+          const racer = subsetFontWithGlyphs._acquireInstance(
+            controller.signal
+          );
+          const sentinel = Symbol('pending');
+          const winner = await Promise.race([
+            racer.then(
+              (inst) => inst,
+              () => sentinel
+            ),
+            new Promise((resolve) => setImmediate(() => resolve(sentinel))),
+          ]);
+          if (winner === sentinel) {
+            // Genuinely pending ⟹ queued ⟹ pool drained. Cancel it and stop.
+            controller.abort(new Error('drain helper: pool already full'));
+            await racer.catch(() => {});
+            break;
+          }
+          held.push(winner);
+        }
+      } catch (err) {
+        // Never strand acquired instances in the process-global pool if the
+        // drain throws partway through.
+        for (const inst of held) subsetFontWithGlyphs._releaseInstance(inst);
+        throw err;
+      }
+      return held;
+    }
+
+    it('rejects promptly (not after the 120s watchdog) when a queued waiter is aborted', async function () {
+      const held = await drainPool();
+      try {
+        const controller = new AbortController();
+        const waiting = subsetFontWithGlyphs._acquireInstance(
+          controller.signal
+        );
+        const reason = new Error('cancelled while queued');
+        setImmediate(() => controller.abort(reason));
+
+        const start = Date.now();
+        await expect(waiting, 'to be rejected with', reason);
+        expect(Date.now() - start, 'to be less than', 5000);
+      } finally {
+        for (const inst of held) subsetFontWithGlyphs._releaseInstance(inst);
+      }
+    });
+
+    it('does not strand an instance after a queued waiter is aborted', async function () {
+      const held = await drainPool();
+      let extra;
+      try {
+        // Park a waiter, abort it, then release one instance. If the aborted
+        // waiter were still in the queue it would grab the released instance
+        // and mark it permanently busy; instead a fresh acquire must succeed.
+        const controller = new AbortController();
+        const waiting = subsetFontWithGlyphs._acquireInstance(
+          controller.signal
+        );
+        setImmediate(() => controller.abort(new Error('cancelled')));
+        await expect(waiting, 'to be rejected');
+
+        const released = held.pop();
+        subsetFontWithGlyphs._releaseInstance(released);
+        extra = await subsetFontWithGlyphs._acquireInstance();
+        // With every other instance held, the only idle one is the instance
+        // we just released. Getting it back proves the aborted waiter did not
+        // grab and strand it; if it had, this acquire would have queued and
+        // hung instead.
+        expect(extra, 'to be', released);
+      } finally {
+        if (extra) subsetFontWithGlyphs._releaseInstance(extra);
+        for (const inst of held) subsetFontWithGlyphs._releaseInstance(inst);
+      }
+    });
+  });
+
   it('should handle concurrent calls via worker pool', async function () {
     const results = await Promise.all([
       subsetFontWithGlyphs(ttfBuffer, 'A', { targetFormat: 'woff2' }),

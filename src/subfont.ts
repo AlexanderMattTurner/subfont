@@ -62,6 +62,8 @@ interface SubfontOptions {
   cache?: boolean | string;
   /** Exit non-zero if any warnings are emitted. */
   strict?: boolean;
+  /** Abort the run early. Cancels in-flight font tracing and subsetting. */
+  signal?: AbortSignal;
 }
 
 interface SubfontFn {
@@ -716,6 +718,7 @@ const subfont = async function subfont(
     chromeFlags = [],
     cache = false,
     strict = false,
+    signal,
   }: SubfontOptions,
   console?: Console
 ): Promise<InstanceType<typeof AssetGraph>> {
@@ -777,15 +780,20 @@ const subfont = async function subfont(
   const trackPhase = makePhaseTracker({ log }, debug);
 
   try {
+    // Bail before any crawling/IO if the caller already cancelled.
+    signal?.throwIfAborted();
+
     const loadAssetsPhase = trackPhase('loadAssets');
     await assetGraph.loadAssets(inputUrls);
     outerTimings.loadAssets = loadAssetsPhase.end();
+    signal?.throwIfAborted();
 
     const populatePhase = trackPhase('populate (initial)');
     await assetGraph.populate({
       followRelations: buildFollowRelationsQuery(recursive),
     });
     outerTimings['populate (initial)'] = populatePhase.end();
+    signal?.throwIfAborted();
 
     handleInitialRedirects(assetGraph);
 
@@ -822,8 +830,11 @@ const subfont = async function subfont(
       concurrency,
       chromeArgs: chromeFlags,
       cacheDir,
+      signal,
     });
     const subsetFontsTotal = subsetPhase.end();
+    // Don't post-process or write output for a run that was cancelled.
+    signal?.throwIfAborted();
 
     const postProcessingPhase = trackPhase('post-subsetFonts processing');
     let sumSizesAfter = 0;

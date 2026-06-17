@@ -1691,6 +1691,11 @@ async function subsetFonts(
 
   const { pages, fontFaceDeclarationsByHtmlOrSvgAsset } =
     await runCollectAndPrepPagesPhase(preCtx);
+  // The worker trace path rethrows on abort, but the dynamic (headless
+  // browser) path stops early and leaves partial results instead. Re-check
+  // here so a cancelled dynamic run rejects rather than subsetting and
+  // emitting output built from incomplete data.
+  signal?.throwIfAborted();
   const ctx: SubsetCtx = {
     ...preCtx,
     pages,
@@ -1711,6 +1716,11 @@ async function subsetFonts(
   }
 
   await runSubsetPhase(ctx);
+  // Per-font subset failures (including aborts) are caught and downgraded to
+  // warnings so one bad font can't fail an entire run. That means an abort
+  // mid-subset leaves null results rather than throwing, so re-check here to
+  // turn a cancelled run into a clean rejection before inserting/writing.
+  ctx.signal?.throwIfAborted();
 
   const insertPhase = trackPhase(`insert subsets loop (${pages.length} pages)`);
   const { numFontUsagesWithSubset } = await insertSubsets({
