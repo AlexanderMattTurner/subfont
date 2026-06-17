@@ -775,4 +775,435 @@ describe('getCssRulesByProperty', function () {
       });
     });
   });
+
+  describe('@namespace parsing edge cases', function () {
+    it('should throw for params with junk before url(...)', function () {
+      expect(
+        function () {
+          getRules(['color'], '@namespace xurl(foo); h1 { color: red }', []);
+        },
+        'to throw',
+        /Cannot parse CSS namespace/
+      );
+    });
+
+    it('should throw for params with junk after url(...)', function () {
+      expect(
+        function () {
+          getRules(['color'], '@namespace url(foo)x; h1 { color: red }', []);
+        },
+        'to throw',
+        /Cannot parse CSS namespace/
+      );
+    });
+
+    it('should ignore an @namespace rule with empty params', function () {
+      const result = getRules(['color'], '@namespace; h1 { color: red }', []);
+
+      expect(result, 'to satisfy', {
+        color: [
+          {
+            selector: 'h1',
+            namespaceURI: undefined,
+          },
+        ],
+      });
+    });
+  });
+
+  describe('namespace resolution with combinators and wildcards', function () {
+    it('should return the default namespace for *| selectors when no prefixes are declared', function () {
+      const result = getRules(
+        ['color'],
+        '@namespace "def"; *|div { color: red }',
+        []
+      );
+
+      expect(result, 'to satisfy', {
+        color: [{ namespaceURI: 'def' }],
+      });
+    });
+
+    it('should return undefined for *| selectors even when a default namespace is declared alongside prefixes', function () {
+      const result = getRules(
+        ['color'],
+        '@namespace "def"; @namespace svg "http://www.w3.org/2000/svg"; *|div { color: red }',
+        []
+      );
+
+      expect(result, 'to satisfy', {
+        color: [{ namespaceURI: undefined }],
+      });
+    });
+
+    it('should resolve the subject namespace across a child combinator without spaces', function () {
+      const result = getRules(
+        ['font-family'],
+        '@namespace svg "http://www.w3.org/2000/svg"; a>svg|text { font-family: serif }',
+        []
+      );
+
+      expect(result, 'to satisfy', {
+        'font-family': [
+          { namespaceURI: 'http://www.w3.org/2000/svg', value: 'serif' },
+        ],
+      });
+    });
+  });
+
+  describe('rule fingerprinting', function () {
+    it('should not merge rules whose concatenated fields collide without a field delimiter', function () {
+      // Without the \0 delimiter between fingerprint fields,
+      // 'h1' + 'red' and 'h1r' + 'ed' produce identical fingerprints.
+      const result = getRules(
+        ['color'],
+        'h1 { color: red } h1r { color: ed }',
+        []
+      );
+
+      expect(result.color, 'to have length', 2);
+      expect(result.color[0], 'to satisfy', { selector: 'h1', value: 'red' });
+      expect(result.color[1], 'to satisfy', { selector: 'h1r', value: 'ed' });
+    });
+
+    it('should not merge rules whose predicate entries collide without an entry delimiter', function () {
+      // Without the & delimiter between predicate entries, the nested
+      // @media a { @media b } predicates concatenate to the same string as
+      // the single weird media query below.
+      const result = getRules(
+        ['color'],
+        '@media a { @media b { h1 { color: red } } } @media a=truemediaQuery:b { h1 { color: red } }',
+        {}
+      );
+
+      expect(result.color, 'to have length', 2);
+    });
+
+    it('should merge rules with the same predicates added in different order', function () {
+      const result = getRules(
+        ['color'],
+        '@media a { @media b { h1 { color: red } } } @media b { @media a { h1 { color: red } } }',
+        {}
+      );
+
+      expect(result.color, 'to have length', 1);
+    });
+
+    it('should not deduplicate counterStyles entries', function () {
+      const result = getRules(
+        ['color'],
+        '@counter-style thumbs { system: cyclic; } @counter-style thumbs { system: cyclic; }',
+        {}
+      );
+
+      expect(result.counterStyles, 'to have length', 2);
+    });
+
+    it('should not deduplicate keyframes entries', function () {
+      const result = getRules(
+        ['color'],
+        '@keyframes spin { from { top: 0 } } @keyframes spin { from { top: 0 } }',
+        {}
+      );
+
+      expect(result.keyframes, 'to have length', 2);
+    });
+  });
+
+  describe('predicate object reuse', function () {
+    it('should reuse the initial predicates object when no media/supports query is active', function () {
+      // Sharing the object (rather than copying it per rule) is a deliberate
+      // memory optimization for the common no-at-rule case.
+      const existingPredicates = { 'mediaQuery:screen': true };
+      const result = getRules(
+        ['color'],
+        'h1 { color: red }',
+        existingPredicates
+      );
+
+      expect(result.color[0].predicates, 'to be', existingPredicates);
+    });
+  });
+
+  describe('shorthand font-property edge cases', function () {
+    it('should handle inline style (bogusselector) for the font shorthand', function () {
+      const result = getRules(
+        ['font-family'],
+        'bogusselector { font: 15px serif; }',
+        {}
+      );
+
+      expect(result['font-family'], 'to have length', 1);
+      expect(result['font-family'][0], 'to satisfy', {
+        selector: undefined,
+        specificityArray: [1, 0, 0, 0],
+        prop: 'font',
+        value: '15px serif',
+      });
+    });
+
+    it('should trim selectors in comma-separated selector lists', function () {
+      const result = getRules(
+        ['font-family'],
+        'h1 , h2 { font: 15px serif; }',
+        {}
+      );
+
+      expect(
+        result['font-family'].map((entry) => entry.selector),
+        'to equal',
+        ['h1', 'h2']
+      );
+    });
+
+    it('should not register font longhands for unrelated properties', function () {
+      const result = getRules(['font-family'], 'h1 { bogus: 12px serif; }', {});
+
+      expect(result['font-family'], 'to be empty');
+    });
+  });
+
+  describe('list-style shorthand edge cases', function () {
+    it('should prefer the counter keyword over other words in the shorthand', function () {
+      const result = getRules(
+        ['list-style-type'],
+        'ul { list-style: square inside; }',
+        {}
+      );
+
+      expect(result['list-style-type'], 'to have length', 1);
+      expect(result['list-style-type'][0].value, 'to equal', 'square');
+    });
+
+    it('should not register a rule when the shorthand contains no list-style-type', function () {
+      const result = getRules(
+        ['list-style-type'],
+        'ul { list-style: inside; }',
+        {}
+      );
+
+      expect(result['list-style-type'], 'to be empty');
+    });
+
+    it('should not treat function tokens as counter keywords', function () {
+      const result = getRules(
+        ['list-style-type'],
+        'ul { list-style: none(1); }',
+        {}
+      );
+
+      expect(result['list-style-type'], 'to be empty');
+    });
+
+    it('should not route unrelated declarations through the list-style handler', function () {
+      const result = getRules(
+        ['list-style-type'],
+        'h1 { whatever: square; }',
+        {}
+      );
+
+      expect(result['list-style-type'], 'to be empty');
+    });
+  });
+
+  describe('animation shorthand gating', function () {
+    it('should not register animation-timing-function when only animation-name is requested', function () {
+      const result = getRules(
+        ['animation-name'],
+        'h1 { animation: 2s ease slidein; }',
+        {}
+      );
+
+      expect(Object.keys(result).sort(), 'to equal', [
+        'animation-name',
+        'counterStyles',
+        'keyframes',
+      ]);
+    });
+
+    it('should not register animation-name when only animation-timing-function is requested', function () {
+      const result = getRules(
+        ['animation-timing-function'],
+        'h1 { animation: 2s ease slidein; }',
+        {}
+      );
+
+      expect(Object.keys(result).sort(), 'to equal', [
+        'animation-timing-function',
+        'counterStyles',
+        'keyframes',
+      ]);
+      expect(result['animation-timing-function'][0].value, 'to equal', 'ease');
+    });
+  });
+
+  describe('transition shorthand edge cases', function () {
+    it('should not treat a slash divider as an item separator', function () {
+      const result = getRules(
+        ['transition-property', 'transition-duration'],
+        'h1 { transition: opacity 0.5s / 1s; }',
+        {}
+      );
+
+      expect(result['transition-property'][0].value, 'to equal', 'opacity');
+      expect(result['transition-duration'][0].value, 'to equal', '0.5s');
+    });
+
+    it('should skip empty items produced by consecutive commas', function () {
+      const result = getRules(
+        ['transition-property', 'transition-duration'],
+        'h1 { transition: opacity 0.5s,,color 2s; }',
+        {}
+      );
+
+      expect(
+        result['transition-property'][0].value,
+        'to equal',
+        'opacity, color'
+      );
+      expect(result['transition-duration'][0].value, 'to equal', '0.5s, 2s');
+    });
+
+    it('should skip an empty trailing item after a trailing comma', function () {
+      const result = getRules(
+        ['transition-property', 'transition-duration'],
+        'h1 { transition: opacity 0.5s,; }',
+        {}
+      );
+
+      expect(result['transition-property'][0].value, 'to equal', 'opacity');
+      expect(result['transition-duration'][0].value, 'to equal', '0.5s');
+    });
+
+    it('should omit durations for items that only specify a property', function () {
+      const result = getRules(
+        ['transition-property', 'transition-duration'],
+        'h1 { transition: opacity, color 2s; }',
+        {}
+      );
+
+      expect(
+        result['transition-property'][0].value,
+        'to equal',
+        'opacity, color'
+      );
+      expect(result['transition-duration'][0].value, 'to equal', '2s');
+    });
+
+    it('should omit the duration of a trailing item that only specifies a property', function () {
+      const result = getRules(
+        ['transition-property', 'transition-duration'],
+        'h1 { transition: opacity 0.5s, color; }',
+        {}
+      );
+
+      expect(
+        result['transition-property'][0].value,
+        'to equal',
+        'opacity, color'
+      );
+      expect(result['transition-duration'][0].value, 'to equal', '0.5s');
+    });
+
+    it('should not register transition-property when only transition-duration is requested', function () {
+      const result = getRules(
+        ['transition-duration'],
+        'h1 { transition: opacity 0.5s; }',
+        {}
+      );
+
+      expect(Object.keys(result).sort(), 'to equal', [
+        'counterStyles',
+        'keyframes',
+        'transition-duration',
+      ]);
+    });
+
+    it('should not register transition-duration when only transition-property is requested', function () {
+      const result = getRules(
+        ['transition-property'],
+        'h1 { transition: opacity 0.5s; }',
+        {}
+      );
+
+      expect(Object.keys(result).sort(), 'to equal', [
+        'counterStyles',
+        'keyframes',
+        'transition-property',
+      ]);
+    });
+  });
+
+  describe('custom property detection', function () {
+    it('should not treat properties with -- in the middle as custom properties', function () {
+      const result = getRules(['color'], 'h1 { FOO--BAR: baz; }', {});
+
+      expect(result, 'to exhaustively satisfy', {
+        counterStyles: [],
+        keyframes: [],
+        color: [],
+      });
+    });
+  });
+
+  describe('@counter-style traversal', function () {
+    it('should only collect decl children as props', function () {
+      const result = getRules(
+        ['color'],
+        '@counter-style thumbs { /* a comment */ system: cyclic; }',
+        {}
+      );
+
+      expect(result.counterStyles, 'to have length', 1);
+      expect(result.counterStyles[0].props, 'to exhaustively satisfy', {
+        system: 'cyclic',
+      });
+    });
+  });
+
+  describe('node traversal', function () {
+    it('should ignore declarations directly inside @font-face', function () {
+      const result = getRules(
+        ['font-family'],
+        '@font-face { font-family: foo; src: url(x.woff2); }',
+        {}
+      );
+
+      expect(result['font-family'], 'to be empty');
+    });
+
+    it('should ignore comments inside rules', function () {
+      const result = getRules(['color'], 'h1 { /* hi */ color: red; }', {});
+
+      expect(result.color, 'to have length', 1);
+      expect(result.color[0].value, 'to equal', 'red');
+    });
+
+    it('should not add predicates for non-media/supports at-rules', function () {
+      const result = getRules(
+        ['color'],
+        '@layer base { h1 { color: red } }',
+        {}
+      );
+
+      expect(result.color, 'to have length', 1);
+      expect(result.color[0].predicates, 'to exhaustively satisfy', {});
+    });
+
+    it('should keep the media predicate active for all rules inside the block', function () {
+      const result = getRules(
+        ['color'],
+        '@media print { h1 { color: red } h2 { color: blue } } h3 { color: green }',
+        {}
+      );
+
+      expect(result.color, 'to satisfy', [
+        { selector: 'h1', predicates: { 'mediaQuery:print': true } },
+        { selector: 'h2', predicates: { 'mediaQuery:print': true } },
+        { selector: 'h3' },
+      ]);
+      // The predicate must not leak to rules after the @media block
+      expect(result.color[2].predicates, 'to exhaustively satisfy', {});
+    });
+  });
 });

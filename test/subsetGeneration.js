@@ -387,6 +387,12 @@ describe('subsetGeneration', function () {
 
   describe('SubsetDiskCache', function () {
     let tmpDir;
+    // The cache only ever stores subsetted font binaries, and get() verifies
+    // the sfnt/woff/woff2 magic before trusting a cached file (so a poisoned
+    // shared cache dir can't inject arbitrary bytes). Test payloads therefore
+    // need a real font magic prefix or get() treats them as a cache miss.
+    const fontBuf = (...rest) =>
+      Buffer.concat([Buffer.from('wOF2'), Buffer.from(rest.join(''))]);
     beforeEach(function () {
       tmpDir = fs.mkdtempSync(pathModule.join(os.tmpdir(), 'subfont-test-'));
     });
@@ -403,7 +409,7 @@ describe('subsetGeneration', function () {
 
     it('should round-trip a buffer through set/get', async function () {
       const cache = new SubsetDiskCache(tmpDir);
-      const buf = Buffer.from('hello');
+      const buf = fontBuf('hello');
       await cache.set('mykey', buf);
       expect(await cache.get('mykey'), 'to equal', buf);
     });
@@ -440,7 +446,7 @@ describe('subsetGeneration', function () {
     it('should retry write after ENOENT when cache dir is removed mid-session', async function () {
       const nested = pathModule.join(tmpDir, 'volatile');
       const cache = new SubsetDiskCache(nested);
-      const buf = Buffer.from('payload');
+      const buf = fontBuf('payload');
       // First write creates the dir
       await cache.set('first', buf);
       expect(await cache.get('first'), 'to equal', buf);
@@ -449,6 +455,47 @@ describe('subsetGeneration', function () {
       // Second write should detect ENOENT, recreate, and succeed
       await cache.set('second', buf);
       expect(await cache.get('second'), 'to equal', buf);
+    });
+
+    it('should not leave temp files behind after a successful write', async function () {
+      const cache = new SubsetDiskCache(tmpDir);
+      await cache.set('mykey', Buffer.from('hello'));
+      const entries = fs.readdirSync(tmpDir);
+      // Only the final cache entry should remain; no .tmp scratch files.
+      expect(entries, 'to equal', ['mykey']);
+    });
+
+    it('should never expose a partial entry to a concurrent reader during overwrite', async function () {
+      // Large, distinct buffers so a non-atomic truncate-then-write would
+      // leave an observable partial/empty file mid-write. With atomic
+      // rename, every concurrent read sees one complete buffer or the other.
+      const bufA = Buffer.alloc(2 * 1024 * 1024, 0xaa);
+      const bufB = Buffer.alloc(2 * 1024 * 1024, 0xbb);
+      // Give both a valid woff2 magic prefix so get()'s integrity check
+      // accepts them; the distinct fill bytes still make them unequal.
+      bufA.write('wOF2', 0, 'latin1');
+      bufB.write('wOF2', 0, 'latin1');
+      const cache = new SubsetDiskCache(tmpDir);
+      await cache.set('hot', bufA);
+
+      const writes = [];
+      const reads = [];
+      for (let i = 0; i < 20; i++) {
+        writes.push(cache.set('hot', i % 2 === 0 ? bufB : bufA));
+        for (let r = 0; r < 5; r++) reads.push(cache.get('hot'));
+      }
+      await Promise.all(writes);
+      const readResults = await Promise.all(reads);
+      for (const result of readResults) {
+        const isComplete =
+          result !== undefined && (result.equals(bufA) || result.equals(bufB));
+        expect(isComplete, 'to be true');
+      }
+      // And no temp files should be left over after the churn.
+      const leftovers = fs
+        .readdirSync(tmpDir)
+        .filter((name) => name.endsWith('.tmp'));
+      expect(leftovers, 'to equal', []);
     });
   });
 });

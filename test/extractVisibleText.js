@@ -49,11 +49,11 @@ describe('extractVisibleText', function () {
     expect(result, 'to contain', 'descriptive text');
   });
 
-  it('should extract title attributes', function () {
+  it('should not extract title attributes (rendered in the OS font, not webfonts)', function () {
     const result = extractVisibleText(
       '<a title="link tooltip" href="#">click</a>'
     );
-    expect(result, 'to contain', 'link tooltip');
+    expect(result, 'not to contain', 'link tooltip');
     expect(result, 'to contain', 'click');
   });
 
@@ -64,12 +64,20 @@ describe('extractVisibleText', function () {
     expect(result, 'to contain', 'Enter name');
   });
 
-  it('should extract aria-label attributes', function () {
+  it('should not extract aria-label attributes (not visually rendered)', function () {
     const result = extractVisibleText(
       '<button aria-label="Close dialog">X</button>'
     );
-    expect(result, 'to contain', 'Close dialog');
+    expect(result, 'not to contain', 'Close dialog');
     expect(result, 'to contain', 'X');
+  });
+
+  it('should not extract aria-description attributes (not visually rendered)', function () {
+    const result = extractVisibleText(
+      '<button aria-description="Saves all pending changes">Save</button>'
+    );
+    expect(result, 'not to contain', 'Saves all pending changes');
+    expect(result, 'to contain', 'Save');
   });
 
   it('should strip HTML comments', function () {
@@ -251,13 +259,64 @@ describe('extractVisibleText', function () {
     expect(result, 'not to contain', 'hidden-attr');
   });
 
-  it('should not extract title attributes from inside style blocks', function () {
+  it('should not leak attributes from inside style blocks', function () {
     const result = extractVisibleText(
       '<style title="style-title">body { color: red; }</style><p title="visible-title">text</p>'
     );
-    expect(result, 'to contain', 'visible-title');
     expect(result, 'to contain', 'text');
+    // title is no longer extracted at all (OS-font tooltip, never painted in
+    // a webfont), so neither the style-block title nor the paragraph title
+    // should appear.
+    expect(result, 'not to contain', 'visible-title');
     expect(result, 'not to contain', 'style-title');
+  });
+
+  it('should extract value from inputs without a type attribute', function () {
+    // type defaults to "text", so the value renders on screen
+    const result = extractVisibleText('<input value="v1" placeholder="p1">');
+    expect(result, 'to contain', 'v1');
+    expect(result, 'to contain', 'p1');
+  });
+
+  it('should not treat non-input elements with type="hidden" as hidden inputs', function () {
+    const result = extractVisibleText(
+      '<div type="hidden" value="divval">text</div>'
+    );
+    expect(result, 'to contain', 'divval');
+    expect(result, 'to contain', 'text');
+  });
+
+  it('should only honor the type attribute when detecting hidden inputs', function () {
+    // class="hidden" comes first; only an actual type attribute counts
+    const result = extractVisibleText(
+      '<input class="hidden" type="text" value="v1">'
+    );
+    expect(result, 'to contain', 'v1');
+  });
+
+  it('should still extract placeholder from hidden inputs', function () {
+    // Only the value attribute is suppressed for type="hidden"
+    const result = extractVisibleText(
+      '<input type="hidden" placeholder="ph" value="secret">'
+    );
+    expect(result, 'to contain', 'ph');
+    expect(result, 'not to contain', 'secret');
+  });
+
+  it('should not push empty attribute values', function () {
+    // An empty alt must not contribute a stray join separator
+    expect(extractVisibleText('<p>a</p><img alt="">'), 'to equal', 'a');
+  });
+
+  it('should join text parts with single spaces', function () {
+    expect(extractVisibleText('<p>a</p><p>b</p>'), 'to equal', 'a b');
+  });
+
+  it('should strip raw lone surrogates present in the input markup', function () {
+    // parse5 passes raw lone surrogate code units in the input string
+    // through to the text node; stripLoneSurrogates must drop them
+    // without injecting any replacement text.
+    expect(extractVisibleText('<p>x\uD800y</p>'), 'to equal', 'xy');
   });
 
   it('should strip invisible blocks across repeated calls', function () {

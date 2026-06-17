@@ -407,6 +407,48 @@ describe('subfont', function () {
     });
   });
 
+  describe('cancellation via AbortSignal', function () {
+    const root = encodeURI(
+      `file://${pathModule.resolve(__dirname, '..', 'testdata', 'subsetFonts', 'multi-page')}`
+    );
+
+    it('should reject with the signal reason when aborted before the run', async function () {
+      const controller = new AbortController();
+      const reason = new Error('cancelled before run');
+      controller.abort(reason);
+
+      await expect(
+        subfont(
+          {
+            root,
+            inputFiles: [`${root}/index.html`],
+            silent: true,
+            dryRun: true,
+            signal: controller.signal,
+          },
+          mockConsole
+        ),
+        'to be rejected with',
+        reason
+      );
+    });
+
+    it('should resolve normally when the signal is never aborted', async function () {
+      const controller = new AbortController();
+      const assetGraph = await subfont(
+        {
+          root,
+          inputFiles: [`${root}/index.html`],
+          silent: true,
+          dryRun: true,
+          signal: controller.signal,
+        },
+        mockConsole
+      );
+      expect(assetGraph, 'to be an', AssetGraph);
+    });
+  });
+
   it('should not dive into iframes', async function () {
     const root = encodeURI(
       `file://${pathModule.resolve(__dirname, '..', 'testdata', 'iframe')}`
@@ -617,7 +659,7 @@ describe('subfont', function () {
       expect(mockConsole.error, 'to have a call satisfying', [
         expect.it(
           'to match',
-          /GET https:\/\/domainthatdoesnotexist12873621321312\.com\/blablabla\.js failed: net::ERR_(NAME_NOT_RESOLVED|FAILED)/
+          /GET https:\/\/domainthatdoesnotexist12873621321312\.com\/blablabla\.js failed: net::ERR_(?:NAME_NOT_RESOLVED|FAILED)/
         ),
       ])
         .and('to have a call satisfying', [
@@ -626,7 +668,7 @@ describe('subfont', function () {
         .and('to have a call satisfying', [
           expect.it(
             'to match',
-            /GET https:\/\/assetgraph\.org\/nonexistent12345\.js (returned 404|failed: net::ERR_(BLOCKED_BY_ORB|FAILED))/
+            /GET https:\/\/assetgraph\.org\/nonexistent12345\.js (?:returned 404|failed: net::ERR_(?:BLOCKED_BY_ORB|FAILED))/
           ),
         ]);
     });

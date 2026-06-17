@@ -125,17 +125,19 @@ describe('subfont multi-page integration', function () {
         url: (url) => url && subsetCssRe.test(url),
       });
       const ranges = [
-        ...css.text.matchAll(/unicode-range\s*:\s*([^;}]+)/gi),
-      ].map((m) => m[1].trim());
+        ...css.text.matchAll(/unicode-range\s*:\s*(?<range>[^;}]+)/gi),
+      ].map((m) => m.groups.range.trim());
       expect(ranges.length, 'to be greater than', 0);
       // unicode-range syntax: comma-separated entries, each "u+HEX" or "u+HEX-HEX".
       const totalCodepoints = ranges
         .flatMap((r) => r.split(','))
         .reduce((acc, entry) => {
-          const m = entry.trim().match(/^u\+([0-9a-f]+)(?:-([0-9a-f]+))?$/i);
+          const m = entry
+            .trim()
+            .match(/^u\+(?<lo>[0-9a-f]+)(?:-(?<hi>[0-9a-f]+))?$/i);
           if (!m) return acc;
-          const lo = parseInt(m[1], 16);
-          const hi = m[2] !== undefined ? parseInt(m[2], 16) : lo;
+          const lo = parseInt(m.groups.lo, 16);
+          const hi = m.groups.hi !== undefined ? parseInt(m.groups.hi, 16) : lo;
           return acc + (hi - lo + 1);
         }, 0);
       // The original Roboto-400.woff2 in this fixture covers 213 codepoints;
@@ -199,10 +201,10 @@ describe('subfont multi-page integration', function () {
       // Log line shape: "    400 : 16/213 codepoints used"
       const codepointCount = (log) => {
         const m = log
-          .map((l) => l.match(/(\d+)\/\d+ codepoints used/))
+          .map((l) => l.match(/(?<used>\d+)\/\d+ codepoints used/))
           .find(Boolean);
         expect(m, 'to be truthy');
-        return Number(m[1]);
+        return Number(m.groups.used);
       };
       const oneCount = codepointCount(oneRun.log);
       const fiveCount = codepointCount(fiveRun.log);

@@ -115,16 +115,11 @@ describe('HeadlessBrowser', function () {
       expect(mockPage.close, 'was called once');
     });
 
-    it('should dispose intermediate result handles when results are non-empty', async function () {
-      const resultDispose = sinon.stub().resolves();
-      const nodeHandle = { fake: 'elementHandle' };
+    it('should dispose the trace handle and return only its json value', async function () {
+      const outerDispose = sinon.stub().resolves();
       mockPage.evaluateHandle = sinon.stub().resolves({
-        jsonValue: sinon.stub().resolves([{ text: 'hello' }]),
-        getProperty: sinon.stub().resolves({
-          getProperty: sinon.stub().resolves(nodeHandle),
-          dispose: resultDispose,
-        }),
-        dispose: sinon.stub().resolves(),
+        jsonValue: sinon.stub().resolves([{ text: 'hello', props: {} }]),
+        dispose: outerDispose,
       });
       const hb = new HeadlessBrowser({ console: fakeConsole });
       const mockHtmlAsset = {
@@ -133,8 +128,12 @@ describe('HeadlessBrowser', function () {
       };
 
       const results = await hb.tracePage(mockHtmlAsset);
-      expect(resultDispose, 'was called once');
-      expect(results[0].node, 'to be', nodeHandle);
+      // The per-result `node` ElementHandle is no longer fetched (it leaked
+      // CDP remote-object references and nothing downstream read it); only the
+      // JSON-serialized trace records come back, and the single outer handle
+      // is disposed.
+      expect(outerDispose, 'was called once');
+      expect(results, 'to equal', [{ text: 'hello', props: {} }]);
     });
 
     it('should close the page even if goto throws', async function () {

@@ -3,16 +3,21 @@ const eslintConfigPrettier = require('eslint-config-prettier');
 const mochaPlugin = require('eslint-plugin-mocha');
 const tseslint = require('typescript-eslint');
 const globals = require('globals');
+const regexpPlugin = require('eslint-plugin-regexp');
 
 module.exports = [
   ...neostandard(),
   eslintConfigPrettier,
+  regexpPlugin.configs['flat/recommended'],
   {
     plugins: {
       mocha: mochaPlugin,
     },
     rules: {
       'prefer-template': 'error',
+      // Forbid index-based regex group access: every capturing group must be
+      // named, so matches are read via `m.groups.name` instead of `m[1]`.
+      'prefer-named-capture-group': 'error',
       'mocha/no-exclusive-tests': 'error',
       'mocha/no-nested-tests': 'error',
       'mocha/no-identical-title': 'error',
@@ -94,6 +99,9 @@ module.exports = [
       'puppeteer-browsers/',
       // Compiled TypeScript output — source lives under src/.
       'lib/',
+      // Mutation-testing artifacts (Stryker sandbox + reports).
+      '.stryker-tmp/',
+      'reports/',
     ],
   },
 ];

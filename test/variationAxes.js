@@ -63,6 +63,24 @@ describe('variationAxes', function () {
       expect(result.seenAxisValuesByFontUrlAndAxisName.size, 'to equal', 0);
     });
 
+    it('should skip fontUsages without a fontUrl', function () {
+      const result = runUsage([makeFontUsage({ fontUrl: undefined })]);
+      expect(result.seenAxisValuesByFontUrlAndAxisName.size, 'to equal', 0);
+    });
+
+    it('should not throw when style/weight/stretch/variation-settings sets are absent', function () {
+      const result = runUsage([
+        makeFontUsage({
+          fontStyles: undefined,
+          fontWeights: undefined,
+          fontStretches: undefined,
+          fontVariationSettings: undefined,
+        }),
+      ]);
+      // Nothing was recorded for the font, so no axis map exists
+      expect(getAxes(result), 'to be undefined');
+    });
+
     describe('font-style to ital/slnt axis mapping', function () {
       [
         {
@@ -110,6 +128,44 @@ describe('variationAxes', function () {
           expectedValues.forEach((val) => {
             expect(axes.get(axis).has(val), 'to be true');
           });
+        });
+      });
+
+      // Exact-set assertions: the mapping must not over-record values
+      [
+        {
+          fontStyles: ['normal'],
+          axis: 'ital',
+          exactValues: [0],
+          desc: 'normal-only must not also record ital=1',
+        },
+        {
+          fontStyles: ['italic'],
+          axis: 'ital',
+          exactValues: [1],
+          desc: 'italic-only must not also record ital=0',
+        },
+        {
+          fontStyles: ['normal'],
+          axis: 'slnt',
+          exactValues: [0],
+          desc: 'normal-only must not also record slnt=-14',
+        },
+        {
+          fontStyles: ['oblique'],
+          axis: 'slnt',
+          exactValues: [-14],
+          desc: 'oblique-only must not also record slnt=0',
+        },
+      ].forEach(({ fontStyles, axis, exactValues, desc }) => {
+        it(`should record exactly ${desc}`, function () {
+          const result = runUsage([
+            makeFontUsage({ fontStyles: new Set(fontStyles) }),
+          ]);
+          const seenValues = [...getAxes(result).get(axis)].sort(
+            (a, b) => a - b
+          );
+          expect(seenValues, 'to equal', exactValues);
         });
       });
     });
@@ -166,6 +222,36 @@ describe('variationAxes', function () {
       expect(getAxes(result).get('wdth').has(75), 'to be true');
     });
 
+    it('should skip null entries in fontWeights without recording a clamped 0', function () {
+      const result = runUsage([
+        makeFontUsage({
+          fontWeights: new Set([null, 400]),
+          props: { 'font-weight': '100 900', 'font-stretch': '100%' },
+        }),
+      ]);
+      expect([...getAxes(result).get('wght')], 'to equal', [400]);
+    });
+
+    it('should skip null entries in fontStretches without recording a clamped 0', function () {
+      const result = runUsage([
+        makeFontUsage({
+          fontStretches: new Set([null, 100]),
+          props: { 'font-weight': '400', 'font-stretch': '75% 125%' },
+        }),
+      ]);
+      expect([...getAxes(result).get('wdth')], 'to equal', [100]);
+    });
+
+    it('should clamp stretch values using the font-stretch prop range', function () {
+      const result = runUsage([
+        makeFontUsage({
+          fontStretches: new Set([200]),
+          props: { 'font-weight': '400', 'font-stretch': '75% 125%' },
+        }),
+      ]);
+      expect([...getAxes(result).get('wdth')], 'to equal', [125]);
+    });
+
     it('should parse font-variation-settings and record axis values', function () {
       const result = runUsage([
         makeFontUsage({
@@ -210,6 +296,7 @@ describe('variationAxes', function () {
       );
       // Only the first page's values should be recorded (dedup by fontUrl)
       expect(getAxes(result).get('wght').has(400), 'to be true');
+      expect(getAxes(result).get('wght').has(700), 'to be false');
     });
   });
 
@@ -253,6 +340,121 @@ describe('variationAxes', function () {
       // wght is reduced (400>100 || 700<900); wdth is pinned to default
       expect(result.numAxesReduced, 'to equal', 1);
       expect(result.fullyInstanced, 'to be false');
+    });
+
+    it('should return safe defaults when the font asset is missing', async function () {
+      const result = await getVariationAxisBounds(
+        new Map(),
+        'font://test',
+        makeSeenAxes([['wght', [400, 700]]])
+      );
+
+      expect(result, 'to equal', {
+        fullyInstanced: false,
+        numAxesPinned: 0,
+        numAxesReduced: 0,
+        variationAxes: {},
+      });
+    });
+
+    it('should return safe defaults when getFontInfo rejects', async function () {
+      const { getVariationAxisBounds: getVariationAxisBoundsFailing } =
+        proxyquire('../lib/variationAxes', {
+          './getFontInfo': async function mockGetFontInfo() {
+            throw new Error('not a font');
+          },
+        });
+      const fontAssetsByUrl = new Map();
+      fontAssetsByUrl.set('font://test', { rawSrc: Buffer.from('mock') });
+
+      const result = await getVariationAxisBoundsFailing(
+        fontAssetsByUrl,
+        'font://test',
+        makeSeenAxes([['wght', [400, 700]]])
+      );
+
+      expect(result, 'to equal', {
+        fullyInstanced: false,
+        numAxesPinned: 0,
+        numAxesReduced: 0,
+        variationAxes: {},
+      });
+    });
+
+    it('should leave all axes untouched when no axis values were seen for the font', async function () {
+      const fontAssetsByUrl = new Map();
+      fontAssetsByUrl.set('font://test', { rawSrc: Buffer.from('mock') });
+
+      const result = await getVariationAxisBounds(
+        fontAssetsByUrl,
+        'font://test',
+        new Map() // no entry for font://test
+      );
+
+      expect(result, 'to equal', {
+        fullyInstanced: true,
+        numAxesPinned: 0,
+        numAxesReduced: 0,
+        variationAxes: {},
+      });
+    });
+
+    it('should compute min/max regardless of seen-value iteration order', async function () {
+      // Insertion order is descending, so a naive "last value wins"
+      // implementation would compute max = 400.
+      const fontAssetsByUrl = new Map();
+      fontAssetsByUrl.set('font://test', { rawSrc: Buffer.from('mock') });
+
+      const result = await getVariationAxisBounds(
+        fontAssetsByUrl,
+        'font://test',
+        makeSeenAxes([['wght', [700, 400]]])
+      );
+
+      expect(result.variationAxes.wght, 'to equal', { min: 400, max: 700 });
+    });
+
+    it('should not count an axis as reduced when the seen range covers the full axis range', async function () {
+      const fontAssetsByUrl = new Map();
+      fontAssetsByUrl.set('font://test', { rawSrc: Buffer.from('mock') });
+
+      const result = await getVariationAxisBounds(
+        fontAssetsByUrl,
+        'font://test',
+        makeSeenAxes([['wght', [100, 900]]])
+      );
+
+      expect(result.variationAxes.wght, 'to equal', { min: 100, max: 900 });
+      expect(result.numAxesReduced, 'to equal', 0);
+      expect(result.fullyInstanced, 'to be false');
+    });
+
+    it('should count an axis as reduced when only the min is narrowed', async function () {
+      const fontAssetsByUrl = new Map();
+      fontAssetsByUrl.set('font://test', { rawSrc: Buffer.from('mock') });
+
+      const result = await getVariationAxisBounds(
+        fontAssetsByUrl,
+        'font://test',
+        makeSeenAxes([['wght', [400, 900]]])
+      );
+
+      expect(result.variationAxes.wght, 'to equal', { min: 400, max: 900 });
+      expect(result.numAxesReduced, 'to equal', 1);
+    });
+
+    it('should count an axis as reduced when only the max is narrowed', async function () {
+      const fontAssetsByUrl = new Map();
+      fontAssetsByUrl.set('font://test', { rawSrc: Buffer.from('mock') });
+
+      const result = await getVariationAxisBounds(
+        fontAssetsByUrl,
+        'font://test',
+        makeSeenAxes([['wght', [100, 700]]])
+      );
+
+      expect(result.variationAxes.wght, 'to equal', { min: 100, max: 700 });
+      expect(result.numAxesReduced, 'to equal', 1);
     });
 
     it('should clamp to axis min when seen min is below axis min', async function () {

@@ -1,0 +1,20 @@
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 400;
+  src: url('IBMPlexSans-Regular.woff') format('woff');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  src: url('JetBrainsMono-Regular.ttf') format('truetype');
+}
+body {
+  font-family: 'IBM Plex Sans', sans-serif;
+  font-weight: 400;
+}
+.code {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 400;
+}

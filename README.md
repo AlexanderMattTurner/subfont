@@ -8,16 +8,18 @@ A faster fork of [subfont](https://github.com/Munter/subfont) that subsets web f
 
 `subfont` produces dramatically smaller font files by stripping data that browsers never use:
 
-| Optimization                 | Technique                                                                               |
-| ---------------------------- | --------------------------------------------------------------------------------------- |
-| Hinting removal              | Strips TrueType hinting instructions (browsers auto-hint)                               |
-| Name table pruning           | Keeps only the 4 IDs browsers read (family, subfamily, full name, PostScript name)      |
-| Name lang-ID filter          | Keeps only en-US name strings; drops Japanese, Russian, Korean, etc.                    |
-| Table stripping              | Drops `DSIG`, `LTSH`, `VDMX`, `hdmx`, `gasp`, `PCLT`                                    |
-| MATH-table drop (gated)      | Drops `MATH` when no math codepoints are used on the page                               |
-| Color-table drop (gated)     | Drops `COLR`/`CPAL`/`SVG `/`CBDT`/`CBLC`/`sbix`/`EBDT`/`EBLC`/`EBSC` when no emoji used |
-| Layout-script filter (gated) | Drops GSUB/GPOS lookups for OpenType scripts the page doesn't render                    |
-| CSS-aware feature retention  | Drops GSUB/GPOS features the page's CSS doesn't reference                               |
+| Optimization                    | Technique                                                                                                                                                                                                      |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Hinting removal                 | Strips TrueType hinting instructions (browsers auto-hint)                                                                                                                                                      |
+| Name table pruning              | Keeps only the 4 IDs browsers read (family, subfamily, full name, PostScript name)                                                                                                                             |
+| Name lang-ID filter             | Keeps only en-US name strings; drops Japanese, Russian, Korean, etc.                                                                                                                                           |
+| Table stripping                 | Drops `DSIG`, `LTSH`, `VDMX`, `hdmx`, `gasp`, `PCLT`                                                                                                                                                           |
+| MATH-table drop (gated)         | Drops `MATH` when no math codepoints are used on the page                                                                                                                                                      |
+| Color-table drop (gated)        | Drops `COLR`/`CPAL`/`SVG `/`CBDT`/`CBLC`/`sbix`/`EBDT`/`EBLC`/`EBSC` when no emoji used                                                                                                                        |
+| Layout-script filter (gated)    | Drops GSUB/GPOS lookups for OpenType scripts the page doesn't render                                                                                                                                           |
+| CSS-aware feature retention     | Drops GSUB/GPOS features the page's CSS doesn't reference                                                                                                                                                      |
+| Family-scoped page text (gated) | On shared-CSS pages, attributes a page's visible text only to the webfont families whose selectors can match an element on that page (falls back to all families when the `font-family` rules can't be parsed) |
+| Non-rendered attribute skip     | Excludes `title`/`aria-label`/`aria-description` text from subsets (tooltips render in the OS font; ARIA labels are never painted)                                                                             |
 
 Reproducible benchmark on `testdata/subsetFonts/OpenSans-400.ttf` (run with `node scripts/bench-readme.js`); "upstream" = the [`subset-font`](https://github.com/papandreou/subset-font) package the original [Munter/subfont](https://github.com/Munter/subfont) uses, woff2-compressed:
 
@@ -121,6 +123,25 @@ const assetGraph = await subfont(
 
 The package ships CommonJS with TypeScript declarations (`subfont.d.ts`). Returns the [Assetgraph](https://github.com/assetgraph/assetgraph) instance.
 
+Long runs can be cancelled with an `AbortSignal` (e.g. a timeout budget in CI):
+
+```js
+const controller = new AbortController();
+setTimeout(
+  () => controller.abort(new Error('subfont budget exceeded')),
+  600000
+);
+
+await subfont(
+  {
+    inputFiles: ['path/to/index.html'],
+    inPlace: true,
+    signal: controller.signal,
+  },
+  console
+);
+```
+
 ### Parameters
 
 `subfont(options, console)` — the second argument is an optional logger (anything
@@ -151,6 +172,7 @@ The `options` object accepts the following keys:
 | `strict`        | `boolean`           | `false`  | Resolve with a non-zero exit (via the CLI) if any warnings are emitted.                                                                    |
 | `silent`        | `boolean`           | `false`  | Suppress all log output to `console`.                                                                                                      |
 | `debug`         | `boolean`           | `false`  | Emit verbose timing and glyph-detection info.                                                                                              |
+| `signal`        | `AbortSignal`       | —        | Abort the run early. Cancels in-flight font tracing and subsetting; the returned promise rejects with the signal's reason.                 |
 
 ## License
 

@@ -9,6 +9,7 @@ import prettyBytes = require('pretty-bytes');
 import * as urlTools from 'urltools';
 import * as util from 'util';
 import subsetFonts = require('./subsetFonts');
+import { destroy as destroyFontConverter } from './fontConverter';
 import { makePhaseTracker } from './progress';
 import type { ExternalFontUsage } from './types/shared';
 
@@ -61,6 +62,8 @@ interface SubfontOptions {
   cache?: boolean | string;
   /** Exit non-zero if any warnings are emitted. */
   strict?: boolean;
+  /** Abort the run early. Cancels in-flight font tracing and subsetting. */
+  signal?: AbortSignal;
 }
 
 interface SubfontFn {
@@ -715,6 +718,7 @@ const subfont = async function subfont(
     chromeFlags = [],
     cache = false,
     strict = false,
+    signal,
   }: SubfontOptions,
   console?: Console
 ): Promise<InstanceType<typeof AssetGraph>> {
@@ -775,97 +779,114 @@ const subfont = async function subfont(
   // the same way it suppresses other subfont output.
   const trackPhase = makePhaseTracker({ log }, debug);
 
-  const loadAssetsPhase = trackPhase('loadAssets');
-  await assetGraph.loadAssets(inputUrls);
-  outerTimings.loadAssets = loadAssetsPhase.end();
+  try {
+    // Bail before any crawling/IO if the caller already cancelled.
+    signal?.throwIfAborted();
 
-  const populatePhase = trackPhase('populate (initial)');
-  await assetGraph.populate({
-    followRelations: buildFollowRelationsQuery(recursive),
-  });
-  outerTimings['populate (initial)'] = populatePhase.end();
+    const loadAssetsPhase = trackPhase('loadAssets');
+    await assetGraph.loadAssets(inputUrls);
+    outerTimings.loadAssets = loadAssetsPhase.end();
+    signal?.throwIfAborted();
 
-  handleInitialRedirects(assetGraph);
+    const populatePhase = trackPhase('populate (initial)');
+    await assetGraph.populate({
+      followRelations: buildFollowRelationsQuery(recursive),
+    });
+    outerTimings['populate (initial)'] = populatePhase.end();
+    signal?.throwIfAborted();
 
-  const sizeableAssetQuery = {
-    isInline: false,
-    isLoaded: true,
-    type: { $in: ['Html', 'Svg', 'Css', 'JavaScript'] },
-  };
-  let sumSizesBefore = 0;
-  for (const asset of assetGraph.findAssets(sizeableAssetQuery)) {
-    sumSizesBefore += asset.rawSrc.length;
+    handleInitialRedirects(assetGraph);
+
+    const sizeableAssetQuery = {
+      isInline: false,
+      isLoaded: true,
+      type: { $in: ['Html', 'Svg', 'Css', 'JavaScript'] },
+    };
+    let sumSizesBefore = 0;
+    for (const asset of assetGraph.findAssets(sizeableAssetQuery)) {
+      sumSizesBefore += asset.rawSrc.length;
+    }
+
+    if (!sourceMaps) {
+      log(
+        'Skipping CSS source map processing for faster execution. Use --source-maps to preserve them.'
+      );
+    }
+
+    const cacheDir = resolveCacheDir(cache, rootUrl, warn);
+
+    const subsetPhase = trackPhase('subsetFonts total');
+    const { fontInfo, timings: subsetTimings } = await subsetFonts(assetGraph, {
+      inlineCss,
+      fontDisplay,
+      formats: ['woff2'],
+      omitFallbacks: !fallbacks,
+      hrefType: relativeUrls ? 'relative' : 'rootRelative',
+      text,
+      dynamic,
+      console,
+      sourceMaps,
+      debug,
+      concurrency,
+      chromeArgs: chromeFlags,
+      cacheDir,
+      signal,
+    });
+    const subsetFontsTotal = subsetPhase.end();
+    // Don't post-process or write output for a run that was cancelled.
+    signal?.throwIfAborted();
+
+    const postProcessingPhase = trackPhase('post-subsetFonts processing');
+    let sumSizesAfter = 0;
+    for (const asset of assetGraph.findAssets(sizeableAssetQuery)) {
+      sumSizesAfter += asset.rawSrc.length;
+    }
+    await runPostProcessing(assetGraph, rootUrl);
+    outerTimings['post-subsetFonts processing'] = postProcessingPhase.end();
+
+    if (strict && warningTracker.sawWarning) {
+      // In non-silent mode, assetgraph's logEvents normally exits earlier via
+      // stopOnWarning. This guard covers silent mode and warnings that slipped
+      // past a transform boundary.
+      throw new Error(
+        'subfont: --strict was set and one or more warnings were emitted; refusing to write output.'
+      );
+    }
+
+    const writePhase = trackPhase('writeAssetsToDisc');
+    if (!dryRun) {
+      await assetGraph.writeAssetsToDisc(
+        {
+          isLoaded: true,
+          isRedirect: { $ne: true },
+          url: (url: string) => url && url.startsWith(assetGraph.root),
+        },
+        outRoot,
+        assetGraph.root
+      );
+    }
+    outerTimings.writeAssetsToDisc = writePhase.end();
+
+    const reportingPhase = trackPhase('output reporting');
+    printRunReport(fontInfo, sumSizesBefore, sumSizesAfter, debug, log);
+    outerTimings['output reporting'] = reportingPhase.end();
+    if (debug) {
+      printTimingSummary(outerTimings, subsetFontsTotal, subsetTimings, log);
+    }
+    if (dryRun) {
+      printDryRunPreview(assetGraph, log);
+    } else {
+      log('Output written to', outRoot || assetGraph.root);
+    }
+    return assetGraph;
+  } finally {
+    // All font conversions are complete once subsetFonts() resolves (or
+    // rejects). Tear down the worker-thread pool so the process can exit
+    // promptly instead of waiting for the 30 s idleTimeout to reclaim
+    // threads. destroy() is idempotent: safe when the pool was never
+    // created, and a future convert() call will lazily re-initialise it.
+    await destroyFontConverter();
   }
-
-  if (!sourceMaps) {
-    log(
-      'Skipping CSS source map processing for faster execution. Use --source-maps to preserve them.'
-    );
-  }
-
-  const cacheDir = resolveCacheDir(cache, rootUrl, warn);
-
-  const subsetPhase = trackPhase('subsetFonts total');
-  const { fontInfo, timings: subsetTimings } = await subsetFonts(assetGraph, {
-    inlineCss,
-    fontDisplay,
-    formats: ['woff2'],
-    omitFallbacks: !fallbacks,
-    hrefType: relativeUrls ? 'relative' : 'rootRelative',
-    text,
-    dynamic,
-    console,
-    sourceMaps,
-    debug,
-    concurrency,
-    chromeArgs: chromeFlags,
-    cacheDir,
-  });
-  const subsetFontsTotal = subsetPhase.end();
-
-  const postProcessingPhase = trackPhase('post-subsetFonts processing');
-  let sumSizesAfter = 0;
-  for (const asset of assetGraph.findAssets(sizeableAssetQuery)) {
-    sumSizesAfter += asset.rawSrc.length;
-  }
-  await runPostProcessing(assetGraph, rootUrl);
-  outerTimings['post-subsetFonts processing'] = postProcessingPhase.end();
-
-  if (strict && warningTracker.sawWarning) {
-    // In non-silent mode, assetgraph's logEvents normally exits earlier via
-    // stopOnWarning. This guard covers silent mode and warnings that slipped
-    // past a transform boundary.
-    throw new Error(
-      'subfont: --strict was set and one or more warnings were emitted; refusing to write output.'
-    );
-  }
-
-  const writePhase = trackPhase('writeAssetsToDisc');
-  if (!dryRun) {
-    await assetGraph.writeAssetsToDisc(
-      {
-        isLoaded: true,
-        isRedirect: { $ne: true },
-        url: (url: string) => url && url.startsWith(assetGraph.root),
-      },
-      outRoot,
-      assetGraph.root
-    );
-  }
-  outerTimings.writeAssetsToDisc = writePhase.end();
-
-  const reportingPhase = trackPhase('output reporting');
-  printRunReport(fontInfo, sumSizesBefore, sumSizesAfter, debug, log);
-  outerTimings['output reporting'] = reportingPhase.end();
-  if (debug) {
-    printTimingSummary(outerTimings, subsetFontsTotal, subsetTimings, log);
-  }
-  if (dryRun) {
-    printDryRunPreview(assetGraph, log);
-  } else {
-    log('Output written to', outRoot || assetGraph.root);
-  }
-  return assetGraph;
 } as SubfontFn;
 
 subfont.UsageError = UsageError;

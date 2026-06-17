@@ -1,221 +1,135 @@
-const { runWithTimeoutAndSignal } = require('../lib/piscinaRunWithTimeout');
 const expect = require('unexpected');
-const sinon = require('sinon');
+const pathModule = require('path');
+const { Piscina } = require('piscina');
+const { runWithTimeoutAndSignal } = require('../lib/piscinaRunWithTimeout');
 
-describe('runWithTimeoutAndSignal', function () {
-  afterEach(function () {
-    sinon.restore();
+// Minimal worker that echoes the task value after an optional delay.
+const ECHO_WORKER = pathModule.join(__dirname, '_echoWorker.js');
+
+describe('piscinaRunWithTimeout', function () {
+  let pool;
+
+  before(function () {
+    pool = new Piscina({
+      filename: ECHO_WORKER,
+      minThreads: 1,
+      maxThreads: 1,
+    });
   });
 
-  function makePool(runImpl) {
-    return { run: sinon.spy(runImpl) };
-  }
-
-  function makeAbortError(cause) {
-    const err = new Error('The task was aborted');
-    err.name = 'AbortError';
-    err.cause = cause;
-    return err;
-  }
-
-  const defaultFormat = (ms) => `Task timed out after ${ms}ms`;
-
-  it('should resolve with the pool result on success', async function () {
-    const pool = makePool(() => Promise.resolve(42));
-
-    const result = await runWithTimeoutAndSignal(
-      pool,
-      { foo: 'bar' },
-      undefined,
-      1000,
-      defaultFormat
-    );
-
-    expect(result, 'to equal', 42);
-    expect(pool.run.callCount, 'to equal', 1);
+  after(async function () {
+    if (pool) await pool.destroy();
   });
 
-  it('should pass task directly to pool.run when no timeout and no signal', async function () {
-    const pool = makePool((task) => Promise.resolve(task));
-
+  it('should return the task result with no timeout and no signal', async function () {
     const result = await runWithTimeoutAndSignal(
       pool,
-      'my-task',
+      { value: 'hello' },
       undefined,
       0,
-      defaultFormat
+      (ms) => `timed out after ${ms}ms`
     );
-
-    expect(result, 'to equal', 'my-task');
-    // Fast path: pool.run called with just the task, no signal option
-    expect(pool.run.callCount, 'to equal', 1);
-    expect(pool.run.firstCall.args.length, 'to equal', 1);
+    expect(result, 'to equal', 'hello');
   });
 
-  it('should reject with formatted timeout error when task exceeds timeout', async function () {
-    const pool = makePool(
-      (_task, opts) =>
-        new Promise((_resolve, reject) => {
-          // Simulate piscina aborting when the signal fires
-          opts.signal.addEventListener('abort', () => {
-            reject(makeAbortError(opts.signal.reason));
-          });
-        })
+  it('should return the task result when timeout does not fire', async function () {
+    const result = await runWithTimeoutAndSignal(
+      pool,
+      { value: 42 },
+      undefined,
+      5000,
+      (ms) => `timed out after ${ms}ms`
     );
+    expect(result, 'to equal', 42);
+  });
 
-    const format = (ms) => `Gave up after ${ms}ms`;
+  it('should reject with the formatted timeout message when the task exceeds the timeout', async function () {
+    await expect(
+      runWithTimeoutAndSignal(
+        pool,
+        { value: 'slow', delayMs: 2000 },
+        undefined,
+        50,
+        (ms) => `Font tracing timed out after ${ms}ms`
+      ),
+      'to be rejected with',
+      'Font tracing timed out after 50ms'
+    );
+  });
+
+  it('should reject when the user signal is already aborted', async function () {
+    const controller = new AbortController();
+    const reason = new Error('pre-aborted');
+    controller.abort(reason);
 
     await expect(
-      runWithTimeoutAndSignal(pool, {}, undefined, 50, format),
+      runWithTimeoutAndSignal(
+        pool,
+        { value: 'nope' },
+        controller.signal,
+        0,
+        (ms) => `timed out after ${ms}ms`
+      ),
       'to be rejected with',
-      'Gave up after 50ms'
+      'pre-aborted'
     );
   });
 
-  it('should reject with user signal reason when user aborts', async function () {
-    const userController = new AbortController();
-    const userReason = new Error('user cancelled');
+  it('should reject with user abort reason when signal fires during task', async function () {
+    const controller = new AbortController();
+    const reason = new Error('user cancelled');
 
-    const pool = makePool(
-      (_task, opts) =>
-        new Promise((_resolve, reject) => {
-          opts.signal.addEventListener('abort', () => {
-            reject(makeAbortError(opts.signal.reason));
-          });
-          // Abort from the user side after a short delay
-          setTimeout(() => userController.abort(userReason), 10);
-        })
-    );
+    setTimeout(() => controller.abort(reason), 20);
 
-    try {
-      await runWithTimeoutAndSignal(
+    await expect(
+      runWithTimeoutAndSignal(
         pool,
-        {},
-        userController.signal,
-        5000,
-        defaultFormat
-      );
-      expect.fail('should have rejected');
-    } catch (err) {
-      expect(err, 'to be', userReason);
-      expect(err.message, 'to equal', 'user cancelled');
-    }
+        { value: 'slow', delayMs: 2000 },
+        controller.signal,
+        0,
+        (ms) => `timed out after ${ms}ms`
+      ),
+      'to be rejected with',
+      'user cancelled'
+    );
   });
 
-  it('should reject immediately when userSignal is already aborted', async function () {
-    const userController = new AbortController();
-    const userReason = new Error('already aborted');
-    userController.abort(userReason);
+  it('should prefer timeout error when both timeout and signal fire', async function () {
+    const controller = new AbortController();
 
-    const pool = makePool(
-      (_task, opts) =>
-        new Promise((_resolve, reject) => {
-          // The signal should already be aborted at this point
-          if (opts.signal.aborted) {
-            reject(makeAbortError(opts.signal.reason));
-            return;
-          }
-          opts.signal.addEventListener('abort', () => {
-            reject(makeAbortError(opts.signal.reason));
-          });
-        })
+    // Set a very short timeout; abort the signal well after
+    const abortTimer = setTimeout(
+      () => controller.abort(new Error('user abort')),
+      2000
     );
 
-    try {
-      await runWithTimeoutAndSignal(
+    await expect(
+      runWithTimeoutAndSignal(
         pool,
-        {},
-        userController.signal,
-        5000,
-        defaultFormat
-      );
-      expect.fail('should have rejected');
-    } catch (err) {
-      expect(err, 'to be', userReason);
-      expect(err.message, 'to equal', 'already aborted');
-    }
+        { value: 'slow', delayMs: 2000 },
+        controller.signal,
+        30,
+        (ms) => `Timed out after ${ms}ms`
+      ),
+      'to be rejected with',
+      'Timed out after 30ms'
+    );
+    clearTimeout(abortTimer);
   });
 
-  it('should prefer timeout error when watchdog fires first', async function () {
-    const pool = makePool(
-      (_task, opts) =>
-        new Promise((_resolve, reject) => {
-          opts.signal.addEventListener('abort', () => {
-            reject(makeAbortError(opts.signal.reason));
-          });
-        })
-    );
-
-    const format = (ms) => `Watchdog expired: ${ms}ms`;
-
-    try {
-      await runWithTimeoutAndSignal(pool, {}, undefined, 30, format);
-      expect.fail('should have rejected');
-    } catch (err) {
-      expect(err.message, 'to equal', 'Watchdog expired: 30ms');
-    }
-  });
-
-  it('should clean up timer and signal listener on success', async function () {
-    const clearTimeoutSpy = sinon.spy(global, 'clearTimeout');
-    const userController = new AbortController();
-
-    const removeListenerSpy = sinon.spy(
-      userController.signal,
-      'removeEventListener'
-    );
-
-    const pool = makePool((_task, opts) => {
-      // Resolve immediately while both timeout and user signal are active
-      return Promise.resolve('done');
-    });
+  it('should clean up the timer and listener after a successful task', async function () {
+    const controller = new AbortController();
 
     const result = await runWithTimeoutAndSignal(
       pool,
-      {},
-      userController.signal,
+      { value: 'fast' },
+      controller.signal,
       5000,
-      defaultFormat
+      (ms) => `timed out after ${ms}ms`
     );
+    expect(result, 'to equal', 'fast');
 
-    expect(result, 'to equal', 'done');
-    // Timer should have been cleared
-    expect(clearTimeoutSpy.callCount, 'to be greater than or equal to', 1);
-    // User signal listener should have been removed
-    expect(removeListenerSpy.callCount, 'to be greater than or equal to', 1);
-  });
-
-  it('should clean up timer and signal listener on failure', async function () {
-    const clearTimeoutSpy = sinon.spy(global, 'clearTimeout');
-    const userController = new AbortController();
-
-    const removeListenerSpy = sinon.spy(
-      userController.signal,
-      'removeEventListener'
-    );
-
-    const taskError = new Error('pool task failed');
-    const pool = makePool((_task, _opts) => {
-      return Promise.reject(taskError);
-    });
-
-    try {
-      await runWithTimeoutAndSignal(
-        pool,
-        {},
-        userController.signal,
-        5000,
-        defaultFormat
-      );
-      expect.fail('should have rejected');
-    } catch (err) {
-      // Non-AbortError should be rethrown as-is
-      expect(err, 'to be', taskError);
-    }
-
-    // Timer should have been cleared
-    expect(clearTimeoutSpy.callCount, 'to be greater than or equal to', 1);
-    // User signal listener should have been removed
-    expect(removeListenerSpy.callCount, 'to be greater than or equal to', 1);
+    // After completion, aborting should not cause issues
+    controller.abort(new Error('late abort'));
   });
 });

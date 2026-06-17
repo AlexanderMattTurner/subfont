@@ -8,15 +8,20 @@
 // `<` escape prevents `</script>` from closing an inline script tag;
 // `\`` escape keeps the value safe inside a template literal, and `$`
 // escape prevents `${...}` interpolation in the same context.
+const JS_ESCAPE_RE = /['`$<\u2028\u2029]/g;
+const JS_ESCAPE_MAP: Record<string, string> = {
+  "'": "\\'",
+  '`': '\\x60',
+  $: '\\x24',
+  '<': '\\x3c',
+  '\u2028': '\\u2028',
+  '\u2029': '\\u2029',
+};
+
 function escapeJsStringLiteral(str: string): string {
   return JSON.stringify(str)
     .slice(1, -1)
-    .replace(/'/g, "\\'")
-    .replace(/`/g, '\\x60')
-    .replace(/\$/g, '\\x24')
-    .replace(/</g, '\\x3c')
-    .replace(/[\u2028]/g, '\\u2028')
-    .replace(/[\u2029]/g, '\\u2029');
+    .replace(JS_ESCAPE_RE, (ch) => JS_ESCAPE_MAP[ch]);
 }
 
 export = escapeJsStringLiteral;
