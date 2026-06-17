@@ -154,30 +154,16 @@ async function initPool(): Promise<void> {
 const _waiters: Array<(inst: PoolInstance) => void> = [];
 const ACQUIRE_TIMEOUT_MS = 120_000;
 
-// Turn an AbortSignal.reason into a throwable. Mirrors piscina's behavior:
-// surface the caller's reason verbatim when it's an Error, otherwise wrap it
-// in a DOMException-style AbortError so callers can branch on `.name`.
-function abortReasonToError(
-  // AbortSignal.reason is `any`; the value is genuinely opaque here.
-  // eslint-disable-next-line no-restricted-syntax
-  reason: unknown
-): Error {
-  if (reason instanceof Error) return reason;
-  const err = new Error('The operation was aborted');
-  err.name = 'AbortError';
-  return err;
-}
-
 async function acquireInstance(signal?: AbortSignal): Promise<PoolInstance> {
-  if (signal?.aborted) {
-    throw abortReasonToError(signal.reason);
-  }
+  // throwIfAborted() rejects with signal.reason verbatim, matching how the
+  // worker pools (piscinaRunWithTimeout) and the subsetFonts/subfont phase
+  // checks surface a cancellation, so the reason a caller sees is the same
+  // no matter which layer first observes the abort.
+  signal?.throwIfAborted();
   await initPool();
   // initPool yields to the microtask queue; the caller may have aborted
   // while WASM compilation was in flight.
-  if (signal?.aborted) {
-    throw abortReasonToError(signal.reason);
-  }
+  signal?.throwIfAborted();
   const idle = _pool.find((inst) => !inst.busy);
   if (idle) {
     idle.busy = true;
@@ -216,7 +202,7 @@ async function acquireInstance(signal?: AbortSignal): Promise<PoolInstance> {
         // forever and leak it from the pool).
         removeWaiter();
         cleanup();
-        reject(abortReasonToError(signal.reason));
+        reject(signal.reason);
       };
       signal.addEventListener('abort', abortListener, { once: true });
     }
@@ -550,9 +536,7 @@ async function subsetFontWithGlyphs(
   }: SubsetFontWithGlyphsOptions = {}
 ): Promise<Buffer> {
   // Bail out before any work if the caller has already cancelled.
-  if (signal?.aborted) {
-    throw abortReasonToError(signal.reason);
-  }
+  signal?.throwIfAborted();
 
   // Reuse cached sfnt conversion when available (same buffer may have
   // been converted by getFontInfo or collectFeatureGlyphIds already).
@@ -628,9 +612,7 @@ async function subsetFontWithGlyphs(
     }
     // The synchronous JS converters don't take a signal; honor cancellation
     // explicitly so an abort during subsetting isn't ignored on this path.
-    if (signal?.aborted) {
-      throw abortReasonToError(signal.reason);
-    }
+    signal?.throwIfAborted();
     return fontverter.convert(subsetFont as Buffer, targetFormat, 'truetype');
   } finally {
     if (!released) releaseInstance(inst);

@@ -780,6 +780,9 @@ const subfont = async function subfont(
   const trackPhase = makePhaseTracker({ log }, debug);
 
   try {
+    // Bail before any crawling/IO if the caller already cancelled.
+    signal?.throwIfAborted();
+
     const loadAssetsPhase = trackPhase('loadAssets');
     await assetGraph.loadAssets(inputUrls);
     outerTimings.loadAssets = loadAssetsPhase.end();

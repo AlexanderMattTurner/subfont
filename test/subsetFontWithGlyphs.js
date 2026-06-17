@@ -454,29 +454,46 @@ describe('subsetFontWithGlyphs', function () {
     // primitives directly. The pool is process-global, so every test here
     // releases everything it acquired in a finally block.
     async function drainPool() {
+      // Warm the pool first so initPool()'s one-time WASM compile/instantiate
+      // is already resolved. Otherwise the very first acquire would await that
+      // (slow) work and lose the setImmediate race below, making us
+      // misclassify an idle pool as saturated and acquire nothing.
+      await subsetFontWithGlyphs.warmup();
       const held = [];
-      // MAX_POOL_SIZE is the cap; the real pool is min(cpus, MAX_POOL_SIZE).
-      // Keep acquiring until the next acquire has to wait — at that point the
-      // pool is fully saturated. Each acquire carries its own signal so the
-      // one that queues can be cancelled cleanly instead of dangling.
-      for (let i = 0; i < MAX_POOL_SIZE; i++) {
-        const controller = new AbortController();
-        const racer = subsetFontWithGlyphs._acquireInstance(controller.signal);
-        const sentinel = Symbol('pending');
-        const winner = await Promise.race([
-          racer.then(
-            (inst) => inst,
-            () => sentinel
-          ),
-          new Promise((resolve) => setImmediate(() => resolve(sentinel))),
-        ]);
-        if (winner === sentinel) {
-          // Genuinely pending ⟹ queued ⟹ pool drained. Cancel it and stop.
-          controller.abort(new Error('drain helper: pool already full'));
-          await racer.catch(() => {});
-          break;
+      try {
+        // MAX_POOL_SIZE is the cap; the real pool is min(cpus, MAX_POOL_SIZE).
+        // Keep acquiring until the next acquire has to wait — at that point
+        // the pool is fully saturated. With the pool warmed, an idle acquire
+        // resolves on a microtask and beats setImmediate, while a queued one
+        // stays pending and loses, so the classification is deterministic.
+        // Each acquire carries its own signal so the one that queues can be
+        // cancelled cleanly instead of dangling.
+        for (let i = 0; i < MAX_POOL_SIZE; i++) {
+          const controller = new AbortController();
+          const racer = subsetFontWithGlyphs._acquireInstance(
+            controller.signal
+          );
+          const sentinel = Symbol('pending');
+          const winner = await Promise.race([
+            racer.then(
+              (inst) => inst,
+              () => sentinel
+            ),
+            new Promise((resolve) => setImmediate(() => resolve(sentinel))),
+          ]);
+          if (winner === sentinel) {
+            // Genuinely pending ⟹ queued ⟹ pool drained. Cancel it and stop.
+            controller.abort(new Error('drain helper: pool already full'));
+            await racer.catch(() => {});
+            break;
+          }
+          held.push(winner);
         }
-        held.push(winner);
+      } catch (err) {
+        // Never strand acquired instances in the process-global pool if the
+        // drain throws partway through.
+        for (const inst of held) subsetFontWithGlyphs._releaseInstance(inst);
+        throw err;
       }
       return held;
     }
@@ -516,9 +533,11 @@ describe('subsetFontWithGlyphs', function () {
         const released = held.pop();
         subsetFontWithGlyphs._releaseInstance(released);
         extra = await subsetFontWithGlyphs._acquireInstance();
-        // A successful acquire marks the instance busy; if the aborted waiter
-        // had grabbed it instead, this acquire would have hung.
-        expect(extra.busy, 'to be true');
+        // With every other instance held, the only idle one is the instance
+        // we just released. Getting it back proves the aborted waiter did not
+        // grab and strand it; if it had, this acquire would have queued and
+        // hung instead.
+        expect(extra, 'to be', released);
       } finally {
         if (extra) subsetFontWithGlyphs._releaseInstance(extra);
         for (const inst of held) subsetFontWithGlyphs._releaseInstance(inst);

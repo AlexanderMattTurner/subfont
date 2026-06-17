@@ -1691,9 +1691,10 @@ async function subsetFonts(
 
   const { pages, fontFaceDeclarationsByHtmlOrSvgAsset } =
     await runCollectAndPrepPagesPhase(preCtx);
-  // Tracing honors the signal by stopping early and returning partial
-  // results; surface that as a rejection so a cancelled run doesn't go on to
-  // subset and emit output built from incomplete data.
+  // The worker trace path rethrows on abort, but the dynamic (headless
+  // browser) path stops early and leaves partial results instead. Re-check
+  // here so a cancelled dynamic run rejects rather than subsetting and
+  // emitting output built from incomplete data.
   signal?.throwIfAborted();
   const ctx: SubsetCtx = {
     ...preCtx,
