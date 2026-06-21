@@ -263,7 +263,7 @@ class HeadlessBrowser {
         this.console.error(err);
       }
     });
-    page.on('error', this.console.error);
+    page.on('error', (err) => this.console.error(err));
   }
 
   async tracePage(htmlAsset: Asset): Promise<TraceResult[]> {

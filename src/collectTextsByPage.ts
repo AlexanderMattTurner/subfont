@@ -9,6 +9,7 @@ import HeadlessBrowser = require('./HeadlessBrowser');
 import FontTracerPool = require('./FontTracerPool');
 import gatherStylesheetsWithPredicates = require('./gatherStylesheetsWithPredicates');
 import { MAX_POOL_SIZE } from './concurrencyLimit';
+import { runWithConcurrency } from './runWithConcurrency';
 import * as cssFontParser from 'css-font-parser';
 import unquote = require('./unquote');
 import normalizeFontPropertyValue = require('./normalizeFontPropertyValue');
@@ -58,25 +59,6 @@ const MIN_PAGES_FOR_WORKER_POOL = 4;
 // Each tab is an independent puppeteer page, so a handful of concurrent traces
 // overlaps page load / script-injection latency without overwhelming Chromium.
 const DEFAULT_DYNAMIC_CONCURRENCY = 4;
-
-// Run an async worker over each item with a bounded number of in-flight tasks.
-// Tasks may complete out of order; the first rejection propagates (matching the
-// previous serial loop's fail-fast behavior).
-async function runWithConcurrency<T>(
-  items: T[],
-  limit: number,
-  worker: (item: T) => Promise<void>
-): Promise<void> {
-  const effectiveLimit = Math.max(1, Math.min(limit, items.length));
-  let nextIndex = 0;
-  async function runner(): Promise<void> {
-    while (nextIndex < items.length) {
-      const item = items[nextIndex++];
-      await worker(item);
-    }
-  }
-  await Promise.all(Array.from({ length: effectiveLimit }, () => runner()));
-}
 
 const initialValueByProp: Record<string, string> = {
   'font-style': allInitialValues['font-style'],
@@ -548,10 +530,12 @@ async function tracePages(
         : Math.min(os.cpus().length, MAX_POOL_SIZE);
     const numWorkers = Math.min(maxWorkers, totalPages);
     const pool = new FontTracerPool(numWorkers);
-    await pool.init();
 
     let fallbackCount = 0;
     try {
+      // init() inside the try so a partially-initialized pool is still torn
+      // down by the finally below (otherwise the worker threads leak).
+      await pool.init();
       progress.banner(
         `  Tracing fonts across ${totalPages} pages using ${numWorkers} worker${numWorkers === 1 ? '' : 's'}...`
       );

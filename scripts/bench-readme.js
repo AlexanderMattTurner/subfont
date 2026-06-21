@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Reproducible benchmarks for the README's "Naive subset vs subfont" table.
+// Reproducible benchmarks for the README's "Upstream subfont vs
+// `@turntrout/subfont`" table.
 // Run after any change to subsetting options:
 //   pnpm run build && node scripts/bench-readme.js
 // "Upstream" = the `subset-font` package upstream subfont uses (only
