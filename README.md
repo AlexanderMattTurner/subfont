@@ -21,6 +21,8 @@ A faster fork of [subfont](https://github.com/Munter/subfont) that subsets web f
 | Family-scoped page text (gated) | On shared-CSS pages, attributes a page's visible text only to the webfont families whose selectors can match an element on that page (falls back to all families when the `font-family` rules can't be parsed) |
 | Non-rendered attribute skip     | Excludes `title`/`aria-label`/`aria-description` text from subsets (tooltips render in the OS font; ARIA labels are never painted)                                                                             |
 
+### Upstream subfont vs `@turntrout/subfont`
+
 Reproducible benchmark on `testdata/subsetFonts/OpenSans-400.ttf` (run with `node scripts/bench-readme.js`); "upstream" = the [`subset-font`](https://github.com/papandreou/subset-font) package the original [Munter/subfont](https://github.com/Munter/subfont) uses, woff2-compressed:
 
 | Text sample       | Upstream subfont | `@turntrout/subfont` | Savings |
