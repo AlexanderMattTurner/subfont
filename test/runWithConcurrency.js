@@ -45,7 +45,7 @@ describe('runWithConcurrency', function () {
     );
   });
 
-  it('should stop pulling new items after a rejection', async function () {
+  it('should stop a single runner from pulling items after a rejection', async function () {
     const started = [];
     await expect(
       runWithConcurrency([1, 2, 3, 4, 5, 6], 1, async (item) => {
@@ -57,6 +57,36 @@ describe('runWithConcurrency', function () {
     // With concurrency 1, item 1 then item 2 run; item 2 throws, so items
     // 3..6 must never start.
     expect(started, 'to equal', [1, 2]);
+  });
+
+  it('should stop sibling runners from pulling new items after a rejection', async function () {
+    // The point of the `stopped` flag: with concurrency > 1, a sibling runner
+    // that is still in flight when another task rejects must not go on to pull
+    // further items. Runner A takes item 1 and throws; runner B takes the slow
+    // item 2. Without the flag, runner B would pull items 3 and 4 once item 2
+    // settles. With it, runner B stops, so only items 1 and 2 ever start.
+    //
+    // Promise.all rejects the moment item 1 throws, so we must let the slow
+    // sibling run to completion *after* the rejection before asserting —
+    // otherwise items 3/4 would still be pulled in the background unobserved.
+    const started = [];
+    let rejected;
+    const run = runWithConcurrency([1, 2, 3, 4], 2, async (item) => {
+      started.push(item);
+      if (item === 1) {
+        throw new Error('fail fast');
+      }
+      // Slow sibling: still running when item 1 rejects.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    await expect(run, 'to be rejected with', 'fail fast');
+    await run.catch((err) => {
+      rejected = err;
+    });
+    // Wait well past the slow task so any background pulls would have happened.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(rejected, 'to have message', 'fail fast');
+    expect(started.sort(), 'to equal', [1, 2]);
   });
 
   it('should let an already in-flight task settle after a sibling rejects', async function () {
