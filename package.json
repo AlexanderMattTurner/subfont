@@ -56,7 +56,13 @@
     "automation",
     "woff",
     "woff2",
-    "preload"
+    "preload",
+    "font-subsetting",
+    "variable-fonts",
+    "harfbuzz",
+    "google-fonts",
+    "web-performance",
+    "typescript"
   ],
   "author": "Alexander Turner",
   "license": "MIT",
