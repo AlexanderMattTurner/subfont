@@ -570,7 +570,8 @@ async function tracePages(
             } catch (fallbackErr) {
               const fbErr = fallbackErr as Error;
               throw new Error(
-                `fontTracer failed for ${pd.htmlOrSvgAsset.url} in both worker (${workerErr.message}) and main thread: ${fbErr.message}`
+                `fontTracer failed for ${pd.htmlOrSvgAsset.url} in both worker (${workerErr.message}) and main thread (${fbErr.message})`,
+                { cause: new AggregateError([workerErr, fbErr]) }
               );
             }
           }
