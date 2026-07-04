@@ -117,9 +117,7 @@ function promoteUnreleased() {
   }
 
   const dated = `## [${env.newVersion}] - ${env.releaseDate}\n\n${body}\n`;
-  const updated =
-    `${split.before}## Unreleased\n\n${dated}` +
-    split.afterBlock.replace(/^\n+/, "\n");
+  const updated = `${split.before}## Unreleased\n\n${dated}${split.afterBlock.replace(/^\n+/, "\n")}`;
 
   atomicWrite(CHANGELOG_PATH, updated);
   process.stdout.write(

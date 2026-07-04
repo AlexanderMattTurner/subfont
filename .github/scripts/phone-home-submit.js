@@ -1,9 +1,9 @@
 // @ts-check
-"use strict";
+'use strict';
 
-const fs = require("fs");
+const fs = require('fs');
 
-const PHONE_HOME_DIR = "/tmp/phone-home";
+const PHONE_HOME_DIR = '/tmp/phone-home';
 
 /**
  * Submit extracted lessons as an issue on the template repository.
@@ -15,7 +15,7 @@ const PHONE_HOME_DIR = "/tmp/phone-home";
  * @param {{ rest: { issues: { create(p: object): Promise<{data: {html_url: string, number: number}}>; addLabels(p: object): Promise<void> } } }} params.github
  */
 module.exports = async ({ github }) => {
-  const lessons = fs.readFileSync(`${PHONE_HOME_DIR}/lessons.txt`, "utf8");
+  const lessons = fs.readFileSync(`${PHONE_HOME_DIR}/lessons.txt`, 'utf8');
   const prTitle = process.env.PR_TITLE;
   const prUrl = process.env.PR_URL;
   const repo = process.env.SOURCE_REPO;
@@ -23,25 +23,25 @@ module.exports = async ({ github }) => {
 
   if (!prTitle || !prUrl || !repo || !templateRepo) {
     throw new Error(
-      "Missing required env vars: PR_TITLE, PR_URL, SOURCE_REPO, TEMPLATE_REPO must all be set",
+      'Missing required env vars: PR_TITLE, PR_URL, SOURCE_REPO, TEMPLATE_REPO must all be set'
     );
   }
 
   const issueBody = [
     `## Improvement Suggestion from \`${repo}\``,
-    "",
+    '',
     `**Source PR:** ${prUrl}`,
     `**PR Title:** ${prTitle}`,
-    "",
-    "## Lessons Learned",
-    "",
+    '',
+    '## Lessons Learned',
+    '',
     lessons,
-    "",
-    "---",
+    '',
+    '---',
     `*Automatically submitted by the phone-home workflow from \`${repo}\`.*`,
-  ].join("\n");
+  ].join('\n');
 
-  const [templateOwner, templateRepoName] = templateRepo.split("/");
+  const [templateOwner, templateRepoName] = templateRepo.split('/');
   let issue;
   try {
     issue = await github.rest.issues.create({
@@ -53,9 +53,9 @@ module.exports = async ({ github }) => {
     console.log(`Created issue on template repo: ${issue.data.html_url}`);
   } catch (error) {
     console.log(`Could not create issue on ${templateRepo}: ${error.message}`);
-    console.log("This is expected if TEMPLATE_SYNC_TOKEN is not configured.");
-    console.log("To enable phone-home, add a TEMPLATE_SYNC_TOKEN secret with");
-    console.log("permission to create issues on the template repository.");
+    console.log('This is expected if TEMPLATE_SYNC_TOKEN is not configured.');
+    console.log('To enable phone-home, add a TEMPLATE_SYNC_TOKEN secret with');
+    console.log('permission to create issues on the template repository.');
     return;
   }
 
@@ -64,11 +64,11 @@ module.exports = async ({ github }) => {
       owner: templateOwner,
       repo: templateRepoName,
       issue_number: issue.data.number,
-      labels: ["phone-home", "triage"],
+      labels: ['phone-home', 'triage'],
     });
   } catch (labelError) {
     console.log(
-      `Could not add labels (they may not exist yet): ${labelError.message}`,
+      `Could not add labels (they may not exist yet): ${labelError.message}`
     );
   }
 };
