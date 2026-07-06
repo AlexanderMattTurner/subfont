@@ -306,6 +306,11 @@ declare module 'postcss-value-parser' {
   }
   export interface Root {
     nodes: Node[];
+    // Depth-first traversal of every node in the tree (not just the top-level
+    // nodes). Returning false from the callback skips the node's descendants.
+    walk(
+      callback: (node: Node, index: number, nodes: Node[]) => boolean | void
+    ): Root;
   }
   interface ParserFn {
     (value: string): Root;

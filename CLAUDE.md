@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-subfont is a CLI tool and Node.js library that speeds up initial page paint by automatically subsetting local or Google fonts and loading them optimally. It uses puppeteer to trace font usage across pages and generates optimized font subsets.
+subfont is a CLI tool and Node.js library that speeds up initial page paint by automatically subsetting local or Google fonts and loading them optimally. By default it traces font usage across pages statically with `font-tracer` in a worker-thread pool; the opt-in `--dynamic` flag additionally traces JS-rendered content in headless Chrome via puppeteer. It then generates optimized font subsets.
 
 ## Development Commands
 

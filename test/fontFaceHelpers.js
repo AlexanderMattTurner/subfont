@@ -1,5 +1,6 @@
 const expect = require('unexpected');
 const {
+  escapeCssStringContent,
   stringifyFontFamily,
   maybeCssQuote,
   getPreferredFontUrl,
@@ -41,9 +42,89 @@ describe('fontFaceHelpers', function () {
         expected: '"Noto Sans JP"',
         desc: 'multi-word CJK font name',
       },
+      {
+        // A leading digit is not a valid CSS <custom-ident>; emitting it
+        // unquoted (the previous behaviour) produced invalid CSS.
+        input: '1900',
+        expected: '"1900"',
+        desc: 'digit-leading name (not a valid CSS identifier)',
+      },
+      {
+        // A bare hyphen (not followed by a letter/underscore) is not a valid
+        // identifier start and must be quoted.
+        input: '-9',
+        expected: '"-9"',
+        desc: 'hyphen-then-digit name (not a valid CSS identifier)',
+      },
+      {
+        input: '--foo',
+        expected: '"--foo"',
+        desc: 'double-hyphen name (conservatively quoted)',
+      },
     ].forEach(({ input, expected, desc }) => {
       it(`should handle ${desc}: ${JSON.stringify(input)}`, function () {
         expect(stringifyFontFamily(input), 'to equal', expected);
+      });
+    });
+  });
+
+  describe('escapeCssStringContent', function () {
+    [
+      {
+        input: 'plain',
+        quote: "'",
+        expected: 'plain',
+        desc: 'plain text unchanged',
+      },
+      {
+        input: 'a\\b',
+        quote: "'",
+        expected: 'a\\\\b',
+        desc: 'backslash doubled',
+      },
+      {
+        input: "it's",
+        quote: "'",
+        expected: "it\\'s",
+        desc: 'active single quote escaped',
+      },
+      {
+        input: 'say "hi"',
+        quote: "'",
+        expected: 'say "hi"',
+        desc: 'inactive double quote left alone',
+      },
+      {
+        // A raw newline inside a CSS string terminates it and corrupts the
+        // rest of the stylesheet; it must be emitted as a `\A ` escape.
+        input: 'a\nb',
+        quote: "'",
+        expected: 'a\\a b',
+        desc: 'newline escaped with trailing delimiter',
+      },
+      {
+        input: 'a\tb',
+        quote: '"',
+        expected: 'a\\9 b',
+        desc: 'tab escaped',
+      },
+      {
+        // The trailing space must survive so the following hex digit is not
+        // absorbed into the escape (`\9 1`, not `\91`).
+        input: '\t1',
+        quote: "'",
+        expected: '\\9 1',
+        desc: 'escape delimiter preserved before a hex digit',
+      },
+      {
+        input: 'a\u007fb',
+        quote: "'",
+        expected: 'a\\7f b',
+        desc: 'DEL control character escaped',
+      },
+    ].forEach(({ input, quote, expected, desc }) => {
+      it(`should handle ${desc}`, function () {
+        expect(escapeCssStringContent(input, quote), 'to equal', expected);
       });
     });
   });
