@@ -9,30 +9,55 @@ const contentTypeByFontFormat: Record<string, string> = {
   truetype: 'font/ttf',
 };
 
-// Backslashes must be escaped first; otherwise a literal `\` followed by the
-// closing quote forms a CSS escape sequence rather than `\` + quote.
+// Escape a value for safe inclusion inside a CSS string token delimited by
+// `quote`. Single pass over the source characters so the escape backslashes we
+// insert are never re-scanned:
+//   - `\`     -> `\\`  (must be first, or `\` + the closing quote would read
+//                       as one escape sequence rather than backslash + quote).
+//   - `quote` -> `\quote` (only the active delimiter; the other quote is safe
+//                          literal content).
+//   - control characters (incl. raw newlines, which would terminate the
+//     string and corrupt the rest of the stylesheet) -> a `\HH ` hex escape.
+//     The trailing space delimits the escape so a following hex digit isn't
+//     absorbed into it (`\a` + `1` must stay `\a 1`, not become `\a1`).
 export function escapeCssStringContent(
   value: string,
   quote: "'" | '"'
 ): string {
-  const quoteEscape = quote === "'" ? "\\'" : '\\"';
-  return value
-    .replace(/\\/g, '\\\\')
-    .replace(new RegExp(quote, 'g'), quoteEscape);
+  let result = '';
+  for (const ch of value) {
+    const codePoint = ch.codePointAt(0)!;
+    if (ch === '\\' || ch === quote) {
+      result += `\\${ch}`;
+    } else if (codePoint <= 0x1f || codePoint === 0x7f) {
+      result += `\\${codePoint.toString(16)} `;
+    } else {
+      result += ch;
+    }
+  }
+  return result;
 }
 
+// A CSS <custom-ident> must start with a letter or underscore (or a hyphen
+// followed by a letter/underscore), never a digit or a bare hyphen. Anything
+// else must be quoted or it is invalid CSS — a leading-digit name like "1900"
+// or a bare "-9" emitted unquoted breaks parsing. Non-ASCII and `--`-prefixed
+// names are conservatively quoted too: over-quoting is always safe because a
+// quoted <string> is valid wherever a family name is, whereas under-quoting
+// produces broken output. Shared by stringifyFontFamily and maybeCssQuote so
+// both agree on what counts as a safe bareword.
+const SAFE_CSS_IDENT_RE = /^-?[a-z_][\w-]*$/i;
+
 export function stringifyFontFamily(name: string): string {
-  if (/[^\w-]/.test(name)) {
-    return `"${escapeCssStringContent(name, '"')}"`;
-  } else {
+  if (SAFE_CSS_IDENT_RE.test(name)) {
     return name;
+  } else {
+    return `"${escapeCssStringContent(name, '"')}"`;
   }
 }
 
 export function maybeCssQuote(value: string): string {
-  // CSS identifiers must start with a letter or underscore (or hyphen
-  // followed by a letter/underscore), not a digit or bare hyphen.
-  if (/^[a-z_][\w-]*$|^-[a-z_][\w-]*$/i.test(value)) {
+  if (SAFE_CSS_IDENT_RE.test(value)) {
     return value;
   } else {
     return `'${escapeCssStringContent(value, "'")}'`;

@@ -38,4 +38,35 @@ describe('extractReferencedCustomPropertyNames', function () {
       new Set(['--abc', '--def'])
     );
   });
+
+  it('should find var() references nested inside another function', function () {
+    // Regression: a flat scan of only the top-level nodes missed these,
+    // dropping custom-property definitions from the dependency graph.
+    expect(
+      extractReferencedCustomPropertyNames('calc(var(--x) * 2)'),
+      'to equal',
+      new Set(['--x'])
+    );
+    expect(
+      extractReferencedCustomPropertyNames('rgb(var(--r), 0, 0)'),
+      'to equal',
+      new Set(['--r'])
+    );
+  });
+
+  it('should find a var() reference nested in another var()’s fallback', function () {
+    expect(
+      extractReferencedCustomPropertyNames('var(--a, var(--b))'),
+      'to equal',
+      new Set(['--a', '--b'])
+    );
+  });
+
+  it('should match the var() function name case-insensitively', function () {
+    expect(
+      extractReferencedCustomPropertyNames('VAR(--y)'),
+      'to equal',
+      new Set(['--y'])
+    );
+  });
 });

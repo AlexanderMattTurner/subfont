@@ -92,4 +92,18 @@ describe('stripLocalTokens', function () {
       "url('foo'), url('baz')"
     );
   });
+
+  it('should strip a trailing local(...) token together with the preceding comma', function () {
+    // Regression: removing only the local() left a dangling separator
+    // (`url(a), `), which is an invalid src descriptor.
+    expect(`url(a), local("b")`, 'to come out as', 'url(a)');
+  });
+
+  it('should strip a trailing local(...) token when the comma has surrounding space', function () {
+    expect(`url(a) , local(b)`, 'to come out as', 'url(a)');
+  });
+
+  it('should strip multiple trailing local(...) tokens', function () {
+    expect(`url(a), local(b), local(c)`, 'to come out as', 'url(a)');
+  });
 });

@@ -23,7 +23,7 @@ A faster fork of [subfont](https://github.com/Munter/subfont) that subsets web f
 
 ### Upstream subfont vs `@turntrout/subfont`
 
-Reproducible benchmark on `testdata/subsetFonts/OpenSans-400.ttf` (run with `node scripts/bench-readme.js`); "upstream" = the [`subset-font`](https://github.com/papandreou/subset-font) package the original [Munter/subfont](https://github.com/Munter/subfont) uses, woff2-compressed:
+Reproducible benchmark on `testdata/subsetFonts/OpenSans-400.ttf` (run with `pnpm run build && node scripts/bench-readme.js`); "upstream" = the [`subset-font`](https://github.com/papandreou/subset-font) package the original [Munter/subfont](https://github.com/Munter/subfont) uses, woff2-compressed:
 
 | Text sample       | Upstream subfont | `@turntrout/subfont` | Savings |
 | ----------------- | ---------------- | -------------------- | ------- |
@@ -168,7 +168,7 @@ The `options` object accepts the following keys:
 | `inlineCss`     | `boolean`           | `false`  | Inline the subset `@font-face` CSS into the HTML document.                                                                                 |
 | `relativeUrls`  | `boolean`           | `false`  | Emit relative URLs instead of root-relative URLs.                                                                                          |
 | `sourceMaps`    | `boolean`           | `false`  | Preserve CSS source maps (slower).                                                                                                         |
-| `concurrency`   | `number`            | auto     | Max parallel tracing workers. Defaults to CPU count, capped by available memory (~50 MB per worker).                                       |
+| `concurrency`   | `number`            | auto     | Max parallel tracing workers. Defaults to the CPU count, capped at 8. Exceeding the memory-based estimate (~50 MB per worker) warns.       |
 | `chromeFlags`   | `string[]`          | `[]`     | Extra Chrome flags forwarded to puppeteer when `dynamic` is set.                                                                           |
 | `cache`         | `boolean \| string` | `false`  | Cache subset results between runs. Pass a path to customize the cache directory; `true` uses `.subfont-cache` inside the `root` directory. |
 | `strict`        | `boolean`           | `false`  | Resolve with a non-zero exit (via the CLI) if any warnings are emitted.                                                                    |
