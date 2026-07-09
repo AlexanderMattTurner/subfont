@@ -13,6 +13,17 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
+# Requirements for this workflow to actually merge:
+#   1. Repo setting "Allow auto-merge" (Settings → General → Pull Requests) must
+#      be ON — otherwise `gh pr merge --auto` has nothing to enable and errors.
+#   2. Branch protection with at least one required status check must be ON, or
+#      there is no "pending" state for auto-merge to wait on and the PR merges
+#      immediately (or the command fails). Auto-merge only fires once required
+#      checks pass.
+# Note on the token: workflows triggered by Dependabot receive a read-only
+# GITHUB_TOKEN by default. The explicit `permissions:` block below overrides that
+# default and restores the write scopes (contents + pull-requests) this job needs
+# — without it, both the merge and the comment step would 403.
 permissions:
   contents: write
   pull-requests: write
