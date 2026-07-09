@@ -95,8 +95,8 @@ REQUEST_BODY=$(jq -n \
         properties: {
           bump_type: {
             type: "string",
-            enum: ["major", "minor", "patch"],
-            description: "The semantic version bump type."
+            enum: ["minor", "patch"],
+            description: "The semantic version bump type. Automated releases are minor or patch only; a major release is cut by hand."
           }
         },
         required: ["bump_type"]
@@ -141,6 +141,14 @@ if [[ "$BUMP" != "major" && "$BUMP" != "minor" && "$BUMP" != "patch" ]]; then
   exit 1
 fi
 
+# Safety net: automated MAJOR bumps are disabled — a real major release is a
+# deliberate, hand-cut act. Cap any "major" down to "minor" regardless of how it
+# was produced (the tool schema no longer offers "major", but defend anyway).
+if [[ "$BUMP" == "major" ]]; then
+  echo "Automated MAJOR bumps are disabled; capping to minor (a real major release is cut by hand)." >&2
+  BUMP="minor"
+fi
+
 echo "Claude determined bump level: $BUMP"
 
 # Parse version components
@@ -151,14 +159,15 @@ PATCH_NUM="${PATCH_NUM:-0}"
 
 # Calculate new version
 case $BUMP in
-  major)
-    NEW_VERSION="$((MAJOR + 1)).0.0"
-    ;;
   minor)
     NEW_VERSION="${MAJOR}.$((MINOR + 1)).0"
     ;;
   patch)
     NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH_NUM + 1))"
+    ;;
+  *)
+    echo "Error: unexpected bump level '$BUMP' at version calculation" >&2
+    exit 1
     ;;
 esac
 
