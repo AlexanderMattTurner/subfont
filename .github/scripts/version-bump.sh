@@ -295,7 +295,12 @@ fi
 # workflow run. The tag is created AFTER this commit (and only if it reached the
 # branch) so HEAD == tag SHA and the next run sees "HEAD is already tagged".
 RELEASE_DOCS_PUSH_FAILED=0
-DEFAULT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+# Prefer the branch name Actions passes in GITHUB_REF_NAME: after
+# `actions/checkout` with fetch-depth: 0 the runner is often on a detached HEAD,
+# where `git rev-parse --abbrev-ref HEAD` yields "HEAD" and the push target
+# below would be wrong. Fall back to the git query only for local invocations
+# where GITHUB_REF_NAME is unset.
+DEFAULT_BRANCH="${GITHUB_REF_NAME:-$(git rev-parse --abbrev-ref HEAD)}"
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 if git diff --quiet -- CHANGELOG.md; then

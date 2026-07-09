@@ -55,7 +55,7 @@ gh_api_section \
   echo ""
   echo "## pnpm audit"
 } >>"$REPORT_PATH"
-# Skip when there's no Node project — setup-base-env leaves pnpm uninstalled
+# Skip when there's no Node project — the setup step leaves pnpm uninstalled
 # in that case, and `pnpm audit` would error out instead of returning "clean".
 if [[ -f package.json ]]; then
   pnpm audit 2>&1 | head -100 >>"$REPORT_PATH"
