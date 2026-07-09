@@ -41,7 +41,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/alexander-turner/subfont.git"
+    "url": "git+https://github.com/AlexanderMattTurner/subfont.git"
   },
   "keywords": [
     "google",
@@ -67,9 +67,9 @@
   "author": "Alexander Turner",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/alexander-turner/subfont/issues"
+    "url": "https://github.com/AlexanderMattTurner/subfont/issues"
   },
-  "homepage": "https://github.com/alexander-turner/subfont#readme",
+  "homepage": "https://github.com/AlexanderMattTurner/subfont#readme",
   "dependencies": {
     "@hookun/parse-animation-shorthand": "^0.1.5",
     "@puppeteer/browsers": "^2.0.0",
