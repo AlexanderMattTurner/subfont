@@ -414,6 +414,25 @@ describe('subsetGeneration', function () {
       expect(await cache.get('mykey'), 'to equal', buf);
     });
 
+    it('should reject and delete a cache entry with no known font magic', async function () {
+      // Anti cache-poisoning: a persistent --cache dir shared in CI could be
+      // tampered with. get() must treat a file whose bytes lack a font magic
+      // as a miss AND delete it so it can't be re-read.
+      const cache = new SubsetDiskCache(tmpDir);
+      const filePath = pathModule.join(tmpDir, 'poisoned');
+      fs.writeFileSync(filePath, Buffer.from('not a real font'));
+      expect(await cache.get('poisoned'), 'to be undefined');
+      expect(fs.existsSync(filePath), 'to be false');
+    });
+
+    it('should reject and delete a truncated (sub-4-byte) cache entry', async function () {
+      const cache = new SubsetDiskCache(tmpDir);
+      const filePath = pathModule.join(tmpDir, 'tiny');
+      fs.writeFileSync(filePath, Buffer.from([0x00, 0x01]));
+      expect(await cache.get('tiny'), 'to be undefined');
+      expect(fs.existsSync(filePath), 'to be false');
+    });
+
     it('should create nested cache directories on first write', async function () {
       const nested = pathModule.join(tmpDir, 'sub', 'dir');
       await new SubsetDiskCache(nested).set('key', Buffer.from('data'));
