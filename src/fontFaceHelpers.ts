@@ -348,15 +348,21 @@ export function parseFontWeightRange(
   str: string | undefined,
   warn?: RangeWarnFn
 ): [number, number] {
-  if (typeof str === 'undefined' || str === 'auto') {
+  if (typeof str === 'undefined' || str.trim() === 'auto') {
     return [-Infinity, Infinity];
   }
   // Resolve keyword forms ("normal" → 400, "bold" → 700) before numeric
-  // parsing so they're not falsely flagged as malformed.
-  const fontWeightTokens = str.split(/\s+/).map((s) => {
-    const normalized = normalizeFontPropertyValue('font-weight', s);
-    return parseFloat(String(normalized));
-  });
+  // parsing so they're not falsely flagged as malformed. Trim first so
+  // leading/trailing whitespace (e.g. " 100 900") doesn't split into an
+  // empty token → NaN → the whole valid range being discarded.
+  const fontWeightTokens = str
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((s) => {
+      const normalized = normalizeFontPropertyValue('font-weight', s);
+      return parseFloat(String(normalized));
+    });
   if (
     [1, 2].includes(fontWeightTokens.length) &&
     !fontWeightTokens.some(isNaN)
@@ -377,13 +383,17 @@ export function parseFontStretchRange(
   str: string | undefined,
   warn?: RangeWarnFn
 ): [number, number] {
-  if (typeof str === 'undefined' || str.toLowerCase() === 'auto') {
+  if (typeof str === 'undefined' || str.trim().toLowerCase() === 'auto') {
     return [-Infinity, Infinity];
   }
-  const fontStretchTokens = str.split(/\s+/).map((s) => {
-    const normalized = normalizeFontPropertyValue('font-stretch', s);
-    return parseFloat(String(normalized));
-  });
+  const fontStretchTokens = str
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((s) => {
+      const normalized = normalizeFontPropertyValue('font-stretch', s);
+      return parseFloat(String(normalized));
+    });
   if (
     [1, 2].includes(fontStretchTokens.length) &&
     !fontStretchTokens.some(isNaN)
