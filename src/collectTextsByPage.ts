@@ -741,8 +741,53 @@ const PAGE_WIDE_SUBJECTS = new Set<string>(['html', 'body', ':root', '*', '']);
 // stripped before extraction: they're not safe to gate on, and dropping them
 // only widens matching (a necessary-condition check stays sound). Attribute
 // selectors gate on the attribute name only; values are ignored (widening).
+// Split a selector into compounds at combinators, ignoring combinator
+// characters and whitespace inside attribute selectors, quoted strings, and
+// functional-pseudo arguments (e.g. `[class~="a b"]`, `:nth-child(2n + 1)`).
+// Returns null for a selector with unbalanced brackets/quotes/parens — the
+// caller must treat that as "no gate" (the safe, widening direction).
+function splitSelectorCompounds(selector: string): string[] | null {
+  const compounds: string[] = [];
+  let current = '';
+  let inBrackets = false;
+  let parenDepth = 0;
+  let quote: string | null = null;
+  for (const ch of selector) {
+    if (quote !== null) {
+      if (ch === quote) quote = null;
+      current += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === '[') inBrackets = true;
+    else if (ch === ']') inBrackets = false;
+    else if (ch === '(') parenDepth++;
+    else if (ch === ')') parenDepth = Math.max(0, parenDepth - 1);
+    if (
+      !inBrackets &&
+      parenDepth === 0 &&
+      (ch === '>' || ch === '+' || ch === '~' || /\s/.test(ch))
+    ) {
+      if (current !== '') {
+        compounds.push(current);
+        current = '';
+      }
+      continue;
+    }
+    current += ch;
+  }
+  if (current !== '') compounds.push(current);
+  if (quote !== null || inBrackets || parenDepth > 0) return null;
+  return compounds;
+}
+
 function subjectRequiredTokens(selector: string): Set<string> | null {
-  const compounds = selector.trim().split(/\s*[>+~]\s*|\s+/);
+  const compounds = splitSelectorCompounds(selector.trim());
+  if (compounds === null || compounds.length === 0) return null;
   const tokens = new Set<string>();
   for (let i = 0; i < compounds.length; i++) {
     const isSubject = i === compounds.length - 1;
@@ -1077,6 +1122,19 @@ function attrTokenRegex(token: string): RegExp {
   return regex;
 }
 
+// Shared token test for gate evaluation: `[attr]`/`[attr=value]` tokens are
+// checked against the raw page HTML, everything else against the collected
+// page tokens.
+function makePageTokenPredicate(
+  pageTokens: Set<string>,
+  pageHtmlLower: string
+): (token: string) => boolean {
+  return (token: string): boolean =>
+    token.startsWith('[')
+      ? attrTokenRegex(token).test(pageHtmlLower)
+      : pageTokens.has(token);
+}
+
 // Whether a font-family (any of a group's declared names) renders text on the
 // page given the representative's applicability analysis and the page's
 // tokens.
@@ -1086,10 +1144,7 @@ function familyAppliesToPage(
   pageTokens: Set<string>,
   pageHtmlLower: string
 ): boolean {
-  const pageHasToken = (token: string): boolean =>
-    token.startsWith('[')
-      ? attrTokenRegex(token).test(pageHtmlLower)
-      : pageTokens.has(token);
+  const pageHasToken = makePageTokenPredicate(pageTokens, pageHtmlLower);
   for (const fam of familyNames) {
     if (applicability.pageWideFamilies.has(fam)) return true;
     const gates = applicability.tokenGatedFamilies.get(fam);
@@ -1121,10 +1176,7 @@ function pageTextForFamilies(
     querySelectorAll?: (selector: string) => ArrayLike<TextBearingElement>;
   }
 ): string {
-  const pageHasToken = (token: string): boolean =>
-    token.startsWith('[')
-      ? attrTokenRegex(token).test(pageHtmlLower)
-      : pageTokens.has(token);
+  const pageHasToken = makePageTokenPredicate(pageTokens, pageHtmlLower);
   let scopedText = '';
   for (const fam of familyNames) {
     if (applicability.pageWideFamilies.has(fam)) return pageText;

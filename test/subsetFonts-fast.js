@@ -316,6 +316,32 @@ describe('subsetFonts fast-path (shared CSS optimization)', function () {
     });
   });
 
+  describe('attribute-operator gating selectors', function () {
+    it('should never drop gated text when the gate uses an attribute operator', async function () {
+      httpception();
+
+      // `[class~='fancy']` contains a combinator character inside brackets;
+      // compound splitting must keep the attribute selector intact. A
+      // fractured gate would produce unsatisfiable required tokens and
+      // silently withhold the `.fancy` text from the mono subset.
+      const assetGraph = createGraph('multi-page-fast-attr-operator');
+      await loadAndPopulate(assetGraph, 'page*.html', { crossorigin: false });
+      await subsetFontsWithTestDefaults(assetGraph);
+
+      const monoFonts = assetGraph.findAssets({
+        fileName: { $regex: /^JetBrains_Mono-400-/ },
+        extension: '.woff2',
+      });
+      expect(monoFonts, 'to have length', 1);
+      const monoChars = (
+        await getFontInfo(monoFonts[0].rawSrc)
+      ).characterSet.map((cp) => String.fromCodePoint(cp));
+      for (const ch of 'QRSTUVWX') {
+        expect(monoChars, 'to contain', ch);
+      }
+    });
+  });
+
   describe('single page per CSS group', function () {
     it('should work identically when each page has unique CSS', async function () {
       httpception();
