@@ -756,7 +756,7 @@ function subjectRequiredTokens(selector: string): FamilyGate | null {
     );
     let compoundAttrTokens = 0;
     for (const { groups } of withoutPseudos.matchAll(
-      /\[\s*(?<attrName>[\w-]+)\s*(?:(?<op>[~|^$*]?=)\s*(?<attrValue>"[^"]*"|'[^']*'|[^\]\s]+))?\s*\]/g
+      /\[\s*(?<attrName>[\w-]+)\s*(?:(?<op>[~|^$*]?=)\s*(?<attrValue>"[^"]*"|'[^']*'|[^\]\s]+)\s*)?\]/g
     )) {
       if (!groups?.attrName) continue;
       const attrName = groups.attrName.toLowerCase();
@@ -1112,13 +1112,19 @@ function familyAppliesToPage(
 // matching each applicable gate's subject selector — a superset of the real
 // rule's elements, so text is only ever over-included. A gate without a
 // usable subject selector falls back to the whole page text.
+interface TextBearingElement {
+  textContent?: string | null;
+}
+
 function pageTextForFamilies(
   familyNames: string[],
   applicability: FamilyApplicability,
   pageTokens: Set<string>,
   pageHtmlLower: string,
   pageText: string,
-  parseTree: { querySelectorAll?: (selector: string) => ArrayLike<unknown> }
+  parseTree: {
+    querySelectorAll?: (selector: string) => ArrayLike<TextBearingElement>;
+  }
 ): string {
   const pageHasToken = (token: string): boolean =>
     token.startsWith('[')
@@ -1137,7 +1143,7 @@ function pageTextForFamilies(
       ) {
         return pageText;
       }
-      let elements: ArrayLike<unknown>;
+      let elements: ArrayLike<TextBearingElement>;
       try {
         elements = parseTree.querySelectorAll(gate.subjectSelector);
       } catch {
@@ -1145,9 +1151,7 @@ function pageTextForFamilies(
         return pageText;
       }
       for (const element of Array.from(elements)) {
-        const textContent = (element as { textContent?: string | null })
-          .textContent;
-        if (textContent) scopedText += textContent;
+        if (element.textContent) scopedText += element.textContent;
       }
     }
   }
@@ -1436,7 +1440,9 @@ function attributeFastPathPages(entries: AttributableEntry[]): void {
             htmlLower,
             pageText,
             pd.htmlOrSvgAsset.parseTree as {
-              querySelectorAll?: (selector: string) => ArrayLike<unknown>;
+              querySelectorAll?: (
+                selector: string
+              ) => ArrayLike<TextBearingElement>;
             }
           );
         }
