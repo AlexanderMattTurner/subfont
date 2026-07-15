@@ -1,6 +1,7 @@
 const {
   expect,
   httpception,
+  sinon,
   subsetFontsWithTestDefaults,
   getFontInfo,
   setupCleanup,
@@ -125,6 +126,130 @@ describe('subsetFonts fast-path (shared CSS optimization)', function () {
       ).characterSet.map((cp) => String.fromCodePoint(cp));
       for (const ch of 'ABCDEFGHIJKLMNOPQR') {
         expect(bodyChars, 'to contain', ch);
+      }
+    });
+  });
+
+  describe('content-hashed inline stylesheet grouping', function () {
+    it('should group pages whose inline <style> blocks are byte-identical', async function () {
+      httpception();
+
+      // Every page carries the same external stylesheet and a byte-identical
+      // inline <style> block (the critical-CSS-injection pattern). Inline
+      // assets get a fresh assetgraph id per page, so grouping must key on
+      // content, not identity.
+      const fakeConsole = { log: sinon.spy(), warn: () => {}, error: () => {} };
+      const assetGraph = createGraph('multi-page-fast-inline-hash');
+      await loadAndPopulate(
+        assetGraph,
+        ['page1.html', 'page2.html', 'page3.html', 'page4.html', 'page5.html'],
+        { crossorigin: false }
+      );
+      await subsetFontsWithTestDefaults(assetGraph, { console: fakeConsole });
+
+      const planLine = fakeConsole.log
+        .getCalls()
+        .map((call) => call.args.join(' '))
+        .find((line) => line.includes('pages with fonts:'));
+      expect(
+        planLine,
+        'to contain',
+        '5 pages with fonts: 1 to trace, 4 via cached CSS group (1 unique group)'
+      );
+
+      // The grouping must be byte-correct: every page's text ends up in the
+      // shared subset even though only one page was traced.
+      const fonts = assetGraph.findAssets({
+        fileName: { $regex: /^IBM_Plex_Sans-400-/ },
+        extension: '.woff2',
+      });
+      expect(fonts, 'to have length', 1);
+      const fontInfo = await getFontInfo(fonts[0].rawSrc);
+      const chars = fontInfo.characterSet.map((cp) => String.fromCodePoint(cp));
+      for (const ch of 'ABCDEFGHIJ') {
+        expect(chars, 'to contain', ch);
+      }
+    });
+
+    it('should keep pages differing only by a font: shorthand block in separate groups', async function () {
+      httpception();
+
+      // page6 adds an inline <style> whose only font-relevant declaration is
+      // the `font:` shorthand. That block must participate in the group key,
+      // or page6 would be wrongly attributed via page1's CSS analysis.
+      const fakeConsole = { log: sinon.spy(), warn: () => {}, error: () => {} };
+      const assetGraph = createGraph('multi-page-fast-inline-hash');
+      await loadAndPopulate(assetGraph, 'page*.html', { crossorigin: false });
+      await subsetFontsWithTestDefaults(assetGraph, { console: fakeConsole });
+
+      const planLine = fakeConsole.log
+        .getCalls()
+        .map((call) => call.args.join(' '))
+        .find((line) => line.includes('pages with fonts:'));
+      expect(
+        planLine,
+        'to contain',
+        '6 pages with fonts: 2 to trace, 4 via cached CSS group (2 unique groups)'
+      );
+    });
+  });
+
+  describe('unseen-variant guard with applicability analysis', function () {
+    it('should attribute pages that provably cannot render an unseen variant, tracing the rest', async function () {
+      httpception();
+
+      // The representative (page1) never renders 'JetBrains Mono', so that
+      // declared @font-face variant is unseen. Its family is token-gated on
+      // `.fancy`: pages 2-4 carry no such token and stay on the fast path;
+      // page5 does and must fall back to a full trace. The page-wide family
+      // is only reachable through var(--main-font), so attribution must
+      // resolve custom properties to keep page text in the main subset.
+      const fakeConsole = {
+        log: sinon.spy(),
+        warn: () => {},
+        error: () => {},
+      };
+      const assetGraph = createGraph('multi-page-fast-unseen-variant');
+      await loadAndPopulate(assetGraph, 'page*.html', { crossorigin: false });
+      await subsetFontsWithTestDefaults(assetGraph, {
+        console: fakeConsole,
+        debug: true,
+      });
+
+      const planningLine = fakeConsole.log
+        .getCalls()
+        .map((call) => call.args.join(' '))
+        .find((line) => line.includes('← Fast-path planning'));
+      expect(planningLine, 'to contain', '3 via cached rep, 1 need full trace');
+
+      const bodyFonts = assetGraph.findAssets({
+        fileName: { $regex: /^IBM_Plex_Sans-400-/ },
+        extension: '.woff2',
+      });
+      expect(bodyFonts, 'to have length', 1);
+      const bodyChars = (
+        await getFontInfo(bodyFonts[0].rawSrc)
+      ).characterSet.map((cp) => String.fromCodePoint(cp));
+      // Every page's body text reaches the var()-referenced main font.
+      for (const ch of 'ABCDEFGHIJ') {
+        expect(bodyChars, 'to contain', ch);
+      }
+
+      const monoFonts = assetGraph.findAssets({
+        fileName: { $regex: /^JetBrains_Mono-400-/ },
+        extension: '.woff2',
+      });
+      expect(monoFonts, 'to have length', 1);
+      const monoChars = (
+        await getFontInfo(monoFonts[0].rawSrc)
+      ).characterSet.map((cp) => String.fromCodePoint(cp));
+      // The full-traced page's `.fancy` text is in the mono subset...
+      for (const ch of 'QR') {
+        expect(monoChars, 'to contain', ch);
+      }
+      // ...but attributed pages' body text stays out of it.
+      for (const ch of 'CDEFGH') {
+        expect(monoChars, 'not to contain', ch);
       }
     });
   });

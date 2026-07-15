@@ -11,6 +11,7 @@ import gatherStylesheetsWithPredicates = require('./gatherStylesheetsWithPredica
 import { MAX_POOL_SIZE } from './concurrencyLimit';
 import { runWithConcurrency } from './runWithConcurrency';
 import * as cssFontParser from 'css-font-parser';
+import extractReferencedCustomPropertyNames = require('./extractReferencedCustomPropertyNames');
 import unquote = require('./unquote');
 import normalizeFontPropertyValue = require('./normalizeFontPropertyValue');
 import getCssRulesByProperty = require('./getCssRulesByProperty');
@@ -35,8 +36,10 @@ import type { Asset, AssetGraph, Relation, PostCssNode } from 'assetgraph';
 import type { FontFaceDeclaration } from 'font-snapper';
 import type { TracedFontUsage } from './types/shared';
 
+// \bfont\s*: catches the `font:` shorthand, which sets family/weight/style
+// without any longhand property appearing in the text.
 const fontRelevantCssRegex =
-  /font-family|font-weight|font-style|font-stretch|font-display|@font-face|font-variation|font-feature/i;
+  /font-family|font-weight|font-style|font-stretch|font-display|@font-face|font-variation|font-feature|\bfont\s*:/i;
 
 // The \s before style ensures we don't match data-style or similar.
 const inlineFontStyleRegex =
@@ -716,6 +719,36 @@ function subjectRequiredTokens(selector: string): Set<string> | null {
   return tokens.size === 0 ? null : tokens;
 }
 
+// Union of the families a font-family value can resolve to, following var()
+// references through the collected custom-property definitions (all candidate
+// definition values are unioned — media/theme predicates are ignored, which
+// can only widen applicability, never drop a family) and parsing var()
+// fallback values. Widening is the safe direction for both consumers: a
+// family believed applicable keeps page text in its subset and forces a
+// full trace on unseen-variant pages.
+const VAR_FALLBACK_RE = /var\(\s*--[\w-]+\s*,(?<fallback>[^()]+)\)/g;
+function expandFamilyValue(
+  value: string,
+  customPropertyValues: Map<string, string[]>,
+  visited: Set<string>
+): string[] {
+  const familyNames = [...cssFontParser.parseFontFamily(value)];
+  for (const { groups } of value.matchAll(VAR_FALLBACK_RE)) {
+    familyNames.push(...cssFontParser.parseFontFamily(groups?.fallback ?? ''));
+  }
+  for (const referencedName of extractReferencedCustomPropertyNames(value)) {
+    if (visited.has(referencedName)) continue;
+    visited.add(referencedName);
+    for (const definitionValue of customPropertyValues.get(referencedName) ||
+      []) {
+      familyNames.push(
+        ...expandFamilyValue(definitionValue, customPropertyValues, visited)
+      );
+    }
+  }
+  return familyNames;
+}
+
 // Parse the representative's stylesheets for font-family rules, classifying
 // each *webfont* family as page-wide or gated by simple subject tokens. Only
 // families backed by an @font-face matter: generic/system fallbacks (e.g.
@@ -733,20 +766,49 @@ function buildFamilyApplicability(
   const tokenGatedFamilies = new Map<string, Array<Set<string>>>();
   let sawAnyRule = false;
 
+  // getCssRulesByProperty captures every custom-property declaration
+  // regardless of the queried property list, so the same per-sheet results
+  // provide the definitions needed to resolve var() indirection in
+  // font-family values. Definitions cascade across sheets, so collect them
+  // all before processing any rule.
+  const perSheetRules: Array<ReturnType<typeof getCssRulesByProperty>> = [];
+  const customPropertyValues = new Map<string, string[]>();
   for (const sheet of stylesheets) {
     const rulesByProperty = memoizedGetCssRulesByProperty(
       ['font-family'],
       sheet.text,
       sheet.predicates
     );
+    perSheetRules.push(rulesByProperty);
+    for (const propName of Object.keys(rulesByProperty)) {
+      if (!propName.startsWith('--')) continue;
+      const definitions = rulesByProperty[propName];
+      if (!Array.isArray(definitions)) continue;
+      for (const definition of definitions) {
+        const definitionValue = (definition as { value?: string }).value;
+        if (typeof definitionValue !== 'string') continue;
+        let values = customPropertyValues.get(propName);
+        if (!values) {
+          values = [];
+          customPropertyValues.set(propName, values);
+        }
+        values.push(definitionValue);
+      }
+    }
+  }
+
+  for (const rulesByProperty of perSheetRules) {
     const rules = rulesByProperty['font-family'];
     if (!Array.isArray(rules)) continue;
     for (const rule of rules) {
       const value = (rule as { value?: string }).value;
       const selector = (rule as { selector?: string }).selector;
       if (typeof value !== 'string') continue;
-      const familyNames = cssFontParser
-        .parseFontFamily(value)
+      const familyNames = expandFamilyValue(
+        value,
+        customPropertyValues,
+        new Set<string>()
+      )
         .map((fam) => fam.toLowerCase())
         .filter((fam) => webfontFamilies.has(fam));
       if (familyNames.length === 0) continue;
@@ -918,6 +980,14 @@ function planFastPathPages(
       familyApplicability,
     } = getRepData(pd.representativePd as PageData);
 
+    // A declared @font-face variant the rep never rendered is only a problem
+    // if this page could actually render it: the rep's trace then has no
+    // props group to carry the page's text for that variant. When the
+    // variant's family is provably inapplicable to this page (token-gated
+    // with no matching page tokens), the page cannot engage any variant of
+    // that family, so attribution stays exact. A family the applicability
+    // analysis doesn't know is treated as potentially applicable.
+    let pageTokens: Set<string> | null = null;
     let hasUnseenVariant = false;
     for (const decl of pd.accumulatedFontFaceDeclarations) {
       const family = decl['font-family'];
@@ -925,13 +995,21 @@ function planFastPathPages(
       const weight = decl['font-weight'] || 'normal';
       const style = decl['font-style'] || 'normal';
       const stretch = decl['font-stretch'] || 'normal';
-      const variantKey = fontPropsKey(
-        family.toLowerCase(),
-        weight,
-        style,
-        stretch
-      );
-      if (!seenVariantKeys.has(variantKey)) {
+      const familyLower = family.toLowerCase();
+      const variantKey = fontPropsKey(familyLower, weight, style, stretch);
+      if (seenVariantKeys.has(variantKey)) continue;
+      if (
+        familyApplicability === null ||
+        (!familyApplicability.pageWideFamilies.has(familyLower) &&
+          !familyApplicability.tokenGatedFamilies.has(familyLower))
+      ) {
+        hasUnseenVariant = true;
+        break;
+      }
+      if (!pageTokens) {
+        pageTokens = collectPageTokens(pd.htmlOrSvgAsset.text || '');
+      }
+      if (familyAppliesToPage([familyLower], familyApplicability, pageTokens)) {
         hasUnseenVariant = true;
         break;
       }
