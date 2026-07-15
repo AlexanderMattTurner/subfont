@@ -693,13 +693,14 @@ async function tracePages(
 // fast path attribute a page's visible text only to the font groups that
 // actually style some element on that page, instead of every group.
 // One gating alternative for a token-gated family: the necessary-condition
-// tokens plus a simple selector approximating the gating rule's subject
-// compound, used to scope which of the page's text the family can render.
-// The subject selector drops combinator context and pseudos, so it matches a
-// superset of the real rule's elements — text scoping can only over-include.
+// tokens plus a sanitized version of the gating rule's selector, used to
+// scope which of the page's text the family can render. The scope selector
+// keeps combinator context but drops pseudo-elements and dynamic-state
+// pseudo-classes, so it matches a superset of the real rule's elements —
+// text scoping can only over-include.
 interface FamilyGate {
   requiredTokens: Set<string>;
-  subjectSelector: string | null;
+  scopeSelector: string | null;
 }
 
 interface FamilyApplicability {
@@ -740,14 +741,11 @@ const PAGE_WIDE_SUBJECTS = new Set<string>(['html', 'body', ':root', '*', '']);
 // stripped before extraction: they're not safe to gate on, and dropping them
 // only widens matching (a necessary-condition check stays sound). Attribute
 // selectors gate on the attribute name only; values are ignored (widening).
-function subjectRequiredTokens(selector: string): FamilyGate | null {
+function subjectRequiredTokens(selector: string): Set<string> | null {
   const compounds = selector.trim().split(/\s*[>+~]\s*|\s+/);
   const tokens = new Set<string>();
-  let subjectFragments: string[] | null = null;
   for (let i = 0; i < compounds.length; i++) {
     const isSubject = i === compounds.length - 1;
-    const compoundFragments: string[] = [];
-    let tagCount = 0;
     // Drop pseudo-classes/elements (with arguments — a token inside :not()
     // is negated, not required) before reading anything else.
     const withoutPseudos = (compounds[i] || '').replace(
@@ -770,10 +768,8 @@ function subjectRequiredTokens(selector: string): FamilyGate | null {
           : undefined;
       if (simpleValue !== undefined && /^[\w-]+$/.test(simpleValue)) {
         tokens.add(`[${attrName}=${simpleValue}]`);
-        compoundFragments.push(`[${attrName}="${simpleValue}"]`);
       } else {
         tokens.add(`[${attrName}]`);
-        compoundFragments.push(`[${attrName}]`);
       }
       compoundAttrTokens++;
     }
@@ -781,10 +777,7 @@ function subjectRequiredTokens(selector: string): FamilyGate | null {
     if (PAGE_WIDE_SUBJECTS.has(withoutAttrs.toLowerCase())) {
       // A page-wide *subject* means "no gate" — unless an attribute selector
       // narrows it (e.g. `:root[data-theme=dark]`), which still gates.
-      if (isSubject) {
-        if (compoundAttrTokens === 0) return null;
-        subjectFragments = compoundFragments;
-      }
+      if (isSubject && compoundAttrTokens === 0) return null;
       continue;
     }
     for (const { groups } of withoutAttrs.matchAll(
@@ -792,47 +785,52 @@ function subjectRequiredTokens(selector: string): FamilyGate | null {
     )) {
       const sigil = groups?.sigil ?? '';
       const name = (groups?.name ?? '').toLowerCase();
-      if (sigil === '.') {
-        tokens.add(`.${name}`);
-        compoundFragments.push(`.${name}`);
-      } else if (sigil === '#') {
-        tokens.add(`#${name}`);
-        compoundFragments.push(`#${name}`);
-      } else {
-        tokens.add(name);
-        // A tag must lead a compound selector; more than one means the
-        // compound wasn't parseable as expected.
-        compoundFragments.unshift(name);
-        tagCount++;
-      }
-    }
-    if (isSubject && compoundFragments.length > 0 && tagCount <= 1) {
-      // Structural pseudo-classes narrow which elements the subject matches
-      // and are statically evaluable, so keeping them tightens text scoping
-      // without dropping matches (e.g. `p:first-of-type` instead of every
-      // `p`). Dynamic-state pseudos (:hover, :focus, …) match nothing in a
-      // static DOM and pseudo-elements aren't queryable — those stay
-      // stripped, which only widens the match. :not() is kept only with a
-      // simple argument.
-      for (const { groups } of (compounds[i] || '').matchAll(
-        /:(?<name>first-child|last-child|only-child|first-of-type|last-of-type|only-of-type|nth-child|nth-of-type|nth-last-child|nth-last-of-type)(?<args>\([^)]*\))?/g
-      )) {
-        if (!groups?.name) continue;
-        compoundFragments.push(`:${groups.name}${groups.args ?? ''}`);
-      }
-      for (const { groups } of (compounds[i] || '').matchAll(
-        /:not\((?<arg>[.#]?[\w-]+|\[[^\]]*\])\)/g
-      )) {
-        if (groups?.arg) compoundFragments.push(`:not(${groups.arg})`);
-      }
-      subjectFragments = compoundFragments;
+      if (sigil === '.') tokens.add(`.${name}`);
+      else if (sigil === '#') tokens.add(`#${name}`);
+      else tokens.add(name);
     }
   }
-  if (tokens.size === 0) return null;
-  return {
-    requiredTokens: tokens,
-    subjectSelector: subjectFragments ? subjectFragments.join('') : null,
-  };
+  return tokens.size === 0 ? null : tokens;
+}
+
+// Structural pseudo-classes that a static querySelectorAll evaluates the
+// same way a browser would; anything else gets stripped for scoping.
+const STRUCTURAL_PSEUDO_CLASSES = new Set([
+  'not',
+  'is',
+  'where',
+  'first-child',
+  'last-child',
+  'only-child',
+  'first-of-type',
+  'last-of-type',
+  'only-of-type',
+  'nth-child',
+  'nth-of-type',
+  'nth-last-child',
+  'nth-last-of-type',
+  'root',
+  'empty',
+]);
+
+// Reduce a gating selector to a statically-queryable scope selector,
+// preserving combinator context: pseudo-elements and dynamic-state
+// pseudo-classes (:hover, :focus, …) are dropped — each removal can only
+// widen the match set — while structural pseudo-classes are kept. Returns
+// null (scope to the whole page) when the selector can't be sanitized
+// confidently; a selector the DOM implementation later rejects falls back
+// the same way at query time.
+function toScopeSelector(selector: string): string | null {
+  // A quoted attribute value containing ':' would confuse the pseudo
+  // stripping below into corrupting the value.
+  if (/(?<quote>["'])[^"':]*:[^"']*\k<quote>/.test(selector)) return null;
+  const scoped = selector
+    .replace(/::[\w-]+(?:\([^)]*\))?/g, '')
+    .replace(/:(?<name>[\w-]+)(?:\([^)]*\))?/g, (match, name: string) =>
+      STRUCTURAL_PSEUDO_CLASSES.has(name.toLowerCase()) ? match : ''
+    )
+    .trim();
+  return scoped === '' ? null : scoped;
 }
 
 // Union of the families a font-family value can resolve to, following var()
@@ -956,8 +954,7 @@ function buildFamilyApplicability(
           requiredTokens:
             definitionSelector === undefined
               ? null
-              : (subjectRequiredTokens(definitionSelector)?.requiredTokens ??
-                null),
+              : subjectRequiredTokens(definitionSelector),
         });
       }
     }
@@ -995,17 +992,14 @@ function buildFamilyApplicability(
 
       // Inline style attributes (undefined selector) match a specific element
       // that may carry text; treat as page-wide rather than risk dropping it.
-      const usageGate =
+      const usageTokens =
         selector === undefined ? null : subjectRequiredTokens(selector);
       for (const {
         family,
         requiredTokens: definitionTokens,
       } of expandedFamilies) {
         const fam = family.toLowerCase();
-        const tokens = unionTokens(
-          usageGate?.requiredTokens ?? null,
-          definitionTokens
-        );
+        const tokens = unionTokens(usageTokens, definitionTokens);
         if (tokens === null) {
           pageWideFamilies.add(fam);
           tokenGatedFamilies.delete(fam);
@@ -1017,7 +1011,8 @@ function buildFamilyApplicability(
           }
           gates.push({
             requiredTokens: tokens,
-            subjectSelector: usageGate?.subjectSelector ?? null,
+            scopeSelector:
+              selector === undefined ? null : toScopeSelector(selector),
           });
         }
       }
@@ -1138,14 +1133,14 @@ function pageTextForFamilies(
     for (const gate of gates) {
       if (![...gate.requiredTokens].every(pageHasToken)) continue;
       if (
-        gate.subjectSelector === null ||
+        gate.scopeSelector === null ||
         typeof parseTree.querySelectorAll !== 'function'
       ) {
         return pageText;
       }
       let elements: ArrayLike<TextBearingElement>;
       try {
-        elements = parseTree.querySelectorAll(gate.subjectSelector);
+        elements = parseTree.querySelectorAll(gate.scopeSelector);
       } catch {
         // An unparseable approximated selector must not drop text.
         return pageText;
