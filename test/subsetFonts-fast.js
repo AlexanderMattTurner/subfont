@@ -254,6 +254,68 @@ describe('subsetFonts fast-path (shared CSS optimization)', function () {
     });
   });
 
+  describe('cohort probe tracing', function () {
+    it('should trace one probe per blocking cohort and attribute the rest from its evidence', async function () {
+      httpception();
+
+      // page1 is the representative and never renders 'JetBrains Mono';
+      // pages 2-5 all have a `.fancy` element, so the unseen variant applies
+      // to each of them and they form one blocking cohort. One probe trace
+      // must supply the missing evidence for the other three.
+      const fakeConsole = {
+        log: sinon.spy(),
+        warn: () => {},
+        error: () => {},
+      };
+      const assetGraph = createGraph('multi-page-fast-probe');
+      await loadAndPopulate(assetGraph, 'page*.html', { crossorigin: false });
+      await subsetFontsWithTestDefaults(assetGraph, {
+        console: fakeConsole,
+        debug: true,
+      });
+
+      const logLines = fakeConsole.log
+        .getCalls()
+        .map((call) => call.args.join(' '));
+      expect(
+        logLines.find((line) => line.includes('← Probe tracing')),
+        'to contain',
+        '(1 cohort probes)'
+      );
+      expect(
+        logLines.find((line) => line.includes('← Fast-path replanning')),
+        'to contain',
+        '3 more via probes, 0 still need full trace'
+      );
+
+      // The probe evidence must be byte-correct: every page's `.fancy` text
+      // reaches the mono subset, whether traced (page2) or attributed.
+      const monoFonts = assetGraph.findAssets({
+        fileName: { $regex: /^JetBrains_Mono-400-/ },
+        extension: '.woff2',
+      });
+      expect(monoFonts, 'to have length', 1);
+      const monoChars = (
+        await getFontInfo(monoFonts[0].rawSrc)
+      ).characterSet.map((cp) => String.fromCodePoint(cp));
+      for (const ch of 'QRSTUVWX') {
+        expect(monoChars, 'to contain', ch);
+      }
+
+      const bodyFonts = assetGraph.findAssets({
+        fileName: { $regex: /^IBM_Plex_Sans-400-/ },
+        extension: '.woff2',
+      });
+      expect(bodyFonts, 'to have length', 1);
+      const bodyChars = (
+        await getFontInfo(bodyFonts[0].rawSrc)
+      ).characterSet.map((cp) => String.fromCodePoint(cp));
+      for (const ch of 'ABCDEFGHIJ') {
+        expect(bodyChars, 'to contain', ch);
+      }
+    });
+  });
+
   describe('single page per CSS group', function () {
     it('should work identically when each page has unique CSS', async function () {
       httpception();

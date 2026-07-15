@@ -154,6 +154,29 @@ function fontPropsKey(
   return `${family}\0${weight}\0${style}\0${stretch}`;
 }
 
+// Variant keys compare traced usage (cascade values like 'normal') against
+// @font-face descriptors (often numeric): normalize each component so e.g.
+// font-weight 'normal' and 400 collide. Unresolvable values (variable-font
+// ranges, garbage) keep their raw form — a mismatch then just forces a
+// conservative full trace.
+function normalizedVariantKey(
+  familyLower: string,
+  weight: string,
+  style: string,
+  stretch: string
+): string {
+  const normalize = (prop: string, value: string): string => {
+    const normalized = normalizeFontPropertyValue(prop, value);
+    return String(normalized ?? value).toLowerCase();
+  };
+  return fontPropsKey(
+    familyLower,
+    normalize('font-weight', weight),
+    normalize('font-style', style),
+    normalize('font-stretch', stretch)
+  );
+}
+
 const declKeyCache = new WeakMap<FontFaceDeclaration[], string>();
 function getDeclarationsKey(declarations: FontFaceDeclaration[]): string {
   const cached = declKeyCache.get(declarations);
@@ -669,16 +692,31 @@ async function tracePages(
 // on a page, derived from the representative's font-family CSS rules. Lets the
 // fast path attribute a page's visible text only to the font groups that
 // actually style some element on that page, instead of every group.
+// One gating alternative for a token-gated family: the necessary-condition
+// tokens plus a simple selector approximating the gating rule's subject
+// compound, used to scope which of the page's text the family can render.
+// The subject selector drops combinator context and pseudos, so it matches a
+// superset of the real rule's elements — text scoping can only over-include.
+interface FamilyGate {
+  requiredTokens: Set<string>;
+  subjectSelector: string | null;
+}
+
 interface FamilyApplicability {
   // Family names (lowercased) set by a selector that matches any non-empty
   // page (html/body/:root/universal, or one we couldn't gate conservatively).
   pageWideFamilies: Set<string>;
-  // Family name (lowercased) -> alternative required simple-token sets. The
-  // family renders text on a page iff at least one set is fully present in the
-  // page's element/class/id tokens (a necessary condition for the gating
-  // selectors to match — combinator context is ignored, which can only
-  // over-include, never drop).
-  tokenGatedFamilies: Map<string, Array<Set<string>>>;
+  // Family name (lowercased) -> alternative gates. The family renders text on
+  // a page iff at least one gate's tokens are fully present in the page's
+  // element/class/id tokens (a necessary condition for the gating selectors
+  // to match — combinator context is ignored, which can only over-include,
+  // never drop).
+  tokenGatedFamilies: Map<string, FamilyGate[]>;
+  // Custom-property names reachable from any font-family rule's var() chain
+  // (transitively through definitions). A style attribute redefining one of
+  // these can re-route a var() to an arbitrary family, invalidating the
+  // stylesheet-level analysis for that page.
+  fontReferencedCustomPropertyNames: Set<string>;
 }
 
 interface AttributableEntry {
@@ -692,31 +730,109 @@ interface AttributableEntry {
 // set is treated as page-wide.
 const PAGE_WIDE_SUBJECTS = new Set<string>(['html', 'body', ':root', '*', '']);
 
-// Extract the required simple tokens (lowercased `tag`, `.class`, `#id`) of a
-// selector's subject (rightmost compound). Returns null when the subject
-// matches any document (universal/html/body), meaning "no gate". Pseudo and
-// attribute fragments are stripped: they're not safe to gate on, but dropping
-// them only widens matching (a necessary-condition check stays sound).
-function subjectRequiredTokens(selector: string): Set<string> | null {
+// Extract the required simple tokens (lowercased `tag`, `.class`, `#id`,
+// `[attr]`) of a selector. Every compound in a combinator chain must match
+// some element on the page, so all compounds contribute necessary-condition
+// tokens — e.g. `article[data-dropcap=true]>p:before` requires `article`,
+// `[data-dropcap]`, and `p` to all be present. Returns null when the subject
+// (rightmost compound) matches any document (universal/html/body), meaning
+// "no gate". Pseudo fragments (including :not(...) and their arguments) are
+// stripped before extraction: they're not safe to gate on, and dropping them
+// only widens matching (a necessary-condition check stays sound). Attribute
+// selectors gate on the attribute name only; values are ignored (widening).
+function subjectRequiredTokens(selector: string): FamilyGate | null {
   const compounds = selector.trim().split(/\s*[>+~]\s*|\s+/);
-  let subject = compounds[compounds.length - 1] || '';
-  // Drop pseudo-classes/elements and attribute selectors from the subject.
-  subject = subject
-    .replace(/::?[\w-]+(?:\([^)]*\))?/g, '')
-    .replace(/\[[^\]]*\]/g, '');
-  if (PAGE_WIDE_SUBJECTS.has(subject.toLowerCase())) return null;
-
   const tokens = new Set<string>();
-  for (const { groups } of subject.matchAll(
-    /(?<sigil>[.#]?)(?<name>[\w-]+)/g
-  )) {
-    const sigil = groups?.sigil ?? '';
-    const name = (groups?.name ?? '').toLowerCase();
-    if (sigil === '.') tokens.add(`.${name}`);
-    else if (sigil === '#') tokens.add(`#${name}`);
-    else tokens.add(name);
+  let subjectFragments: string[] | null = null;
+  for (let i = 0; i < compounds.length; i++) {
+    const isSubject = i === compounds.length - 1;
+    const compoundFragments: string[] = [];
+    let tagCount = 0;
+    // Drop pseudo-classes/elements (with arguments — a token inside :not()
+    // is negated, not required) before reading anything else.
+    const withoutPseudos = (compounds[i] || '').replace(
+      /::?[\w-]+(?:\([^)]*\))?/g,
+      ''
+    );
+    let compoundAttrTokens = 0;
+    for (const { groups } of withoutPseudos.matchAll(
+      /\[\s*(?<attrName>[\w-]+)\s*(?:(?<op>[~|^$*]?=)\s*(?<attrValue>"[^"]*"|'[^']*'|[^\]\s]+))?\s*\]/g
+    )) {
+      if (!groups?.attrName) continue;
+      const attrName = groups.attrName.toLowerCase();
+      const rawValue = groups.attrValue;
+      // Only exact-match values gate on the value; other operators (or
+      // values needing escaping) gate on the attribute name alone, which
+      // can only widen matching.
+      const simpleValue =
+        groups.op === '=' && rawValue !== undefined
+          ? unquote(rawValue).toLowerCase()
+          : undefined;
+      if (simpleValue !== undefined && /^[\w-]+$/.test(simpleValue)) {
+        tokens.add(`[${attrName}=${simpleValue}]`);
+        compoundFragments.push(`[${attrName}="${simpleValue}"]`);
+      } else {
+        tokens.add(`[${attrName}]`);
+        compoundFragments.push(`[${attrName}]`);
+      }
+      compoundAttrTokens++;
+    }
+    const withoutAttrs = withoutPseudos.replace(/\[[^\]]*\]/g, '');
+    if (PAGE_WIDE_SUBJECTS.has(withoutAttrs.toLowerCase())) {
+      // A page-wide *subject* means "no gate" — unless an attribute selector
+      // narrows it (e.g. `:root[data-theme=dark]`), which still gates.
+      if (isSubject) {
+        if (compoundAttrTokens === 0) return null;
+        subjectFragments = compoundFragments;
+      }
+      continue;
+    }
+    for (const { groups } of withoutAttrs.matchAll(
+      /(?<sigil>[.#]?)(?<name>[\w-]+)/g
+    )) {
+      const sigil = groups?.sigil ?? '';
+      const name = (groups?.name ?? '').toLowerCase();
+      if (sigil === '.') {
+        tokens.add(`.${name}`);
+        compoundFragments.push(`.${name}`);
+      } else if (sigil === '#') {
+        tokens.add(`#${name}`);
+        compoundFragments.push(`#${name}`);
+      } else {
+        tokens.add(name);
+        // A tag must lead a compound selector; more than one means the
+        // compound wasn't parseable as expected.
+        compoundFragments.unshift(name);
+        tagCount++;
+      }
+    }
+    if (isSubject && compoundFragments.length > 0 && tagCount <= 1) {
+      // Structural pseudo-classes narrow which elements the subject matches
+      // and are statically evaluable, so keeping them tightens text scoping
+      // without dropping matches (e.g. `p:first-of-type` instead of every
+      // `p`). Dynamic-state pseudos (:hover, :focus, …) match nothing in a
+      // static DOM and pseudo-elements aren't queryable — those stay
+      // stripped, which only widens the match. :not() is kept only with a
+      // simple argument.
+      for (const { groups } of (compounds[i] || '').matchAll(
+        /:(?<name>first-child|last-child|only-child|first-of-type|last-of-type|only-of-type|nth-child|nth-of-type|nth-last-child|nth-last-of-type)(?<args>\([^)]*\))?/g
+      )) {
+        if (!groups?.name) continue;
+        compoundFragments.push(`:${groups.name}${groups.args ?? ''}`);
+      }
+      for (const { groups } of (compounds[i] || '').matchAll(
+        /:not\((?<arg>[.#]?[\w-]+|\[[^\]]*\])\)/g
+      )) {
+        if (groups?.arg) compoundFragments.push(`:not(${groups.arg})`);
+      }
+      subjectFragments = compoundFragments;
+    }
   }
-  return tokens.size === 0 ? null : tokens;
+  if (tokens.size === 0) return null;
+  return {
+    requiredTokens: tokens,
+    subjectSelector: subjectFragments ? subjectFragments.join('') : null,
+  };
 }
 
 // Union of the families a font-family value can resolve to, following var()
@@ -727,26 +843,67 @@ function subjectRequiredTokens(selector: string): Set<string> | null {
 // family believed applicable keeps page text in its subset and forces a
 // full trace on unseen-variant pages.
 const VAR_FALLBACK_RE = /var\(\s*--[\w-]+\s*,(?<fallback>[^()]+)\)/g;
+
+// A custom-property definition rule with its own selector: the definition
+// only takes effect under elements the selector matches, so families reached
+// through it inherit the definition rule's required tokens.
+interface CustomPropertyDefinition {
+  value: string;
+  requiredTokens: Set<string> | null;
+}
+
+// A family a font-family value can resolve to, with the union of required
+// tokens accumulated from every definition rule on the var() path there
+// (null = reachable without any gate).
+interface ExpandedFamily {
+  family: string;
+  requiredTokens: Set<string> | null;
+}
+
+function unionTokens(
+  a: Set<string> | null,
+  b: Set<string> | null
+): Set<string> | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return new Set([...a, ...b]);
+}
+
 function expandFamilyValue(
   value: string,
-  customPropertyValues: Map<string, string[]>,
+  customPropertyValues: Map<string, CustomPropertyDefinition[]>,
   visited: Set<string>
-): string[] {
-  const familyNames = [...cssFontParser.parseFontFamily(value)];
+): ExpandedFamily[] {
+  const expanded: ExpandedFamily[] = cssFontParser
+    .parseFontFamily(value)
+    .map((family) => ({ family, requiredTokens: null }));
   for (const { groups } of value.matchAll(VAR_FALLBACK_RE)) {
-    familyNames.push(...cssFontParser.parseFontFamily(groups?.fallback ?? ''));
+    for (const family of cssFontParser.parseFontFamily(
+      groups?.fallback ?? ''
+    )) {
+      expanded.push({ family, requiredTokens: null });
+    }
   }
   for (const referencedName of extractReferencedCustomPropertyNames(value)) {
     if (visited.has(referencedName)) continue;
     visited.add(referencedName);
-    for (const definitionValue of customPropertyValues.get(referencedName) ||
-      []) {
-      familyNames.push(
-        ...expandFamilyValue(definitionValue, customPropertyValues, visited)
-      );
+    for (const definition of customPropertyValues.get(referencedName) || []) {
+      for (const nested of expandFamilyValue(
+        definition.value,
+        customPropertyValues,
+        visited
+      )) {
+        expanded.push({
+          family: nested.family,
+          requiredTokens: unionTokens(
+            definition.requiredTokens,
+            nested.requiredTokens
+          ),
+        });
+      }
     }
   }
-  return familyNames;
+  return expanded;
 }
 
 // Parse the representative's stylesheets for font-family rules, classifying
@@ -763,7 +920,7 @@ function buildFamilyApplicability(
 ): FamilyApplicability | null {
   if (webfontFamilies.size === 0) return null;
   const pageWideFamilies = new Set<string>();
-  const tokenGatedFamilies = new Map<string, Array<Set<string>>>();
+  const tokenGatedFamilies = new Map<string, FamilyGate[]>();
   let sawAnyRule = false;
 
   // getCssRulesByProperty captures every custom-property declaration
@@ -772,7 +929,7 @@ function buildFamilyApplicability(
   // font-family values. Definitions cascade across sheets, so collect them
   // all before processing any rule.
   const perSheetRules: Array<ReturnType<typeof getCssRulesByProperty>> = [];
-  const customPropertyValues = new Map<string, string[]>();
+  const customPropertyValues = new Map<string, CustomPropertyDefinition[]>();
   for (const sheet of stylesheets) {
     const rulesByProperty = memoizedGetCssRulesByProperty(
       ['font-family'],
@@ -786,16 +943,39 @@ function buildFamilyApplicability(
       if (!Array.isArray(definitions)) continue;
       for (const definition of definitions) {
         const definitionValue = (definition as { value?: string }).value;
+        const definitionSelector = (definition as { selector?: string })
+          .selector;
         if (typeof definitionValue !== 'string') continue;
         let values = customPropertyValues.get(propName);
         if (!values) {
           values = [];
           customPropertyValues.set(propName, values);
         }
-        values.push(definitionValue);
+        values.push({
+          value: definitionValue,
+          requiredTokens:
+            definitionSelector === undefined
+              ? null
+              : (subjectRequiredTokens(definitionSelector)?.requiredTokens ??
+                null),
+        });
       }
     }
   }
+
+  // Transitive closure of custom-property names reachable from font-family
+  // rule values, so callers can detect per-page style-attribute overrides
+  // that would invalidate this analysis.
+  const fontReferencedCustomPropertyNames = new Set<string>();
+  const collectReferencedNames = (value: string): void => {
+    for (const name of extractReferencedCustomPropertyNames(value)) {
+      if (fontReferencedCustomPropertyNames.has(name)) continue;
+      fontReferencedCustomPropertyNames.add(name);
+      for (const definition of customPropertyValues.get(name) || []) {
+        collectReferencedNames(definition.value);
+      }
+    }
+  };
 
   for (const rulesByProperty of perSheetRules) {
     const rules = rulesByProperty['font-family'];
@@ -804,37 +984,53 @@ function buildFamilyApplicability(
       const value = (rule as { value?: string }).value;
       const selector = (rule as { selector?: string }).selector;
       if (typeof value !== 'string') continue;
-      const familyNames = expandFamilyValue(
+      collectReferencedNames(value);
+      const expandedFamilies = expandFamilyValue(
         value,
         customPropertyValues,
         new Set<string>()
-      )
-        .map((fam) => fam.toLowerCase())
-        .filter((fam) => webfontFamilies.has(fam));
-      if (familyNames.length === 0) continue;
+      ).filter(({ family }) => webfontFamilies.has(family.toLowerCase()));
+      if (expandedFamilies.length === 0) continue;
       sawAnyRule = true;
 
       // Inline style attributes (undefined selector) match a specific element
       // that may carry text; treat as page-wide rather than risk dropping it.
-      const tokens =
+      const usageGate =
         selector === undefined ? null : subjectRequiredTokens(selector);
-      for (const fam of familyNames) {
+      for (const {
+        family,
+        requiredTokens: definitionTokens,
+      } of expandedFamilies) {
+        const fam = family.toLowerCase();
+        const tokens = unionTokens(
+          usageGate?.requiredTokens ?? null,
+          definitionTokens
+        );
         if (tokens === null) {
           pageWideFamilies.add(fam);
           tokenGatedFamilies.delete(fam);
         } else if (!pageWideFamilies.has(fam)) {
-          let sets = tokenGatedFamilies.get(fam);
-          if (!sets) {
-            sets = [];
-            tokenGatedFamilies.set(fam, sets);
+          let gates = tokenGatedFamilies.get(fam);
+          if (!gates) {
+            gates = [];
+            tokenGatedFamilies.set(fam, gates);
           }
-          sets.push(tokens);
+          gates.push({
+            requiredTokens: tokens,
+            subjectSelector: usageGate?.subjectSelector ?? null,
+          });
         }
       }
     }
   }
 
-  return sawAnyRule ? { pageWideFamilies, tokenGatedFamilies } : null;
+  return sawAnyRule
+    ? {
+        pageWideFamilies,
+        tokenGatedFamilies,
+        fontReferencedCustomPropertyNames,
+      }
+    : null;
 }
 
 // Collect the set of simple tokens (`tag`, `.class`, `#id`, lowercased) that
@@ -865,27 +1061,134 @@ function collectPageTokens(html: string): Set<string> {
   return tokens;
 }
 
+// Attribute tokens are tested against the raw page HTML. `[name]` is a
+// substring check (a serialized attribute must contain its name literally);
+// `[name=value]` matches the serialized `name="value"` / `name='value'` /
+// `name=value` forms with optional whitespace around `=`. Both checks
+// over-approximate presence (prose containing `name=value` counts) but can
+// never miss a genuinely present attribute — the sound direction.
+const attrTokenRegexCache = new Map<string, RegExp>();
+function attrTokenRegex(token: string): RegExp {
+  let regex = attrTokenRegexCache.get(token);
+  if (!regex) {
+    // Token names and values are restricted to [\w-] at emit time, so they
+    // are literal in a regex.
+    const [name, value] = token.slice(1, -1).split('=');
+    regex = new RegExp(
+      value === undefined ? name : `${name}\\s*=\\s*["']?${value}`
+    );
+    attrTokenRegexCache.set(token, regex);
+  }
+  return regex;
+}
+
 // Whether a font-family (any of a group's declared names) renders text on the
-// page given the representative's applicability analysis and the page's tokens.
+// page given the representative's applicability analysis and the page's
+// tokens.
 function familyAppliesToPage(
   familyNames: string[],
   applicability: FamilyApplicability,
-  pageTokens: Set<string>
+  pageTokens: Set<string>,
+  pageHtmlLower: string
 ): boolean {
+  const pageHasToken = (token: string): boolean =>
+    token.startsWith('[')
+      ? attrTokenRegex(token).test(pageHtmlLower)
+      : pageTokens.has(token);
   for (const fam of familyNames) {
     if (applicability.pageWideFamilies.has(fam)) return true;
-    const sets = applicability.tokenGatedFamilies.get(fam);
-    if (!sets) continue;
-    for (const required of sets) {
-      if ([...required].every((token) => pageTokens.has(token))) return true;
+    const gates = applicability.tokenGatedFamilies.get(fam);
+    if (!gates) continue;
+    for (const gate of gates) {
+      if ([...gate.requiredTokens].every(pageHasToken)) return true;
     }
   }
   return false;
 }
 
+// The page text a group of families can render, per the applicability
+// analysis. Page-wide families (and groups with no analysis signal) get the
+// whole page text; token-gated families get only the text of elements
+// matching each applicable gate's subject selector — a superset of the real
+// rule's elements, so text is only ever over-included. A gate without a
+// usable subject selector falls back to the whole page text.
+function pageTextForFamilies(
+  familyNames: string[],
+  applicability: FamilyApplicability,
+  pageTokens: Set<string>,
+  pageHtmlLower: string,
+  pageText: string,
+  parseTree: { querySelectorAll?: (selector: string) => ArrayLike<unknown> }
+): string {
+  const pageHasToken = (token: string): boolean =>
+    token.startsWith('[')
+      ? attrTokenRegex(token).test(pageHtmlLower)
+      : pageTokens.has(token);
+  let scopedText = '';
+  for (const fam of familyNames) {
+    if (applicability.pageWideFamilies.has(fam)) return pageText;
+    const gates = applicability.tokenGatedFamilies.get(fam);
+    if (!gates) continue;
+    for (const gate of gates) {
+      if (![...gate.requiredTokens].every(pageHasToken)) continue;
+      if (
+        gate.subjectSelector === null ||
+        typeof parseTree.querySelectorAll !== 'function'
+      ) {
+        return pageText;
+      }
+      let elements: ArrayLike<unknown>;
+      try {
+        elements = parseTree.querySelectorAll(gate.subjectSelector);
+      } catch {
+        // An unparseable approximated selector must not drop text.
+        return pageText;
+      }
+      for (const element of Array.from(elements)) {
+        const textContent = (element as { textContent?: string | null })
+          .textContent;
+        if (textContent) scopedText += textContent;
+      }
+    }
+  }
+  return scopedText;
+}
+
+// Test whether a page's style attributes define any custom property that a
+// font-family rule's var() chain references (which would let the page
+// re-route that rule to an arbitrary family). The regex is derived from the
+// analysis, so it is cached per applicability instance.
+const styleAttrOverrideRegexCache = new WeakMap<
+  FamilyApplicability,
+  RegExp | null
+>();
+function styleAttrOverridesFontCustomProperty(
+  applicability: FamilyApplicability,
+  html: string
+): boolean {
+  let regex = styleAttrOverrideRegexCache.get(applicability);
+  if (regex === undefined) {
+    const names = [...applicability.fontReferencedCustomPropertyNames];
+    regex =
+      names.length === 0
+        ? null
+        : new RegExp(
+            `(?:^|\\s)style\\s*=\\s*["'][^"']*(?:${names.join('|')})\\s*:`,
+            'i'
+          );
+    styleAttrOverrideRegexCache.set(applicability, regex);
+  }
+  return regex !== null && regex.test(html);
+}
+
 interface FastPathPlan {
   fallbackPages: PageData[];
   attributablePages: AttributableEntry[];
+  // For pages that fell back because of unseen @font-face variants (not
+  // inline styles): the sorted list of blocking variant keys. Pages sharing
+  // a signature are symmetric — tracing one of them (a probe) yields the
+  // evidence the others are missing.
+  blockingSignatures: Map<PageData, string>;
 }
 
 // Classify fast-path pages into (a) those that need a real trace because the
@@ -896,12 +1199,16 @@ interface FastPathPlan {
 // pool — running fontTracer here, on the main thread, serializes the work.
 function planFastPathPages(
   fastPathPages: PageData[],
-  memoizedGetCssRulesByProperty: typeof getCssRulesByProperty
+  memoizedGetCssRulesByProperty: typeof getCssRulesByProperty,
+  // Already-traced pages whose evidence augments their group representative's
+  // (probe pages from an earlier planning round). Keyed by representative.
+  extraEvidenceByRep?: Map<PageData, PageData[]>
 ): FastPathPlan {
   const fallbackPages: PageData[] = [];
   const attributablePages: AttributableEntry[] = [];
+  const blockingSignatures = new Map<PageData, string>();
   if (fastPathPages.length === 0) {
-    return { fallbackPages, attributablePages };
+    return { fallbackPages, attributablePages, blockingSignatures };
   }
 
   interface RepData {
@@ -914,7 +1221,12 @@ function planFastPathPages(
   function getRepData(representativePd: PageData): RepData {
     const cachedRep = repDataCache.get(representativePd);
     if (cachedRep) return cachedRep;
-    const repTextByProps = representativePd.textByProps ?? [];
+    const repTextByProps = [
+      ...(representativePd.textByProps ?? []),
+      ...(extraEvidenceByRep?.get(representativePd) ?? []).flatMap(
+        (probePd) => probePd.textByProps ?? []
+      ),
+    ];
 
     const uniquePropsMap = new Map<string, Record<string, string>>();
     const textPerPropsKey = new Map<string, string[]>();
@@ -940,7 +1252,7 @@ function planFastPathPages(
         const stretch = entry.props['font-stretch'] || 'normal';
         for (const fam of cssFontParser.parseFontFamily(family)) {
           seenVariantKeys.add(
-            fontPropsKey(fam.toLowerCase(), weight, style, stretch)
+            normalizedVariantKey(fam.toLowerCase(), weight, style, stretch)
           );
         }
       }
@@ -988,7 +1300,8 @@ function planFastPathPages(
     // that family, so attribution stays exact. A family the applicability
     // analysis doesn't know is treated as potentially applicable.
     let pageTokens: Set<string> | null = null;
-    let hasUnseenVariant = false;
+    let pageHtmlLower: string | null = null;
+    const blockingVariantKeys: string[] = [];
     for (const decl of pd.accumulatedFontFaceDeclarations) {
       const family = decl['font-family'];
       if (!family) continue;
@@ -996,25 +1309,61 @@ function planFastPathPages(
       const style = decl['font-style'] || 'normal';
       const stretch = decl['font-stretch'] || 'normal';
       const familyLower = family.toLowerCase();
-      const variantKey = fontPropsKey(familyLower, weight, style, stretch);
+      const variantKey = normalizedVariantKey(
+        familyLower,
+        weight,
+        style,
+        stretch
+      );
       if (seenVariantKeys.has(variantKey)) continue;
+      // A -subfont-text descriptor is the site's declaration that tracing
+      // cannot discover this face's usage (e.g. pseudo-element content) and
+      // that the descriptor enumerates its glyphs. A full trace of this page
+      // would be equally blind to it, so it must not force one.
+      if (typeof decl['-subfont-text'] === 'string' && decl['-subfont-text']) {
+        continue;
+      }
+      if (familyApplicability === null) {
+        blockingVariantKeys.push(variantKey);
+        continue;
+      }
       if (
-        familyApplicability === null ||
-        (!familyApplicability.pageWideFamilies.has(familyLower) &&
-          !familyApplicability.tokenGatedFamilies.has(familyLower))
+        !familyApplicability.pageWideFamilies.has(familyLower) &&
+        !familyApplicability.tokenGatedFamilies.has(familyLower)
       ) {
-        hasUnseenVariant = true;
-        break;
+        // No stylesheet rule (even through var() indirection, which unions
+        // every definition) resolves to this family, so on a page without
+        // inline font styles (excluded above) the only remaining route to
+        // it is a style attribute redefining a custom property that some
+        // font-family rule references.
+        if (
+          !styleAttrOverridesFontCustomProperty(
+            familyApplicability,
+            pd.htmlOrSvgAsset.text || ''
+          )
+        ) {
+          continue;
+        }
+        blockingVariantKeys.push(variantKey);
+        continue;
       }
-      if (!pageTokens) {
+      if (!pageTokens || pageHtmlLower === null) {
         pageTokens = collectPageTokens(pd.htmlOrSvgAsset.text || '');
+        pageHtmlLower = (pd.htmlOrSvgAsset.text || '').toLowerCase();
       }
-      if (familyAppliesToPage([familyLower], familyApplicability, pageTokens)) {
-        hasUnseenVariant = true;
-        break;
+      if (
+        familyAppliesToPage(
+          [familyLower],
+          familyApplicability,
+          pageTokens,
+          pageHtmlLower
+        )
+      ) {
+        blockingVariantKeys.push(variantKey);
       }
     }
-    if (hasUnseenVariant) {
+    if (blockingVariantKeys.length > 0) {
+      blockingSignatures.set(pd, blockingVariantKeys.sort().join('\x1e'));
       fallbackPages.push(pd);
       continue;
     }
@@ -1026,7 +1375,7 @@ function planFastPathPages(
       familyApplicability,
     });
   }
-  return { fallbackPages, attributablePages };
+  return { fallbackPages, attributablePages, blockingSignatures };
 }
 
 // Apply the rep's traced font props to each fast-path-attributable page,
@@ -1066,6 +1415,7 @@ function attributeFastPathPages(entries: AttributableEntry[]): void {
     familyApplicability,
   } of entries) {
     const html = pd.htmlOrSvgAsset.text || '';
+    const htmlLower = html.toLowerCase();
     const pageText = extractVisibleText(html);
     const pageTokens = familyApplicability ? collectPageTokens(html) : null;
     pd.textByProps = [];
@@ -1073,17 +1423,26 @@ function attributeFastPathPages(entries: AttributableEntry[]): void {
       const repTexts = textPerPropsKey.get(propsKey) || [];
       // With no applicability analysis (no parseable font-family rules) fall
       // back to attributing page text to every group, never risking tofu.
-      let includePageText = true;
+      let contributedPageText = pageText;
       if (familyApplicability && pageTokens) {
         const familyNames = familyNamesFor(propsKey, props);
         // A group with no resolvable family is unexpected; keep page text to
         // avoid dropping glyphs a font might render.
-        includePageText =
-          familyNames.length === 0 ||
-          familyAppliesToPage(familyNames, familyApplicability, pageTokens);
+        if (familyNames.length > 0) {
+          contributedPageText = pageTextForFamilies(
+            familyNames,
+            familyApplicability,
+            pageTokens,
+            htmlLower,
+            pageText,
+            pd.htmlOrSvgAsset.parseTree as {
+              querySelectorAll?: (selector: string) => ArrayLike<unknown>;
+            }
+          );
+        }
       }
       pd.textByProps.push({
-        text: (includePageText ? pageText : '') + repTexts.join(''),
+        text: contributedPageText + repTexts.join(''),
         props: { ...props },
       });
     }
@@ -1708,13 +2067,69 @@ async function collectTextsByPage(
     subTimings['Full tracing'] = fullTracing.end();
 
     const planPhase = trackPhase('Fast-path planning');
-    const { fallbackPages, attributablePages } = planFastPathPages(
+    const plan = planFastPathPages(
       fastPathPages,
       memoizedGetCssRulesByProperty
     );
+    let { fallbackPages } = plan;
+    const { attributablePages, blockingSignatures } = plan;
     subTimings['Fast-path planning'] = planPhase.end(
       `${attributablePages.length} via cached rep, ${fallbackPages.length} need full trace`
     );
+
+    // Pages that fell back only because their group representative never
+    // rendered some declared @font-face variant come in cohorts: every page
+    // with the same blocking signature is missing the same evidence. Trace
+    // one probe per (representative, signature) cohort, fold the probes'
+    // traces into their representative's evidence, and re-plan the rest —
+    // typically collapsing hundreds of traces into a handful.
+    if (fallbackPages.length > 1) {
+      const probeByCohort = new Map<string, PageData>();
+      for (const pd of fallbackPages) {
+        const signature = blockingSignatures.get(pd);
+        if (!signature) continue;
+        const repPd = pd.representativePd as PageData;
+        const cohortKey = `${String(repPd.htmlOrSvgAsset.id)}\x1e${signature}`;
+        if (!probeByCohort.has(cohortKey)) probeByCohort.set(cohortKey, pd);
+      }
+      const probes = new Set(probeByCohort.values());
+      if (probes.size < fallbackPages.length) {
+        const probePhase = trackPhase(
+          `Probe tracing (${probes.size} cohort probes)`
+        );
+        await tracePages([...probes], {
+          headlessBrowser,
+          concurrency,
+          console,
+          memoizedGetCssRulesByProperty,
+          debug,
+          signal,
+        });
+        subTimings['Probe tracing'] = probePhase.end();
+
+        const extraEvidenceByRep = new Map<PageData, PageData[]>();
+        for (const probePd of probes) {
+          const repPd = probePd.representativePd as PageData;
+          let evidence = extraEvidenceByRep.get(repPd);
+          if (!evidence) {
+            evidence = [];
+            extraEvidenceByRep.set(repPd, evidence);
+          }
+          evidence.push(probePd);
+        }
+        const replanPhase = trackPhase('Fast-path replanning');
+        const replan = planFastPathPages(
+          fallbackPages.filter((pd) => !probes.has(pd)),
+          memoizedGetCssRulesByProperty,
+          extraEvidenceByRep
+        );
+        attributablePages.push(...replan.attributablePages);
+        fallbackPages = replan.fallbackPages;
+        subTimings['Fast-path replanning'] = replanPhase.end(
+          `${replan.attributablePages.length} more via probes, ${fallbackPages.length} still need full trace`
+        );
+      }
+    }
 
     if (fallbackPages.length > 0) {
       const fallbackTracing = trackPhase(
