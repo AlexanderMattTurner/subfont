@@ -54,7 +54,7 @@ Use the `/pr-creation` skill. Before writing a PR description, check for `CONTRI
 - Tests have a 5-minute timeout (configured in `.mocharc.yml`)
 - Tests use `httpception` for HTTP mocking and `unexpected` for assertions
 - Some tests require puppeteer browser binaries (installed via `pnpm install`)
-- Coverage thresholds: branches 75%, lines 82%, functions 78%, statements 82%
+- Coverage thresholds: branches 82%, lines 95%, functions 94%, statements 94%
 - Coverage excludes: `lib/cli.js`, `lib/fontConverterWorker.js`, `lib/fontTracerWorker.js`
 
 ## Conventions

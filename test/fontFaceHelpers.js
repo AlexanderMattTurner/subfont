@@ -403,6 +403,27 @@ describe('fontFaceHelpers', function () {
       expect(parseFontWeightRange('400  700'), 'to equal', [400, 700]);
     });
 
+    it('should tolerate leading/trailing whitespace around a range', function () {
+      // Regression: a leading/trailing space used to split into an empty
+      // token → NaN → the whole valid range collapsing to the [400, 400]
+      // fallback. It must now parse as the intended range.
+      const warned = [];
+      const warn = (err) => warned.push(err.message);
+      expect(parseFontWeightRange('  100 900  ', warn), 'to equal', [100, 900]);
+      expect(parseFontWeightRange('\t400\n', warn), 'to equal', [400, 400]);
+      expect(warned, 'to have length', 0);
+    });
+
+    it('should treat whitespace-padded "auto" as the full range', function () {
+      const warned = [];
+      expect(
+        parseFontWeightRange('  auto  ', (err) => warned.push(err.message)),
+        'to equal',
+        [-Infinity, Infinity]
+      );
+      expect(warned, 'to have length', 0);
+    });
+
     it('should warn and fall back for three valid numeric tokens', function () {
       const warned = [];
       const result = parseFontWeightRange('100 200 300', (err) =>
@@ -456,6 +477,13 @@ describe('fontFaceHelpers', function () {
 
     it('should split tokens on runs of whitespace', function () {
       expect(parseFontStretchRange('75%  125%'), 'to equal', [75, 125]);
+    });
+
+    it('should tolerate leading/trailing whitespace around a range', function () {
+      const warned = [];
+      const warn = (err) => warned.push(err.message);
+      expect(parseFontStretchRange(' 75% 125% ', warn), 'to equal', [75, 125]);
+      expect(warned, 'to have length', 0);
     });
 
     it('should resolve font-stretch keywords (e.g. "condensed" = 75%)', function () {

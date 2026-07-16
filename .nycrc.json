@@ -11,10 +11,10 @@
   ],
   "reporter": ["text", "lcov"],
   "check-coverage": true,
-  "branches": 75,
-  "lines": 82,
-  "functions": 78,
-  "statements": 82,
+  "branches": 82,
+  "lines": 95,
+  "functions": 94,
+  "statements": 94,
   "sourceMap": true,
   "produce-source-map": false
 }

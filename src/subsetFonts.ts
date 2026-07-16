@@ -164,11 +164,11 @@ function countUniqueFontUrls(
   return urls.size;
 }
 
-function asyncLoadStyleRelationWithFallback(
+async function asyncLoadStyleRelationWithFallback(
   htmlOrSvgAsset: Asset,
   originalRelation: Relation,
   hrefType: string
-): void {
+): Promise<void> {
   // Async load google font stylesheet
   // Insert async CSS loading <script>
   const href = escapeJsStringLiteral(
@@ -224,7 +224,11 @@ function asyncLoadStyleRelationWithFallback(
   );
 
   noScriptFallbackRelation.inline();
-  void asyncCssLoadingRelation.to.minify();
+  // Await the minify: every other minify() in this file is awaited, and
+  // leaving this fire-and-forget both risked an unhandled rejection (fatal
+  // under Node's default --unhandled-rejections=throw) and could serialize
+  // the inline loader script before it was minified.
+  await asyncCssLoadingRelation.to.minify();
   htmlOrSvgAsset.markDirty();
 }
 
@@ -1374,10 +1378,14 @@ async function emitLazyFallbackCss(
     let cssAsset = fallbackCssAssetCache.get(fallbackCssText);
     if (!cssAsset) {
       cssAsset = assetGraph.addAsset({ type: 'Css', text: fallbackCssText });
+      // Set hrefType *after* minify(): minify re-parses the stylesheet and
+      // can regenerate its outgoing relations, so hrefType assigned to the
+      // pre-minify relations would be lost. getOrCreateSubsetCssAsset sets
+      // hrefType after its own minify() for the same reason.
+      await cssAsset.minify();
       for (const relation of cssAsset.outgoingRelations) {
         relation.hrefType = hrefType;
       }
-      await cssAsset.minify();
       cssAsset.url = `${subsetUrl}fallback-${cssAsset.md5Hex.slice(0, 10)}.css`;
       fallbackCssAssetCache.set(fallbackCssText, cssAsset);
     }
@@ -1389,7 +1397,7 @@ async function emitLazyFallbackCss(
       to: cssAsset,
     });
 
-    asyncLoadStyleRelationWithFallback(
+    await asyncLoadStyleRelationWithFallback(
       htmlOrSvgAsset,
       fallbackHtmlStyle,
       hrefType
@@ -1508,7 +1516,7 @@ async function handleGoogleFontStylesheets(
         );
         relationsToRemove.add(selfHostedFallbackRelation);
         if (htmlParent.type === 'Html') {
-          asyncLoadStyleRelationWithFallback(
+          await asyncLoadStyleRelationWithFallback(
             htmlParent,
             selfHostedFallbackRelation,
             hrefType

@@ -172,6 +172,130 @@ describe('HeadlessBrowser', function () {
     });
   });
 
+  describe('_attachRequestInterceptor (request gating)', function () {
+    const baseUrl = 'https://example.com/';
+
+    // Register the interceptor and hand back the captured `request` handler
+    // so tests can drive it with fake requests directly.
+    function captureHandler(assetGraph) {
+      const hb = new HeadlessBrowser({ console: fakeConsole });
+      hb._attachRequestInterceptor(mockPage, assetGraph, baseUrl);
+      const call = mockPage.on.getCalls().find((c) => c.args[0] === 'request');
+      expect(call, 'to be truthy');
+      return call.args[1];
+    }
+
+    function fakeRequest(url) {
+      return {
+        url: () => url,
+        respond: sinon.stub().resolves(),
+        continue: sinon.stub().resolves(),
+        abort: sinon.stub().resolves(),
+      };
+    }
+
+    it('responds 200 with the asset body for an in-graph URL', function () {
+      const asset = {
+        contentType: 'text/css',
+        rawSrc: Buffer.from('body{}'),
+      };
+      const assetGraph = {
+        root: 'file:///test/',
+        findAssets: sinon.stub().returns([asset]),
+      };
+      const handler = captureHandler(assetGraph);
+      const req = fakeRequest('https://example.com/style.css');
+      handler(req);
+      expect(req.respond, 'to have a call satisfying', [
+        { status: 200, contentType: 'text/css', body: asset.rawSrc },
+      ]);
+      expect(req.abort, 'was not called');
+    });
+
+    it('maps a trailing-slash URL to index.html', function () {
+      const findAssets = sinon.stub().returns([]);
+      const assetGraph = { root: 'file:///test/', findAssets };
+      const handler = captureHandler(assetGraph);
+      handler(fakeRequest('https://example.com/'));
+      expect(findAssets, 'to have a call satisfying', [
+        { isLoaded: true, url: 'file:///test/index.html' },
+      ]);
+    });
+
+    it('responds 404 for an in-base URL with no matching asset', function () {
+      const assetGraph = {
+        root: 'file:///test/',
+        findAssets: sinon.stub().returns([]),
+      };
+      const handler = captureHandler(assetGraph);
+      const req = fakeRequest('https://example.com/missing.css');
+      handler(req);
+      expect(req.respond, 'to have a call satisfying', [
+        { status: 404, body: '' },
+      ]);
+    });
+
+    it('continues a file: request that resolves under the web root', function () {
+      const assetGraph = {
+        root: 'file:///test/',
+        findAssets: sinon.stub().returns([]),
+      };
+      const handler = captureHandler(assetGraph);
+      const req = fakeRequest('file:///test/sub/app.js');
+      handler(req);
+      expect(req.continue, 'was called once');
+      expect(req.abort, 'was not called');
+    });
+
+    it('denies a file: request that escapes the web root via ..', function () {
+      const assetGraph = {
+        root: 'file:///test/',
+        findAssets: sinon.stub().returns([]),
+      };
+      const handler = captureHandler(assetGraph);
+      const req = fakeRequest('file:///test/../etc/passwd');
+      handler(req);
+      expect(req.abort, 'to have a call satisfying', ['accessdenied']);
+      expect(req.continue, 'was not called');
+    });
+
+    it('denies a percent-encoded file: traversal', function () {
+      const assetGraph = {
+        root: 'file:///test/',
+        findAssets: sinon.stub().returns([]),
+      };
+      const handler = captureHandler(assetGraph);
+      const req = fakeRequest('file:///test/%2e%2e/secret');
+      handler(req);
+      expect(req.abort, 'to have a call satisfying', ['accessdenied']);
+    });
+
+    it('denies every file: request when the root is remote (no local root)', function () {
+      const assetGraph = {
+        root: 'https://example.com/',
+        findAssets: sinon.stub().returns([]),
+      };
+      const handler = captureHandler(assetGraph);
+      const req = fakeRequest('file:///etc/passwd');
+      handler(req);
+      expect(req.abort, 'to have a call satisfying', ['accessdenied']);
+      expect(req.continue, 'was not called');
+    });
+
+    it('aborts an off-origin http request as failed (SSRF guard)', function () {
+      const assetGraph = {
+        root: 'file:///test/',
+        findAssets: sinon.stub().returns([]),
+      };
+      const handler = captureHandler(assetGraph);
+      const req = fakeRequest('http://evil.example.net/beacon');
+      handler(req);
+      expect(req.abort, 'to have a call satisfying', ['failed']);
+      expect(req.continue, 'was not called');
+      expect(req.respond, 'was not called');
+    });
+  });
+
   describe('browser launch failure', function () {
     it('should propagate the error when puppeteer.launch fails', async function () {
       const launchError = new Error('Chrome not found');
