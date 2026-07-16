@@ -5,8 +5,11 @@ import type {
   Asset,
   AssetGraph,
   AssetQuery,
+  CssAsset,
+  NonCssAsset,
   PostCssNode,
   Relation,
+  RelationQuery,
 } from 'assetgraph';
 import type {
   AssetGraphError,
@@ -75,6 +78,57 @@ interface AssetTextWithProps {
 type ReportFontUsageEntry = Omit<AssetTextWithProps, 'fontUsages'> & {
   fontUsages: ReportFontUsage[];
 };
+
+// Asset#type on a never-loaded placeholder asset (an unfollowed relation
+// target) runs _inferType(), which reads asset.incomingRelations — a full
+// O(assets + relations) findRelations scan per access, re-run on every
+// access when the type stays uninferrable (e.g. an extensionless URL). A
+// { type: ... } query is therefore O(placeholders × relations): minutes on
+// large sites. Serve findRelations({ to: asset }) from a one-pass index for
+// the duration of the query instead. findAssets is fully synchronous, so
+// the patch cannot leak across an async boundary, and the index preserves
+// findRelations' iteration order (_assets insertion order, then each
+// asset's outgoingRelations order).
+function findAssetsWithIncomingRelationIndex(
+  assetGraph: AssetGraph,
+  query: AssetQuery
+): Asset[] {
+  const incomingRelationsByAsset = new Map<Asset, Relation[]>();
+  for (const asset of assetGraph._assets) {
+    if (!asset.isPopulated) {
+      continue;
+    }
+    for (const relation of asset.outgoingRelations) {
+      const existing = incomingRelationsByAsset.get(relation.to);
+      if (existing) {
+        existing.push(relation);
+      } else {
+        incomingRelationsByAsset.set(relation.to, [relation]);
+      }
+    }
+  }
+  const originalFindRelations = assetGraph.findRelations;
+  const patchedFindRelations = function (
+    this: AssetGraph,
+    queryObj?: RelationQuery
+  ): Relation[] {
+    const keys = queryObj ? Object.keys(queryObj) : [];
+    const to = queryObj?.to as Asset | undefined;
+    if (keys.length === 1 && keys[0] === 'to' && to?.isAsset) {
+      // _inferType may push into the returned array; hand out a copy so
+      // the index stays intact.
+      return incomingRelationsByAsset.get(to)?.slice() ?? [];
+    }
+    return originalFindRelations.call(this, queryObj);
+  };
+  assetGraph.findRelations =
+    patchedFindRelations as AssetGraph['findRelations'];
+  try {
+    return assetGraph.findAssets(query);
+  } finally {
+    assetGraph.findRelations = originalFindRelations;
+  }
+}
 
 function getParents(asset: Asset, assetQuery: AssetQuery): Asset[] {
   const assetMatcher = compileQuery(assetQuery);
@@ -772,8 +826,17 @@ function injectSubsetIntoSvgAssets(
   webfontNameMap: Record<string, string>,
   omitFallbacks: boolean
 ): void {
-  for (const svgAsset of assetGraph.findAssets({ type: 'Svg' })) {
-    if (!svgAsset.isLoaded) continue;
+  // A { type: ... } asset query reads Asset#type on every asset in the
+  // graph, which for never-loaded placeholder assets triggers an
+  // uncacheable O(assets + relations) incoming-relation scan per access
+  // (see findAssetsWithIncomingRelationIndex). Loaded assets have their
+  // type set on the prototype, so querying on isLoaded first and narrowing
+  // by type in JS visits the same assets in the same order at a fraction
+  // of the cost.
+  const loadedSvgAssets = assetGraph
+    .findAssets({ isLoaded: true })
+    .filter((asset): asset is NonCssAsset => asset.type === 'Svg');
+  for (const svgAsset of loadedSvgAssets) {
     let changesMade = false;
     for (const element of Array.from(
       svgAsset.parseTree.querySelectorAll('[font-family]')
@@ -832,7 +895,11 @@ function injectSubsetIntoCssAssets(
   webfontNameMap: Record<string, string>,
   omitFallbacks: boolean
 ): void {
-  const cssAssets = assetGraph.findAssets({ type: 'Css', isLoaded: true });
+  // isLoaded-first for the same placeholder-scan avoidance as in
+  // injectSubsetIntoSvgAssets.
+  const cssAssets = assetGraph
+    .findAssets({ isLoaded: true })
+    .filter((asset): asset is CssAsset => asset.type === 'Css');
   const parseTreeToAsset = new Map<Asset['parseTree'], Asset>();
   for (const cssAsset of cssAssets) {
     parseTreeToAsset.set(cssAsset.parseTree, cssAsset);
@@ -1665,11 +1732,15 @@ async function subsetFonts(
     hasGoogleFonts ? null : 'skipped, no Google Fonts found'
   );
 
+  const findPagesPhase = trackPhase('find html/svg pages');
+  const htmlOrSvgAssets = findAssetsWithIncomingRelationIndex(assetGraph, {
+    $or: [{ type: 'Html', isInline: false }, { type: 'Svg' }],
+  });
+  timings['find html/svg pages'] = findPagesPhase.end();
+
   const preCtx: PreCollectCtx = {
     assetGraph,
-    htmlOrSvgAssets: assetGraph.findAssets({
-      $or: [{ type: 'Html', isInline: false }, { type: 'Svg' }],
-    }),
+    htmlOrSvgAssets,
     console,
     debug,
     text,

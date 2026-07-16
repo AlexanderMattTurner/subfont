@@ -76,6 +76,8 @@ declare module 'assetgraph' {
     url: string;
     rawSrc: Buffer;
     text: string;
+    isAsset: true;
+    isPopulated?: boolean;
     isLoaded?: boolean;
     isInline?: boolean;
     isInitial?: boolean;
@@ -194,6 +196,7 @@ declare module 'assetgraph' {
   export class AssetGraph {
     constructor(config: AssetGraphConfig);
     root: string;
+    _assets: Set<Asset>;
     findAssets(query: { type: 'Css'; [key: string]: unknown }): CssAsset[];
     findAssets(query: {
       type: Exclude<AssetType, 'Css'>;
