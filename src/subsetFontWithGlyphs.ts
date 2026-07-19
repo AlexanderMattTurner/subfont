@@ -127,6 +127,11 @@ async function initPool(): Promise<void> {
   if (!_poolReady) {
     _poolReady = (async () => {
       const mod = await compileModule();
+      // Drop any instances a previous failed init left behind (each resolved
+      // WebAssembly.instantiate pushes eagerly, so a partial failure can leave
+      // some in _pool). Without this, a retry would push another POOL_SIZE and
+      // over-parallelize past the intended cap.
+      _pool.length = 0;
       const instantiations: Array<Promise<void>> = [];
       for (let i = 0; i < POOL_SIZE; i++) {
         instantiations.push(

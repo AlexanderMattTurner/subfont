@@ -12,6 +12,7 @@ import { MAX_POOL_SIZE } from './concurrencyLimit';
 import { runWithConcurrency } from './runWithConcurrency';
 import * as cssFontParser from 'css-font-parser';
 import extractReferencedCustomPropertyNames = require('./extractReferencedCustomPropertyNames');
+import directFamiliesInValue = require('./directFamiliesInValue');
 import unquote = require('./unquote');
 import normalizeFontPropertyValue = require('./normalizeFontPropertyValue');
 import getCssRulesByProperty = require('./getCssRulesByProperty');
@@ -915,11 +916,13 @@ function unionTokens(
 function expandFamilyValue(
   value: string,
   customPropertyValues: Map<string, CustomPropertyDefinition[]>,
-  visited: Set<string>
+  visited: Set<string>,
+  isFontShorthand = false
 ): ExpandedFamily[] {
-  const expanded: ExpandedFamily[] = cssFontParser
-    .parseFontFamily(value)
-    .map((family) => ({ family, requiredTokens: null }));
+  const expanded: ExpandedFamily[] = directFamiliesInValue(
+    value,
+    isFontShorthand
+  ).map((family) => ({ family, requiredTokens: null }));
   for (const { groups } of value.matchAll(VAR_FALLBACK_RE)) {
     for (const family of cssFontParser.parseFontFamily(
       groups?.fallback ?? ''
@@ -1025,12 +1028,14 @@ function buildFamilyApplicability(
     for (const rule of rules) {
       const value = (rule as { value?: string }).value;
       const selector = (rule as { selector?: string }).selector;
+      const isFontShorthand = (rule as { prop?: string }).prop === 'font';
       if (typeof value !== 'string') continue;
       collectReferencedNames(value);
       const expandedFamilies = expandFamilyValue(
         value,
         customPropertyValues,
-        new Set<string>()
+        new Set<string>(),
+        isFontShorthand
       ).filter(({ family }) => webfontFamilies.has(family.toLowerCase()));
       if (expandedFamilies.length === 0) continue;
       sawAnyRule = true;
