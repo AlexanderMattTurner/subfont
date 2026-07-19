@@ -3,9 +3,11 @@
 # Version is tracked via npm registry and git tags, not committed to the repository
 set -e
 
+# The Claude API refines the bump decision from commit semantics, but a release
+# must never hinge on it: a missing/expired key or an API outage falls back to a
+# Conventional-Commits bump computed locally (bump_from_commits, below).
 if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-  echo "Error: ANTHROPIC_API_KEY is not set. Configure it as a repository secret." >&2
-  exit 1
+  echo "Note: ANTHROPIC_API_KEY is not set; using local Conventional-Commits bump." >&2
 fi
 
 TMP_DIR=$(mktemp -d)
@@ -105,40 +107,58 @@ REQUEST_BODY=$(jq -n \
     messages: [{role: "user", content: $prompt}]
   }')
 
-# Retry the Claude API call on transient failures (timeout, 5xx, network blips).
-# Exponential backoff: 2s, 4s, 8s between attempts.
-CLAUDE_RESPONSE_FILE="$TMP_DIR/claude-response.json"
-RESPONSE=""
-for attempt in 1 2 3; do
-  HTTP_CODE=$(curl -s -o "$CLAUDE_RESPONSE_FILE" -w "%{http_code}" \
-    --max-time 30 https://api.anthropic.com/v1/messages \
-    -H "Content-Type: application/json" \
-    -H "x-api-key: $ANTHROPIC_API_KEY" \
-    -H "anthropic-version: 2023-06-01" \
-    -d "$REQUEST_BODY" || echo "000")
-  if [[ "$HTTP_CODE" == "200" ]]; then
-    RESPONSE=$(cat "$CLAUDE_RESPONSE_FILE")
-    break
+# Local fallback bump when the Claude API is unavailable: Conventional Commits.
+# A `!` breaking-change marker or a `feat` type maps to minor (major is capped to
+# minor by the policy below); anything else is a patch. Never over-bumps.
+bump_from_commits() {
+  if grep -qE '^- [a-z]+(\([^)]+\))?!:' <<<"$COMMITS"; then
+    echo minor
+  elif grep -qE '^- feat(\([^)]+\))?:' <<<"$COMMITS"; then
+    echo minor
+  else
+    echo patch
   fi
-  echo "Claude API attempt $attempt failed (HTTP $HTTP_CODE)" >&2
-  if [[ "$attempt" -lt 3 ]]; then
-    sleep $((2 ** attempt))
+}
+
+# Ask Claude to classify the bump; fall back to the local Conventional-Commits
+# rule on a missing key, an API outage, or an unparseable/invalid response. The
+# release never depends on the API being reachable.
+BUMP=""
+if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+  # Retry on transient failures (timeout, 5xx, network blips): 2s, 4s, 8s.
+  CLAUDE_RESPONSE_FILE="$TMP_DIR/claude-response.json"
+  RESPONSE=""
+  for attempt in 1 2 3; do
+    HTTP_CODE=$(curl -s -o "$CLAUDE_RESPONSE_FILE" -w "%{http_code}" \
+      --max-time 30 https://api.anthropic.com/v1/messages \
+      -H "Content-Type: application/json" \
+      -H "x-api-key: $ANTHROPIC_API_KEY" \
+      -H "anthropic-version: 2023-06-01" \
+      -d "$REQUEST_BODY" || echo "000")
+    if [[ "$HTTP_CODE" == "200" ]]; then
+      RESPONSE=$(cat "$CLAUDE_RESPONSE_FILE")
+      break
+    fi
+    echo "Claude API attempt $attempt failed (HTTP $HTTP_CODE)" >&2
+    if [[ "$attempt" -lt 3 ]]; then
+      sleep $((2 ** attempt))
+    fi
+  done
+  if [[ -n "$RESPONSE" ]]; then
+    BUMP=$(echo "$RESPONSE" | jq -r '.content[] | select(.type == "tool_use") | .input.bump_type')
+    if [[ "$BUMP" != "major" && "$BUMP" != "minor" && "$BUMP" != "patch" ]]; then
+      # Log only the stop_reason, not the full response (may contain metadata).
+      echo "Unexpected bump type from Claude: '$BUMP' (stop_reason: $(echo "$RESPONSE" | jq -r '.stop_reason // "unknown"')); using local Conventional-Commits bump." >&2
+      BUMP=""
+    fi
+  else
+    echo "⚠️ Claude API unreachable after 3 attempts; using local Conventional-Commits bump." >&2
   fi
-done
-if [[ -z "$RESPONSE" ]]; then
-  echo "Error: Claude API unreachable after 3 attempts" >&2
-  exit 1
 fi
 
-# Extract the bump level from Claude's structured tool use response
-BUMP=$(echo "$RESPONSE" | jq -r '.content[] | select(.type == "tool_use") | .input.bump_type')
-
-# Validate response - fail if Claude couldn't determine bump type
-if [[ "$BUMP" != "major" && "$BUMP" != "minor" && "$BUMP" != "patch" ]]; then
-  echo "Error: Unexpected bump type from Claude: $BUMP"
-  # Log only the stop_reason and type, not the full response (may contain metadata)
-  echo "Response stop_reason: $(echo "$RESPONSE" | jq -r '.stop_reason // "unknown"')"
-  exit 1
+if [[ -z "$BUMP" ]]; then
+  BUMP=$(bump_from_commits)
+  echo "Local Conventional-Commits bump: $BUMP"
 fi
 
 # Safety net: automated MAJOR bumps are disabled — a real major release is a

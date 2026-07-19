@@ -20,6 +20,11 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
+          # version-bump.sh pushes the vX.Y.Z tag; main is protected by a
+          # required-status-checks ruleset the default GITHUB_TOKEN cannot bypass.
+          # TEMPLATE_SYNC_TOKEN_ORG is the org PAT registered as a ruleset bypass
+          # actor; falls back to GITHUB_TOKEN only when unset (a fork).
+          token: ${{ secrets.TEMPLATE_SYNC_TOKEN_ORG || secrets.GITHUB_TOKEN }}
 
       - name: Setup
         uses: ./.github/actions/setup
