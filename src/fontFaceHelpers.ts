@@ -348,7 +348,7 @@ export function parseFontWeightRange(
   str: string | undefined,
   warn?: RangeWarnFn
 ): [number, number] {
-  if (typeof str === 'undefined' || str.trim() === 'auto') {
+  if (typeof str === 'undefined' || str.trim().toLowerCase() === 'auto') {
     return [-Infinity, Infinity];
   }
   // Resolve keyword forms ("normal" → 400, "bold" → 700) before numeric

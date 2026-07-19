@@ -356,6 +356,16 @@ describe('fontFaceHelpers', function () {
     [
       { input: undefined, expected: [-Infinity, Infinity], desc: 'undefined' },
       { input: 'auto', expected: [-Infinity, Infinity], desc: '"auto"' },
+      {
+        input: 'Auto',
+        expected: [-Infinity, Infinity],
+        desc: '"Auto" (case insensitive)',
+      },
+      {
+        input: 'AUTO',
+        expected: [-Infinity, Infinity],
+        desc: '"AUTO" (case insensitive)',
+      },
       { input: '700', expected: [700, 700], desc: 'single value' },
       { input: '400 700', expected: [400, 700], desc: 'range' },
       {
