@@ -20,6 +20,21 @@ describe('resolveCanonicalRoot', function () {
     );
   });
 
+  it('normalizes a slash-less explicit canonicalRoot to a trailing slash', function () {
+    // The option is slash-insensitive: an explicit value without a trailing
+    // slash reads as the same root as one with it.
+    expect(
+      resolveCanonicalRoot('http://localhost:8000/', 'https://example.com'),
+      'to equal',
+      'https://example.com/'
+    );
+    expect(
+      resolveCanonicalRoot('file:///web/root/', 'https://example.com/sub'),
+      'to equal',
+      'https://example.com/sub/'
+    );
+  });
+
   it('derives a trailing-slash canonicalRoot for a non-file root when none is given', function () {
     expect(
       resolveCanonicalRoot('https://example.com', undefined),

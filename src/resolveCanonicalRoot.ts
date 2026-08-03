@@ -12,17 +12,22 @@
 //
 // Precedence:
 //   1. An explicit `canonicalRoot` always wins.
-//   2. Otherwise, a non-file root falls back to its trailing-slash form.
+//   2. Otherwise, a non-file root falls back to its own value.
 //   3. Otherwise (file: root with no explicit value) there is no canonicalRoot.
+//
+// Whichever value is chosen is normalized to a single trailing slash so it
+// reads as a root regardless of whether the caller included the slash — the
+// same normalization AssetGraph and HeadlessBrowser already apply to the
+// derived form, so the option is slash-insensitive everywhere.
 export function resolveCanonicalRoot(
   rootUrl: string | undefined,
   canonicalRoot: string | undefined
 ): string | undefined {
-  if (canonicalRoot) {
-    return canonicalRoot;
+  const chosen =
+    canonicalRoot ||
+    (rootUrl && !rootUrl.startsWith('file:') ? rootUrl : undefined);
+  if (!chosen) {
+    return undefined;
   }
-  if (rootUrl && !rootUrl.startsWith('file:')) {
-    return rootUrl.replace(/\/?$/, '/');
-  }
-  return undefined;
+  return chosen.replace(/\/?$/, '/');
 }
