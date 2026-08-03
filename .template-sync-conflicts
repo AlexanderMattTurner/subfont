@@ -1,0 +1,1 @@
+Template updates available for: .claude/hooks/pre-push-check.sh .github/scripts/phone-home-submit.js .github/scripts/template-sync.sh .github/scripts/phone-home-extract.js .github/scripts/version-bump.sh .github/workflows/template-sync.yaml .github/workflows/build-publish-notify.yaml .github/workflows/phone-home.yaml 
