@@ -169,6 +169,63 @@ describe('subsetGeneration', function () {
       }
     });
 
+    it('should flush disk-cache writes before resolving', async function () {
+      // Regression: the cache write was fire-and-forget, so a caller doing
+      // `await subfont(...); process.exit(0)` could truncate the in-flight
+      // write. getSubsetsForFontUsage must join the writes before resolving.
+      const realFs = require('fs/promises');
+      let writeSettled = false;
+      const fsStub = {
+        ...realFs,
+        writeFile: async (...a) => {
+          await realFs.writeFile(...a);
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          writeSettled = true;
+        },
+      };
+      const { getSubsetsForFontUsage } = proxyquire('../lib/subsetGeneration', {
+        'fs/promises': fsStub,
+        './variationAxes': {
+          getVariationAxisBounds: () => Promise.resolve(null),
+        },
+        './collectFeatureGlyphIds': () => Promise.resolve([]),
+        './subsetFontWithGlyphs': () =>
+          Promise.resolve(Buffer.alloc(100, 0x41)),
+      });
+
+      const cacheDir = fs.mkdtempSync(
+        pathModule.join(os.tmpdir(), 'subfont-flush-')
+      );
+      try {
+        const fontUrl = 'https://example.com/flush.ttf';
+        const fontUsage = { text: 'abc', fontUrl };
+        const mockAssetGraph = {
+          populate: () => Promise.resolve(),
+          findAssets: () => [
+            { url: fontUrl, isLoaded: true, rawSrc: Buffer.alloc(10) },
+          ],
+          warn: () => {},
+        };
+
+        await getSubsetsForFontUsage(
+          mockAssetGraph,
+          [{ fontUsages: [fontUsage] }],
+          ['woff2'],
+          new Map(),
+          cacheDir,
+          null,
+          false
+        );
+
+        // The slow write must have completed by the time we get here, and the
+        // final (renamed) cache entry must be on disk with no leftover .tmp.
+        expect(writeSettled, 'to be true');
+        expect(fs.readdirSync(cacheDir), 'to have length', 1);
+      } finally {
+        fs.rmSync(cacheDir, { recursive: true, force: true });
+      }
+    });
+
     it('should skip a format when subsetFontWithGlyphs rejects and warn via assetGraph', async function () {
       const goodBuffer = Buffer.alloc(200, 0x43);
       const warnCalls = [];
@@ -293,6 +350,28 @@ describe('subsetGeneration', function () {
         dropMathTable: true,
       });
       expect(orderA, 'to equal', orderB);
+    });
+
+    it('should produce the same key regardless of variationAxes key order', function () {
+      // Axis names arrive in fvar order today, but the key must not depend on
+      // that: two structurally-equal axis maps have to hash identically.
+      const fontBuf = Buffer.from('axis-ordering');
+      const orderA = subsetCacheKey(fontBuf, 'abc', 'woff2', {
+        wght: { min: 100, max: 900 },
+        wdth: 100,
+      });
+      const orderB = subsetCacheKey(fontBuf, 'abc', 'woff2', {
+        wdth: 100,
+        wght: { min: 100, max: 900 },
+      });
+      expect(orderA, 'to equal', orderB);
+    });
+
+    it('should still differ when a variationAxes value changes', function () {
+      const fontBuf = Buffer.from('axis-value');
+      const a = subsetCacheKey(fontBuf, 'abc', 'woff2', { wght: 400 });
+      const b = subsetCacheKey(fontBuf, 'abc', 'woff2', { wght: 700 });
+      expect(a, 'not to equal', b);
     });
 
     it('should produce the same key regardless of featureGlyphIds order', function () {
@@ -474,6 +553,44 @@ describe('subsetGeneration', function () {
       // Second write should detect ENOENT, recreate, and succeed
       await cache.set('second', buf);
       expect(await cache.get('second'), 'to equal', buf);
+    });
+
+    it('should await directory creation before any concurrent write', async function () {
+      // Regression: a boolean "ensured" flag set *before* awaiting mkdir let a
+      // second concurrent set() reach _atomicWrite while the dir was still
+      // being created. Caching the mkdir promise makes every set() await it.
+      const realFs = require('fs/promises');
+      const events = [];
+      const fsStub = {
+        ...realFs,
+        mkdir: async (...a) => {
+          const r = await realFs.mkdir(...a);
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          events.push('mkdir');
+          return r;
+        },
+        writeFile: async (...a) => {
+          events.push('write');
+          return realFs.writeFile(...a);
+        },
+      };
+      const { _SubsetDiskCache: Cache } = proxyquire(
+        '../lib/subsetGeneration',
+        {
+          'fs/promises': fsStub,
+        }
+      );
+      const dir = pathModule.join(tmpDir, 'concurrent');
+      const cache = new Cache(dir);
+      const buf = fontBuf('x');
+      await Promise.all([cache.set('a', buf), cache.set('b', buf)]);
+      // mkdir must run exactly once and before every write.
+      expect(
+        events.filter((e) => e === 'mkdir'),
+        'to have length',
+        1
+      );
+      expect(events[0], 'to equal', 'mkdir');
     });
 
     it('should not leave temp files behind after a successful write', async function () {
