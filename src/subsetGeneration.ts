@@ -72,6 +72,33 @@ function getFontBufferDigest(fontBuffer: FontBuffer): Buffer {
 // share a cache entry with a semantically different invocation.
 type ExtraSubsetCacheOptions = Record<string, boolean | string[] | undefined>;
 
+type StableValue =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | StableValue[]
+  | { [key: string]: StableValue };
+
+// JSON.stringify with object keys emitted in sorted order at every level, so
+// two structurally-equal objects that differ only in key insertion order
+// serialize identically. Values here are numbers or small {min,max,default}
+// records, but the recursion keeps it correct for any nested shape.
+function stableStringify(value: StableValue): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(',')}]`;
+  }
+  const body = Object.keys(value)
+    .sort()
+    .map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`)
+    .join(',');
+  return `{${body}}`;
+}
+
 function subsetCacheKey(
   fontBuffer: FontBuffer,
   text: string,
@@ -101,10 +128,14 @@ function subsetCacheKey(
   hash.update(getFontBufferDigest(fontBuffer));
   hashField(hash, text);
   hashField(hash, targetFormat);
-  // Sort so the cache key is stable regardless of iteration order.
   if (variationAxes) {
     hash.update('1');
-    hashField(hash, JSON.stringify(variationAxes));
+    // Serialize with sorted keys so the cache key doesn't depend on the axis
+    // iteration order (today that's deterministic fvar order, but a future
+    // refactor feeding axes from a Map/Set sweep would silently fragment the
+    // key). Every other array/object field in this key is already order-
+    // normalized; variationAxes must be too.
+    hashField(hash, stableStringify(variationAxes));
   } else {
     hash.update('0');
   }
@@ -157,32 +188,37 @@ function isKnownFontMagic(buf: Buffer): boolean {
 class SubsetDiskCache {
   private _cacheDir: string;
   private _console: Console | null;
-  private _ensured: boolean;
+  // Cache the in-flight mkdir *promise*, not a boolean set before the await:
+  // a boolean flag would let a second concurrent set() proceed to _atomicWrite
+  // while the directory is still being created. Storing the promise makes
+  // every concurrent set() await the same mkdir.
+  private _ensured?: Promise<void>;
   private _warnedWrite: boolean;
 
   constructor(cacheDir: string, console: Console | null | undefined) {
     this._cacheDir = cacheDir;
     this._console = console ?? null;
-    this._ensured = false;
     this._warnedWrite = false;
   }
 
-  private async _ensureDir(): Promise<void> {
+  private _ensureDir(): Promise<void> {
     if (!this._ensured) {
       // Only attempt once — persistent failures (bad path, permissions)
       // are far more common than transient ones, and retrying just
-      // produces repeated warnings.
-      this._ensured = true;
-      try {
-        await fs.mkdir(this._cacheDir, { recursive: true });
-      } catch (err) {
-        if (this._console) {
-          this._console.warn(
-            `subfont: cache directory ${this._cacheDir} could not be created: ${(err as Error).message}`
-          );
+      // produces repeated warnings. The rejection is folded into the
+      // resolved promise (with a warning) so awaiters never see it throw.
+      this._ensured = fs.mkdir(this._cacheDir, { recursive: true }).then(
+        () => {},
+        (err) => {
+          if (this._console) {
+            this._console.warn(
+              `subfont: cache directory ${this._cacheDir} could not be created: ${(err as Error).message}`
+            );
+          }
         }
-      }
+      );
     }
+    return this._ensured;
   }
 
   async get(key: string): Promise<Buffer | undefined> {
@@ -396,6 +432,12 @@ interface SubsetGenCtx {
   fontAssetsByUrl: Map<string, Asset>;
   diskCache: SubsetDiskCache | null;
   cacheStats: { hits: number; misses: number } | null;
+  // Disk-cache writes are started as subsets settle but must be joined before
+  // getSubsetsForFontUsage resolves. Otherwise the write is fire-and-forget:
+  // a library embedder that does `await subfont(...); process.exit(0)` would
+  // truncate in-flight writes, leaving orphaned *.tmp files and cache misses
+  // on every subsequent run.
+  pendingCacheWrites: Promise<void>[];
   signal?: AbortSignal;
 }
 
@@ -410,6 +452,7 @@ async function queueSubsetForFormat(
   extraOptions: ExtraSubsetCacheOptions
 ): Promise<Buffer | null> {
   const { assetGraph, fontAssetsByUrl, diskCache, cacheStats, signal } = ctx;
+  const { pendingCacheWrites } = ctx;
   const cacheKey = diskCache
     ? subsetCacheKey(
         fontBuffer,
@@ -440,7 +483,11 @@ async function queueSubsetForFormat(
   return subsetCall
     .then((result) => {
       if (diskCache && result && cacheKey) {
-        void diskCache.set(cacheKey, result).catch(() => {});
+        // Track the write so getSubsetsForFontUsage can join it before
+        // resolving. The .catch keeps a failed write from rejecting the join.
+        pendingCacheWrites.push(
+          diskCache.set(cacheKey, result).catch(() => {})
+        );
       }
       return result;
     })
@@ -649,8 +696,16 @@ export async function getSubsetsForFontUsage(
     seenAxisValuesByFontUrlAndAxisName
   );
 
+  const pendingCacheWrites: Promise<void>[] = [];
   const { subsetPromiseMap, subsetInfoByFontUrl } = await queueAllSubsets(
-    { assetGraph, fontAssetsByUrl, diskCache, cacheStats, signal },
+    {
+      assetGraph,
+      fontAssetsByUrl,
+      diskCache,
+      cacheStats,
+      pendingCacheWrites,
+      signal,
+    },
     canonicalFontUsageByUrl,
     originalFontBuffers,
     variationAxisBoundsCache,
@@ -660,6 +715,12 @@ export async function getSubsetsForFontUsage(
   // Wait for all subsets to settle. Errors are swallowed inside the subset
   // call site (returns null on failure), so this can't reject.
   await Promise.all(subsetPromiseMap.values());
+
+  // Join the disk-cache writes started as subsets settled, so callers can
+  // safely process.exit() right after awaiting subfont() without truncating
+  // an in-flight write. Each write already has its own .catch, so this can't
+  // reject either.
+  await Promise.all(pendingCacheWrites);
 
   // Original input buffers (full WOFF/TTF bytes) aren't needed after
   // subsetting. Release them before the propagation loops below.

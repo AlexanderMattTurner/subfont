@@ -11,6 +11,7 @@ import * as util from 'util';
 import subsetFonts = require('./subsetFonts');
 import { destroy as destroyFontConverter } from './fontConverter';
 import { makePhaseTracker } from './progress';
+import { resolveCanonicalRoot } from './resolveCanonicalRoot';
 import type { ExternalFontUsage } from './types/shared';
 
 class UsageError extends Error {
@@ -759,12 +760,10 @@ const subfont = async function subfont(
 
   const assetGraph = new AssetGraph({
     root: rootUrl,
-    // Non-file roots get an explicit trailing-slash canonicalRoot so
-    // relative-URL resolution lines up with how the deployed site reads.
-    canonicalRoot:
-      rootUrl && !rootUrl.startsWith('file:')
-        ? rootUrl.replace(/\/?$/, '/')
-        : canonicalRoot,
+    // An explicit canonicalRoot always wins; otherwise a non-file root gets an
+    // explicit trailing-slash canonicalRoot so relative-URL resolution lines
+    // up with how the deployed site reads. (See resolveCanonicalRoot.)
+    canonicalRoot: resolveCanonicalRoot(rootUrl, canonicalRoot),
   });
   const warningTracker = await installWarningHandlers(
     assetGraph,
