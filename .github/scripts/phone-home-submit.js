@@ -67,10 +67,6 @@ module.exports = async ({ github }) => {
     `*Automatically submitted by the phone-home workflow from \`${repo}\`.*`,
   ].join('\n');
 
-<<<<<<< local
-  const [templateOwner, templateRepoName] = templateRepo.split('/');
-=======
->>>>>>> template
   let issue;
   try {
     issue = await github.rest.issues.create({

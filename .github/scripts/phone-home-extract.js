@@ -80,18 +80,12 @@ module.exports = async ({ context, core }) => {
     .replace(/<!--[\s\S]*?-->/g, '')
     .split('\n')
     .filter((line) => !line.trim().match(/^<[^>]*>$/))
-<<<<<<< local
-    .filter(
-      (line) => !line.trim().match(/^https:\/\/claude\.ai\/code\/session_/)
-    )
-=======
     // Drop AI-attribution footers — session links, "Generated with Claude
     // Code" lines, and co-author trailers — so they never reach the issue
     // body (the repo bans such links in PRs; they are pure noise here).
     .filter((line) => !/claude\.(ai|com)/i.test(line))
     .filter((line) => !/^\s*🤖/.test(line))
     .filter((line) => !/^\s*co-authored-by:/i.test(line))
->>>>>>> template
     .filter((line) => !line.trim().match(/^```/))
     .join('\n')
     .trim();

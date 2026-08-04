@@ -22,18 +22,6 @@ run_check() {
 }
 
 # Node.js checks
-<<<<<<< local
-has_script build && run_check "build" "pnpm build"
-has_script lint && run_check "lint" "pnpm lint"
-has_script check && run_check "typecheck" "pnpm check"
-
-# Run tests if stop hook retries were exhausted (safety net)
-PROJ_HASH=$(printf '%s' "$PROJECT_DIR" | sha256sum | cut -c1-16)
-RETRY_DIR="/tmp/claude-stop-$(id -u)"
-if [[ ! -f "${RETRY_DIR}/attempts-${PROJ_HASH}" ]]; then
-  # No active retry counter means either first push or stop hook already passed
-  has_script test && run_check "tests" "pnpm test"
-=======
 if [[ -f package.json ]] && ! exists jq; then
   echo "=== node scripts FAILED ===" >&2
   echo "jq is required to detect which package.json scripts are configured, but is not installed." >&2
@@ -43,7 +31,6 @@ else
   has_script lint && run_check "lint" pnpm lint
   has_script check && run_check "typecheck" pnpm check
   has_script test && run_check "tests" pnpm test
->>>>>>> template
 fi
 
 # Python checks
