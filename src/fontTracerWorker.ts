@@ -10,9 +10,8 @@
 
 import { JSDOM } from 'jsdom';
 import * as postcss from 'postcss';
-import memoizeSync = require('memoizesync');
 import fontTracer = require('font-tracer');
-import getCssRulesByProperty = require('./getCssRulesByProperty');
+import { createMemoizedGetCssRulesByProperty } from './memoizedCssRulesByProperty';
 
 interface SerializedStylesheet {
   text: string;
@@ -36,7 +35,7 @@ interface TextByPropsEntry {
 // Each worker gets its own memoized getCssRulesByProperty instance.
 // Pages on the same site typically share stylesheets, so memoization
 // is effective even within a single worker processing multiple pages.
-const memoizedGetCssRulesByProperty = memoizeSync(getCssRulesByProperty);
+const memoizedGetCssRulesByProperty = createMemoizedGetCssRulesByProperty();
 
 function trace(task: TraceTask): TextByPropsEntry[] {
   let dom: JSDOM | undefined;
