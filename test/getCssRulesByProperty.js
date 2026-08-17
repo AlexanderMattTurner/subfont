@@ -1105,6 +1105,41 @@ describe('getCssRulesByProperty', function () {
       expect(result['transition-duration'][0].value, 'to equal', '0.5s');
     });
 
+    it('should identify the property when the duration comes first', function () {
+      // The transition shorthand allows tokens in any order, so the <time> can
+      // precede the <single-transition-property>.
+      const result = getRules(
+        ['transition-property', 'transition-duration'],
+        'h1 { transition: 0.3s color; }',
+        {}
+      );
+
+      expect(result['transition-property'][0].value, 'to equal', 'color');
+      expect(result['transition-duration'][0].value, 'to equal', '0.3s');
+    });
+
+    it('should not mistake an easing keyword for the property', function () {
+      const result = getRules(
+        ['transition-property', 'transition-duration'],
+        'h1 { transition: 0.3s ease-in-out font-size; }',
+        {}
+      );
+
+      expect(result['transition-property'][0].value, 'to equal', 'font-size');
+      expect(result['transition-duration'][0].value, 'to equal', '0.3s');
+    });
+
+    it('should not mistake a cubic-bezier easing for the property', function () {
+      const result = getRules(
+        ['transition-property', 'transition-duration'],
+        'h1 { transition: cubic-bezier(0.1, 0.7, 1, 0.1) 0.3s color; }',
+        {}
+      );
+
+      expect(result['transition-property'][0].value, 'to equal', 'color');
+      expect(result['transition-duration'][0].value, 'to equal', '0.3s');
+    });
+
     it('should not register transition-property when only transition-duration is requested', function () {
       const result = getRules(
         ['transition-duration'],
