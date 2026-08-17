@@ -55,7 +55,11 @@ interface SubfontOptions {
   text?: string;
   /** Preserve CSS source maps (slower). */
   sourceMaps?: boolean;
-  /** Max parallel tracing workers. Defaults to CPU count, capped by available memory. */
+  /**
+   * Max parallel tracing workers. Defaults to CPU count, capped by available
+   * memory. With `dynamic`, concurrent headless-Chrome tabs are always capped
+   * at `MAX_POOL_SIZE` (8) regardless of this value.
+   */
   concurrency?: number;
   /** Extra Chrome flags forwarded to puppeteer when `dynamic` is set. */
   chromeFlags?: string[];
@@ -662,6 +666,9 @@ async function resolveRootsAndInputs(
   outRoot: string | undefined;
   inputUrls: string[];
 }> {
+  if (output && inPlace) {
+    throw new UsageError('--output and --in-place are mutually exclusive');
+  }
   let rootUrl: string | undefined =
     root && urlTools.urlOrFsPathToUrl(root, true);
   const outRoot = output && urlTools.urlOrFsPathToUrl(output, true);
