@@ -140,7 +140,7 @@ function registerExecutionOptions(y: Argv, maxConcurrency: number): Argv {
       default: [] as string[],
     })
     .options('concurrency', {
-      describe: `Maximum number of worker threads for parallel font tracing. Defaults to the number of CPU cores (max ${MAX_POOL_SIZE}). Values above the estimated safe limit (${maxConcurrency}) will produce a warning`,
+      describe: `Maximum number of worker threads for parallel font tracing. Defaults to the number of CPU cores (max ${MAX_POOL_SIZE}). Values above the estimated safe limit (${maxConcurrency}) will produce a warning. With --dynamic, concurrent headless-Chrome tabs are always capped at ${MAX_POOL_SIZE}`,
       type: 'number',
     })
     .check((argv: { concurrency?: number }) => {
