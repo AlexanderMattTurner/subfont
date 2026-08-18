@@ -11,6 +11,7 @@
     "clean": "rimraf lib",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . && prettier --check '**/*.{js,ts,md}'",
+    "format": "prettier '**/*.{js,ts,md}'",
     "pretest": "pnpm run build",
     "prepack": "pnpm run build",
     "test": "mocha && pnpm run lint",
