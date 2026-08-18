@@ -728,6 +728,22 @@ describe('subfont', function () {
       expect(err, 'to be an', Error);
     });
 
+    it('should reject passing both --output and --in-place', async function () {
+      await expect(
+        subfont(
+          {
+            root: '/tmp',
+            inputFiles: ['index.html'],
+            output: '/tmp/subfont-out',
+            inPlace: true,
+          },
+          mockConsole
+        ),
+        'to be rejected with',
+        /--output and --in-place are mutually exclusive/
+      );
+    });
+
     it('should reject --concurrency with a negative value', async function () {
       await expect(
         subfont(

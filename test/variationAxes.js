@@ -490,6 +490,66 @@ describe('variationAxes', function () {
       expect(result.fullyInstanced, 'to be true');
     });
 
+    it('should collapse to a pinned value when the seen range falls outside the font axis range', async function () {
+      // The seen values were clamped to the @font-face descriptor range (e.g.
+      // `font-weight: 100 300`), which can sit entirely below the font's actual
+      // wght axis (400-700 here). A naive Math.max(minSeen,min)/Math.min(
+      // maxSeen,max) would produce min=400, max=300 — an inverted range that
+      // hb_subset_input_set_axis_range rejects, silently dropping instancing.
+      // Both endpoints should instead clamp into [400,700] and collapse to a
+      // single pinned value.
+      const { getVariationAxisBounds: getBoundsHighAxis } = proxyquire(
+        '../lib/variationAxes',
+        {
+          './getFontInfo': async function mockGetFontInfo() {
+            return {
+              variationAxes: {
+                wght: { min: 400, max: 700, default: 400 },
+              },
+            };
+          },
+        }
+      );
+      const fontAssetsByUrl = new Map();
+      fontAssetsByUrl.set('font://test', { rawSrc: Buffer.from('mock') });
+
+      const result = await getBoundsHighAxis(
+        fontAssetsByUrl,
+        'font://test',
+        makeSeenAxes([['wght', [100, 300]]])
+      );
+
+      // Pinned to a scalar, not an inverted { min: 400, max: 300 }.
+      expect(result.variationAxes.wght, 'to equal', 400);
+      expect(result.numAxesPinned, 'to be greater than or equal to', 1);
+    });
+
+    it('should keep a valid ordered range when seen min is below the font axis min', async function () {
+      const { getVariationAxisBounds: getBoundsHighAxis } = proxyquire(
+        '../lib/variationAxes',
+        {
+          './getFontInfo': async function mockGetFontInfo() {
+            return {
+              variationAxes: {
+                wght: { min: 400, max: 700, default: 400 },
+              },
+            };
+          },
+        }
+      );
+      const fontAssetsByUrl = new Map();
+      fontAssetsByUrl.set('font://test', { rawSrc: Buffer.from('mock') });
+
+      const result = await getBoundsHighAxis(
+        fontAssetsByUrl,
+        'font://test',
+        makeSeenAxes([['wght', [300, 600]]])
+      );
+
+      // Seen min clamps up to the axis min; the result stays ordered.
+      expect(result.variationAxes.wght, 'to equal', { min: 400, max: 600 });
+    });
+
     describe('opsz axis handling', function () {
       const { getVariationAxisBounds: getVariationAxisBoundsWithOpsz } =
         proxyquire('../lib/variationAxes', {

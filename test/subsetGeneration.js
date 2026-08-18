@@ -64,6 +64,20 @@ describe('subsetGeneration', function () {
       });
     });
 
+    it('should not collide when text contains the field delimiter', function () {
+      // A literal U+001D inside `text` must not let one (text, fontUrl) pair
+      // masquerade as another.
+      const a = getSubsetPromiseId(
+        { text: 'abc\x1d', fontUrl: 'https://example.com/x.woff2' },
+        'woff2'
+      );
+      const b = getSubsetPromiseId(
+        { text: 'abc', fontUrl: '\x1dhttps://example.com/x.woff2' },
+        'woff2'
+      );
+      expect(a, 'not to equal', b);
+    });
+
     [null, undefined].forEach((axes) => {
       it(`should handle ${axes === null ? 'null' : 'undefined'} variation axes`, function () {
         expect(

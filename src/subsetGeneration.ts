@@ -54,22 +54,26 @@ function getFontBufferDigest(fontBuffer: FontBuffer): Buffer {
   return cached;
 }
 
-// JSON.stringify silently omits `undefined` values, so `{featureTags: undefined}`
-// serialises identically to `{}` — and also identically to a call that didn't
-// pass featureTags at all. That collision is currently safe because the two
-// inputs we accept produce identical subset bytes:
+// This options bag is hashed via JSON.stringify, which drops keys whose value
+// is `undefined`. `featureTags` deliberately relies on that: both of its live
+// values map to distinct, correct cache keys.
 //
-//   - `featureTags: undefined`  →  upstream contract: "retain ALL features"
-//                                   (no -features=… flag is sent to harfbuzz)
-//   - `featureTags: []`         →  no caller produces this today; if one did,
-//                                   it would mean "retain NO features".
+//   - `featureTags: undefined`  →  "retain ALL features" (no -features=… flag
+//                                   sent to harfbuzz). JSON.stringify omits the
+//                                   key entirely.
+//   - `featureTags: []`         →  "retain NO features". JSON.stringify emits
+//                                   `"featureTags":[]`.
 //
-// Today only the undefined case fires in practice (callers either omit the
-// field or pass a non-empty array), so the omit-vs-empty-array collision is
-// invisible. Any future field that admits `undefined` in this options bag
-// must explicitly distinguish "absent" from "empty" in the hash input — for
-// example by encoding undefined as a sentinel string — or it will silently
-// share a cache entry with a semantically different invocation.
+// Both cases are produced today: buildExtraSubsetOptions returns `undefined`
+// when feature settings can't be fully enumerated (retain-all fallback) and
+// `[]` when the page uses no feature settings at all (retain-none). Because the
+// empty array serialises to `"featureTags":[]` while an `undefined` value is
+// omitted, the two never collide.
+//
+// The caveat for future fields: a field whose *only* distinction from another
+// invocation is `undefined` vs an omitted key would alias in the hash. Such a
+// field must encode `undefined` explicitly (e.g. a sentinel string) rather than
+// leaning on an absent-vs-present array the way featureTags safely does.
 type ExtraSubsetCacheOptions = Record<string, boolean | string[] | undefined>;
 
 type StableValue =
@@ -297,12 +301,17 @@ export function getSubsetPromiseId(
   format: string,
   variationAxes: VariationAxes | null = null
 ): string {
-  return [
-    fontUsage.text,
-    fontUsage.fontUrl,
+  // Length-prefix each field so a literal U+001D (record separator) — or any
+  // other character — inside `text` cannot shift field boundaries and alias a
+  // different (text, fontUrl, format, axes) tuple to the same id. A raw
+  // `.join('\x1d')` would let ("a\x1d", "b") and ("a", "\x1db") collide.
+  const fields = [
+    String(fontUsage.text ?? ''),
+    String(fontUsage.fontUrl ?? ''),
     format,
     JSON.stringify(variationAxes),
-  ].join('\x1d');
+  ];
+  return fields.map((field) => `${field.length}\x1d${field}`).join('\x1d');
 }
 
 function collectCanonicalFontUsages(

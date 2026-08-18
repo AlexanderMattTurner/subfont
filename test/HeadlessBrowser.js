@@ -345,4 +345,69 @@ describe('HeadlessBrowser', function () {
       expect(browser, 'to be', mockBrowser);
     });
   });
+
+  describe('launchWithSandboxFallback', function () {
+    let getuidStub;
+
+    afterEach(function () {
+      if (getuidStub) {
+        getuidStub.restore();
+        getuidStub = undefined;
+      }
+    });
+
+    it('should retry once with --no-sandbox when the sandbox fails to start', async function () {
+      // Pose as a non-root user so the sandbox is kept by default and the
+      // fallback path is actually reachable (as root it is already disabled).
+      getuidStub = sinon.stub(process, 'getuid').returns(1000);
+      puppeteerStub.launch
+        .onFirstCall()
+        .rejects(new Error('Failed to move to new namespace: sandbox'))
+        .onSecondCall()
+        .resolves(mockBrowser);
+
+      const hb = new HeadlessBrowser({ console: fakeConsole });
+      const browser = await hb._launchBrowserMemoized();
+
+      expect(browser, 'to be', mockBrowser);
+      expect(puppeteerStub.launch, 'was called twice');
+      expect(
+        puppeteerStub.launch.secondCall.args[0].args,
+        'to contain',
+        '--no-sandbox',
+        '--disable-setuid-sandbox'
+      );
+      expect(fakeConsole.log, 'to have a call satisfying', [
+        /retrying with --no-sandbox/,
+      ]);
+    });
+
+    it('should not retry when the launch error is unrelated to the sandbox', async function () {
+      getuidStub = sinon.stub(process, 'getuid').returns(1000);
+      puppeteerStub.launch.rejects(new Error('boom'));
+
+      const hb = new HeadlessBrowser({ console: fakeConsole });
+      await expect(hb._launchBrowserMemoized(), 'to be rejected with', 'boom');
+      expect(puppeteerStub.launch, 'was called once');
+    });
+
+    it('should not retry when the caller already disabled the sandbox', async function () {
+      getuidStub = sinon.stub(process, 'getuid').returns(1000);
+      puppeteerStub.launch.rejects(
+        new Error('Failed to move to new namespace: sandbox')
+      );
+
+      const hb = new HeadlessBrowser({
+        console: fakeConsole,
+        chromeArgs: ['--no-sandbox'],
+      });
+      await expect(
+        hb._launchBrowserMemoized(),
+        'to be rejected with',
+        /sandbox/
+      );
+      // The sandbox is already off, so there is nothing to retry.
+      expect(puppeteerStub.launch, 'was called once');
+    });
+  });
 });

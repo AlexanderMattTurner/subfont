@@ -26,7 +26,7 @@ On [TurnTrout.com](https://github.com/alexander-turner/TurnTrout.com) (382 pages
 - **`--concurrency N`** -- Control worker thread count for parallel font tracing.
 - **Parallel font tracing** -- Worker pool (up to 8 threads). Pages sharing identical CSS are traced once.
 - **`--root` validation** -- Fails early with a clear error.
-- **Timing summary** -- Printed after every run.
+- **Timing summary** -- Printed after every run with `--debug`.
 - **Better `--dry-run`** -- Detailed preview of files, sizes, and CSS changes.
 
 ### Bug fixes

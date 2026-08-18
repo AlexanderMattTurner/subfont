@@ -324,7 +324,16 @@ declare module 'postcss-value-parser' {
 }
 
 declare module 'memoizesync' {
-  function memoizeSync<F extends (...args: any[]) => any>(fn: F): F;
+  interface MemoizeSyncOptions {
+    // Overrides the default key builder (`args.map(String).join('\x1d')`),
+    // which stringifies object arguments to "[object Object]" and so drops
+    // them from the cache key.
+    argumentsStringifier?: (args: any[]) => string;
+  }
+  function memoizeSync<F extends (...args: any[]) => any>(
+    fn: F,
+    options?: MemoizeSyncOptions
+  ): F;
   export = memoizeSync;
 }
 

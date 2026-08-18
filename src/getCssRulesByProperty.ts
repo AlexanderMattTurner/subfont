@@ -258,22 +258,76 @@ function handleAnimation(ctx: RuleCtx, node: Declaration): void {
   }
 }
 
+// A CSS <time>: a number followed by `s` or `ms` (e.g. `0.3s`, `-150ms`).
+const TRANSITION_TIME_RE = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)m?s$/i;
+// <easing-function> keywords; the function forms (cubic-bezier(), steps(),
+// linear()) are matched separately since they arrive as single tokens.
+const TRANSITION_EASING_KEYWORDS = new Set([
+  'linear',
+  'ease',
+  'ease-in',
+  'ease-out',
+  'ease-in-out',
+  'step-start',
+  'step-end',
+]);
+const TRANSITION_EASING_FN_RE = /^(?:cubic-bezier|steps|linear)\(/i;
+
+function isTransitionTime(token: string): boolean {
+  return TRANSITION_TIME_RE.test(token);
+}
+
+function isTransitionEasing(token: string): boolean {
+  const lower = token.toLowerCase();
+  return (
+    TRANSITION_EASING_KEYWORDS.has(lower) || TRANSITION_EASING_FN_RE.test(lower)
+  );
+}
+
+// The `transition` shorthand permits its tokens in any order, so the
+// <single-transition-property> is not necessarily first: `transition: 0.3s
+// color` is as valid as `transition: color 0.3s`. Pick the property as the
+// first token that is neither a <time> nor an <easing-function>, and the
+// duration as the first <time>, instead of relying on positional order.
+function parseSingleTransition(tokens: string[]): {
+  property?: string;
+  duration?: string;
+} {
+  let property: string | undefined;
+  let duration: string | undefined;
+  for (const token of tokens) {
+    if (
+      property === undefined &&
+      !isTransitionTime(token) &&
+      !isTransitionEasing(token)
+    ) {
+      property = token;
+    } else if (duration === undefined && isTransitionTime(token)) {
+      duration = token;
+    }
+  }
+  return { property, duration };
+}
+
 function handleTransition(ctx: RuleCtx, node: Declaration): void {
   const transitionProperties: string[] = [];
   const transitionDurations: string[] = [];
   const parsed = postcssValueParser(node.value);
   let currentItem: string[] = [];
+  const flushItem = () => {
+    const { property, duration } = parseSingleTransition(currentItem);
+    if (property !== undefined) transitionProperties.push(property);
+    if (duration !== undefined) transitionDurations.push(duration);
+    currentItem = [];
+  };
   for (const valueNode of parsed.nodes) {
     if (valueNode.type === 'div' && valueNode.value === ',') {
-      if (currentItem.length > 0) transitionProperties.push(currentItem[0]);
-      if (currentItem.length > 1) transitionDurations.push(currentItem[1]);
-      currentItem = [];
+      flushItem();
     } else if (valueNode.type !== 'space') {
       currentItem.push(postcssValueParser.stringify(valueNode));
     }
   }
-  if (currentItem.length > 0) transitionProperties.push(currentItem[0]);
-  if (currentItem.length > 1) transitionDurations.push(currentItem[1]);
+  flushItem();
 
   if (ctx.properties.includes('transition-property')) {
     pushRulePerSelector(

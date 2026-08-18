@@ -205,13 +205,28 @@ export async function getVariationAxisBounds(
           if (v < minSeenValue) minSeenValue = v;
           if (v > maxSeenValue) maxSeenValue = v;
         }
-        variationAxes[axisName] = {
-          min: Math.max(minSeenValue, min),
-          max: Math.min(maxSeenValue, max),
-        };
-        fullyInstanced = false;
-        if (minSeenValue > min || maxSeenValue < max) {
-          numAxesReduced += 1;
+        // Clamp each seen endpoint into the font's actual axis range before
+        // building the sub-range. The seen values were clamped to the
+        // @font-face descriptor range, which can disagree with the font's fvar
+        // range (e.g. descriptor `font-weight: 100 300` on a font whose wght
+        // axis is 400-700). Without re-clamping, `Math.max(minSeen, min)` /
+        // `Math.min(maxSeen, max)` can yield min > max, which
+        // hb_subset_input_set_axis_range rejects — silently dropping instancing
+        // for that font. After clamping both endpoints land inside [min, max],
+        // so lo <= hi always holds; when they coincide, pin the axis instead.
+        const lo = clamp(minSeenValue, min, max);
+        const hi = clamp(maxSeenValue, min, max);
+        if (lo === hi) {
+          // Both endpoints collapsed onto the same value; pin the axis, matching
+          // the single-value branch above.
+          variationAxes[axisName] = lo;
+          numAxesPinned += 1;
+        } else {
+          variationAxes[axisName] = { min: lo, max: hi };
+          fullyInstanced = false;
+          if (lo > min || hi < max) {
+            numAxesReduced += 1;
+          }
         }
       }
     }

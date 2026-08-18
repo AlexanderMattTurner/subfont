@@ -1,4 +1,3 @@
-import memoizeSync = require('memoizesync');
 import os = require('os');
 import * as crypto from 'crypto';
 
@@ -16,6 +15,7 @@ import directFamiliesInValue = require('./directFamiliesInValue');
 import unquote = require('./unquote');
 import normalizeFontPropertyValue = require('./normalizeFontPropertyValue');
 import getCssRulesByProperty = require('./getCssRulesByProperty');
+import { createMemoizedGetCssRulesByProperty } from './memoizedCssRulesByProperty';
 import extractVisibleText = require('./extractVisibleText');
 import {
   stringifyFontFamily,
@@ -2055,7 +2055,7 @@ async function collectTextsByPage(
   }: CollectTextsByPageOptions = {}
 ): Promise<CollectTextsByPageResult> {
   const htmlOrSvgAssetTextsWithProps: AssetTextWithPropsEntry[] = [];
-  const memoizedGetCssRulesByProperty = memoizeSync(getCssRulesByProperty);
+  const memoizedGetCssRulesByProperty = createMemoizedGetCssRulesByProperty();
   const fontFaceDeclarationsByHtmlOrSvgAsset = new Map<
     Asset,
     FontFaceDeclaration[]
