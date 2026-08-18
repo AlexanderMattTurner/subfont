@@ -1,6 +1,8 @@
 node_modules
 coverage
 .nyc_output
+__pycache__/
+*.pyc
 .stryker-tmp
 reports
 puppeteer-browsers
