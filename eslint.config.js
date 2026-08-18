@@ -102,6 +102,17 @@ module.exports = [
       // Mutation-testing artifacts (Stryker sandbox + reports).
       '.stryker-tmp/',
       'reports/',
+      // CI helper scripts and Claude hooks owned by the template repo and
+      // overwritten wholesale on every sync, so fixes made here do not survive:
+      // the next sync would re-break `pnpm test` and with it the publish job.
+      // They are written against the template's own lint config, which does not
+      // carry this repo's prefer-named-capture-group or regexp/* rules.
+      // Excluding matches punctilio, the sibling repo on the same template,
+      // whose lint script is scoped to `src scripts`. Every JS file under
+      // .claude/hooks/ is template-owned; the repo's own hooks there are shell
+      // and Python, which ESLint does not read.
+      '.github/scripts/',
+      '.claude/hooks/',
     ],
   },
 ];

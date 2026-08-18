@@ -11,3 +11,14 @@
 
 # Compiled TypeScript output (source lives under src/)
 /lib/
+
+# Owned by the template repo and overwritten wholesale on every sync, so
+# reformatting them here does not survive: the next sync would re-break
+# `pnpm test` and with it the publish job. They are formatted upstream under the
+# template's own Prettier settings. Mirrors the matching ESLint ignores.
+# .claude/skills/ is listed as a tree because 7 of its 8 skills are synced; the
+# one local skill, pr-creation, gives up only its format check.
+/.github/scripts/
+/.claude/hooks/
+/.claude/rules/
+/.claude/skills/
