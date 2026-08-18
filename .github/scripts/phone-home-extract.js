@@ -58,13 +58,7 @@ module.exports = async ({ context, core }) => {
   // terminating lookahead is deliberately wider (#{2,6}) so ANY following
   // heading ends the section. Don't widen the opening anchor to match.
   const lessonsMatch = prBody.match(
-<<<<<<< local
-    /(?:^|\n)#{2,3} Lessons Learned[ \t]*\n(?<body>[\s\S]*?)(?=\n#{2,6} |\n---|$)/i
-||||||| base
-    /(?:^|\n)#{2,3} Lessons Learned[ \t]*\n([\s\S]*?)(?=\n#{2,6} |\n---|\s*$)/i,
-=======
     /(?:^|\n)#{2,3} Lessons Learned[ \t]*\n(?<body>[\s\S]*?)(?=\n#{2,6} |\n---|$)/i,
->>>>>>> template
   );
   if (!lessonsMatch) {
     console.log(
@@ -102,17 +96,9 @@ module.exports = async ({ context, core }) => {
     return;
   }
 
-<<<<<<< local
-  const stripped = filtered
-    .replace(/\*\*(?:What|Where|Why)\*\*:\s*/g, '')
-    .trim();
-||||||| base
-  const stripped = filtered.replace(/\*\*(What|Where|Why)\*\*:\s*/g, "").trim();
-=======
   const stripped = filtered
     .replace(/\*\*(?:What|Where|Why)\*\*:\s*/g, "")
     .trim();
->>>>>>> template
   if (!stripped || stripped.length < MIN_CONTENT_LENGTH) {
     console.log('Lessons section only contains template skeleton, skipping');
     return;
