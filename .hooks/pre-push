@@ -75,6 +75,11 @@ while read -r -u 3 _local_ref local_sha _remote_ref remote_sha; do
       from_ref=$(git hash-object -t tree /dev/null)
   fi
   [[ "$from_ref" == "$local_tip" ]] && continue # nothing new to push
+  # No config: nothing for pre-commit to check. Mirrors pre-commit.yaml's own
+  # gate — template-sync delivers this hook but no .pre-commit-config.yaml, so
+  # a consumer that hasn't adopted it yet would otherwise have every push
+  # demand a tool it has no use for.
+  [[ -f "$git_root/.pre-commit-config.yaml" ]] || continue
   # The tool check sits BELOW the emptiness skip. A push that introduces no
   # commits has nothing for pre-commit to look at, so demanding the tool first
   # refuses a release-tag push from a runner that has no pre-commit — which is
