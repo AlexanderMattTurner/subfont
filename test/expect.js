@@ -32,11 +32,9 @@ async function getBrowser() {
   return browser;
 }
 
-// Every fixture is served from the same synthetic https://example.com/ origin,
-// and per-origin browser state carries across renders: sharing a context makes
-// the `bannedUrls` guard fire on an original font arriving ahead of any
-// stylesheet, on a document referencing no such face. Disabling the HTTP cache
-// does not fix it; a per-render origin does, and so does the context used here.
+// Every fixture is served from the same synthetic https://example.com/ origin, so
+// a fresh context per render keeps a prior render's per-origin state out of the
+// `bannedUrls` check. Disabling the HTTP cache is not enough — the state survives it.
 async function screenshot(browser, assetGraph, fileName, bannedUrls) {
   const context = await browser.createBrowserContext();
   try {
