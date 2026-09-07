@@ -162,6 +162,9 @@ importers:
       rimraf:
         specifier: ^6.0.0
         version: 6.1.3
+      semver:
+        specifier: ^7.7.4
+        version: 7.7.4
       sinon:
         specifier: ^19.0.0
         version: 19.0.5

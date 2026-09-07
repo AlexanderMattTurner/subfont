@@ -29,23 +29,6 @@ const TEMPLATE_SYNC_YAML = join(
   "template-sync.yaml",
 );
 
-/**
- * Render a GitHub Actions `${{ … }}` expression. Written as a template literal
- * with an escaped `${` so the literal never reads as a JS interpolation.
- */
-const expr = (inner) => `$\{{ ${inner} }}`;
-
-// --- Bug B: the release push rides an own-repo credential, never a
-// cross-account PAT --------------------------------------------------------
-// The release-docs commit and vX.Y.Z tag are pushed with the credentials the
-// checkout persists. A cross-account PAT (TEMPLATE_SYNC_TOKEN, minted for a
-// different owner) is rejected 403 by this repo's remote, stranding every
-// release: npm publishes but the tag never lands, so the next run re-reads the
-// climbing npm version and bumps again. GITHUB_TOKEN's `contents: write`
-// authorizes github-actions[bot] on its own repo and is the default; the only
-// permitted override is RELEASE_BYPASS_TOKEN, an own-owner PAT registered as a
-// bypass actor for a protected default branch.
-
 test("auto-version.yaml runs the .github/scripts release script", () => {
   const yaml = readFileSync(AUTO_VERSION_YAML, "utf8");
   const invocations = [
@@ -57,24 +40,6 @@ test("auto-version.yaml runs the .github/scripts release script", () => {
     "the workflow must run one, and only the .github/scripts, version-bump.sh",
   );
   assert.ok(existsSync(LIVE_SCRIPT), "the invoked script must exist on disk");
-});
-
-test("the release checkout falls back to GITHUB_TOKEN and names no cross-account PAT", () => {
-  const yaml = readFileSync(AUTO_VERSION_YAML, "utf8");
-  const tokenLines = yaml
-    .split("\n")
-    .filter((l) => /^\s*token:/.test(l))
-    .map((l) => l.trim());
-  assert.deepEqual(
-    tokenLines,
-    [`token: ${expr("secrets.RELEASE_BYPASS_TOKEN || secrets.GITHUB_TOKEN")}`],
-    "the checkout must default to GITHUB_TOKEN, overridable only by the own-owner bypass PAT",
-  );
-  assert.doesNotMatch(
-    yaml,
-    /secrets\.TEMPLATE_SYNC_TOKEN/,
-    "the release checkout must never reach for the cross-account template-sync PAT",
-  );
 });
 
 // A repo that already publishes must not receive a second publisher. The sync

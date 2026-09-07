@@ -1,1 +1,3 @@
 timeout: 300000
+require:
+  - ./test/systemChrome.js
