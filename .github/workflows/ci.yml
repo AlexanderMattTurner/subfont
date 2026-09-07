@@ -70,9 +70,14 @@ jobs:
       - run: pnpm run lint
 
   # The release scripts live under .github/scripts, which mocha's `test/` glob
-  # never reaches, so their node:test suites would otherwise run nowhere. This
-  # is the only thing exercising version-bump.sh — the script that decides the
-  # semver bump and publishes to npm.
+  # never reaches, so their node:test suites would otherwise run nowhere. These
+  # two cover the release path: version-bump.sh decides the semver bump and
+  # publishes to npm, and npm-max-stable.mjs reads the published version for the
+  # daily canary.
+  #
+  # The directory holds 13 more suites, not globbed in: six need dependencies
+  # this repo does not declare (`agent-input-sanitizer`, `markdownlint`) or a
+  # `.github/tool-versions.sh` it does not have, so a glob would red the job.
   release-scripts:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -88,7 +93,7 @@ jobs:
           node-version: '24'
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: node --test .github/scripts/version-bump.test.mjs
+      - run: node --test .github/scripts/version-bump.test.mjs .github/scripts/npm-max-stable.test.mjs
 
   typecheck:
     runs-on: ubuntu-latest
