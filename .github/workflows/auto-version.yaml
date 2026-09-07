@@ -65,10 +65,15 @@ jobs:
       - name: Setup base environment
         uses: ./.github/actions/setup-base-env
         with:
-          # Pin the publish runtime explicitly (npm OIDC trusted publishing needs
-          # a recent npm) and point it at the npm registry so provenance works.
+          # Pin the publish runtime explicitly: npm OIDC trusted publishing needs
+          # a recent npm.
+          #
+          # No registry-url. setup-node answers it by writing an .npmrc with
+          # `_authToken=${NODE_AUTH_TOKEN}`, and this job has no npm token to put
+          # there, so npm sends an empty credential and takes that path instead of
+          # OIDC. The registry answers the PUT with a bare E404 that names neither
+          # cause. The default registry is registry.npmjs.org anyway.
           node-version: 24
-          registry-url: https://registry.npmjs.org
           # uv, so .hooks/pre-push can run pre-commit over the `docs: release`
           # commit this job pushes. Without it the hook refuses that push and the
           # release publishes to npm with its CHANGELOG section stranded.
