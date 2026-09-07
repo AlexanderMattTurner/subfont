@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+## [1.12.1] - 2026-08-18
+
+### Fixed
+
+- Enforce mutual exclusivity of `--output` and in-place writing.
+- Length-prefix the fields of `getSubsetPromiseId` so distinct inputs cannot collide on one id.
+- Parse the `transition` shorthand by token type rather than by position.
+- Prevent an inverted variable-font axis range when the seen min exceeds the seen max.
+- Include the predicates in the `getCssRulesByProperty` memoization key.
+
+### Changed
+
+- Correct the documented concurrency cap and timing-summary output.
+- Cover the `HeadlessBrowser` sandbox-fallback retry with a test.
+
+Releases 1.0.1 through 1.12.0 were published before the changelog was automated;
+their contents are recorded in the `v*` git tags and the commit history.
+
 ## 1.0.0 -- Hard fork from [Munter/subfont](https://github.com/Munter/subfont)
 
 Published as `@turntrout/subfont`. Based on Munter/subfont v7.2.3.
