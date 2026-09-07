@@ -1,0 +1,29 @@
+# Syntax-aware merges via mergiraf.
+#
+# Every `merge=mergiraf` attribute below is INERT until the checkout has the
+# binary on PATH and `merge.mergiraf.driver` set in its git config. Git says
+# nothing when either is missing — it silently falls back to its built-in line
+# merge. `.claude/hooks/session-setup.sh` registers the driver for a session
+# checkout (via `.github/scripts/install-mergiraf.sh`), and
+# `.github/scripts/merge-driver-probe.sh` proves the wiring is live rather than
+# merely installed.
+#
+# Only extensions mergiraf actually parses are listed: an attribute naming a
+# language it does not know makes the merge fail over to git's line merge
+# anyway, so listing one buys nothing and hides which files are really covered.
+
+# This repo's source and tests.
+*.ts merge=mergiraf
+*.tsx merge=mergiraf
+*.js merge=mergiraf
+*.jsx merge=mergiraf
+*.mjs merge=mergiraf
+*.cjs merge=mergiraf
+
+# Config and CI. `*.json` is also the file type the merge-driver probe merges,
+# so removing that line turns the probe red rather than letting it pass inert.
+*.json merge=mergiraf
+*.yaml merge=mergiraf
+*.yml merge=mergiraf
+*.toml merge=mergiraf
+*.py merge=mergiraf
