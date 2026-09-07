@@ -32,13 +32,11 @@ async function getBrowser() {
   return browser;
 }
 
-// Renders share one browser but must not share a context. Every fixture is
-// served from the same synthetic https://example.com/ origin, and in a shared
-// context the `bannedUrls` guard intermittently reports an original font as
-// request #2 -- ahead of any stylesheet, initiator "parser" -- on a subsetted
-// document that references no such face. Measured over full-suite runs: shared
-// context fails 6/6, a context per render 0/10. The HTTP cache is not the
-// carrier; `setCacheEnabled(false)` alone still fails 6/6.
+// Every fixture is served from the same synthetic https://example.com/ origin,
+// and per-origin browser state carries across renders: sharing a context makes
+// the `bannedUrls` guard fire on an original font arriving ahead of any
+// stylesheet, on a document referencing no such face. Disabling the HTTP cache
+// does not fix it; a per-render origin does, and so does the context used here.
 async function screenshot(browser, assetGraph, fileName, bannedUrls) {
   const context = await browser.createBrowserContext();
   try {
@@ -99,9 +97,7 @@ async function renderAndCapture(context, assetGraph, fileName, bannedUrls) {
       );
     }
   }
-  // Awaited, not returned bare: the caller's `finally` closes the context, and
-  // an unawaited screenshot would still be in flight when it does.
-  return await page.screenshot();
+  return page.screenshot();
 }
 
 expect.addAssertion(

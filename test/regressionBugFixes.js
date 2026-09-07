@@ -7,8 +7,6 @@ const pathModule = require('path');
 const { subsetFontsWithTestDefaults } = require('./subsetFonts-helpers');
 const { Worker } = require('worker_threads');
 
-const fs = require('fs');
-const os = require('os');
 const { getFontFaceDeclarationText } = require('../lib/fontFaceHelpers');
 
 describe('regression bug fixes', function () {
@@ -94,40 +92,21 @@ describe('regression bug fixes', function () {
   });
 
   describe('Bug 5: FontTracerPool should reject pending tasks when all workers crash', function () {
-    // The worker is written to a temp dir rather than next to this file: `pnpm
-    // lint` globs the source tree, so a scratch file living there is one prettier
-    // enumerates and then fails to read once the test deletes it.
-    let crashWorkerDir;
-    let crashWorkerPath;
-    beforeEach(function () {
-      crashWorkerDir = fs.mkdtempSync(
-        pathModule.join(os.tmpdir(), 'subfont-crash-worker-')
-      );
-      crashWorkerPath = pathModule.join(crashWorkerDir, 'crashWorker.js');
-    });
-    afterEach(function () {
-      fs.rmSync(crashWorkerDir, { recursive: true, force: true });
-    });
-
     it('should reject the promise when a worker crashes', async function () {
-      // Create a minimal worker that exits immediately with code 1
-      fs.writeFileSync(
-        crashWorkerPath,
+      // A minimal worker that exits with code 1 on anything but init.
+      const worker = new Worker(
         `
 const { parentPort } = require('worker_threads');
 parentPort.on('message', (msg) => {
   if (msg.type === 'init') {
     parentPort.postMessage({ type: 'ready' });
   } else {
-    // Crash on any other message
     process.exit(1);
   }
 });
-`
+`,
+        { eval: true }
       );
-
-      // Test using actual workers
-      const worker = new Worker(crashWorkerPath);
 
       const readyPromise = new Promise((resolve) => {
         worker.on('message', (msg) => {
