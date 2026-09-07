@@ -32,20 +32,23 @@ async function getBrowser() {
   return browser;
 }
 
-// Every fixture is served from the same synthetic https://example.com/ origin,
-// so a font the "before" page fetched stays eligible for reuse on the "after"
-// page and `bannedUrls` reports a font that page never referenced. A context
-// per render partitions the cache, so a request seen here was caused here.
+// Renders share one browser but must not share a context. Every fixture is
+// served from the same synthetic https://example.com/ origin, and in a shared
+// context the `bannedUrls` guard intermittently reports an original font as
+// request #2 -- ahead of any stylesheet, initiator "parser" -- on a subsetted
+// document that references no such face. Measured over full-suite runs: shared
+// context fails 6/6, a context per render 0/10. The HTTP cache is not the
+// carrier; `setCacheEnabled(false)` alone still fails 6/6.
 async function screenshot(browser, assetGraph, fileName, bannedUrls) {
   const context = await browser.createBrowserContext();
   try {
-    return await renderInContext(context, assetGraph, fileName, bannedUrls);
+    return await renderAndCapture(context, assetGraph, fileName, bannedUrls);
   } finally {
     await context.close();
   }
 }
 
-async function renderInContext(context, assetGraph, fileName, bannedUrls) {
+async function renderAndCapture(context, assetGraph, fileName, bannedUrls) {
   const page = await context.newPage();
   await page.setViewport({ width: 800, height: 600, deviceScaleFactor: 1 });
   await page.setRequestInterception(true);
@@ -96,7 +99,9 @@ async function renderInContext(context, assetGraph, fileName, bannedUrls) {
       );
     }
   }
-  return page.screenshot();
+  // Awaited, not returned bare: the caller's `finally` closes the context, and
+  // an unawaited screenshot would still be in flight when it does.
+  return await page.screenshot();
 }
 
 expect.addAssertion(
