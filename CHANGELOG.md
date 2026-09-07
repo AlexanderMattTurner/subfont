@@ -1,5 +1,9 @@
 # Changelog
 
+Releases 1.0.1 through 1.12.0 were published before the changelog was automated;
+their contents are recorded in the `v*` git tags and the commit history. The
+1.12.1 entry below lists its user-facing changes, not every commit in the range.
+
 ## Unreleased
 
 ## [1.12.1] - 2026-08-18
@@ -15,10 +19,6 @@
 ### Changed
 
 - Correct the documented concurrency cap and timing-summary output.
-- Cover the `HeadlessBrowser` sandbox-fallback retry with a test.
-
-Releases 1.0.1 through 1.12.0 were published before the changelog was automated;
-their contents are recorded in the `v*` git tags and the commit history.
 
 ## 1.0.0 -- Hard fork from [Munter/subfont](https://github.com/Munter/subfont)
 
