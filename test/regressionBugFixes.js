@@ -8,6 +8,7 @@ const { subsetFontsWithTestDefaults } = require('./subsetFonts-helpers');
 const { Worker } = require('worker_threads');
 
 const fs = require('fs');
+const os = require('os');
 const { getFontFaceDeclarationText } = require('../lib/fontFaceHelpers');
 
 describe('regression bug fixes', function () {
@@ -93,13 +94,19 @@ describe('regression bug fixes', function () {
   });
 
   describe('Bug 5: FontTracerPool should reject pending tasks when all workers crash', function () {
-    const crashWorkerPath = pathModule.resolve(__dirname, '_crashWorker.js');
+    // The worker is written to a temp dir rather than next to this file: `pnpm
+    // lint` globs the source tree, so a scratch file living there is one prettier
+    // enumerates and then fails to read once the test deletes it.
+    let crashWorkerDir;
+    let crashWorkerPath;
+    beforeEach(function () {
+      crashWorkerDir = fs.mkdtempSync(
+        pathModule.join(os.tmpdir(), 'subfont-crash-worker-')
+      );
+      crashWorkerPath = pathModule.join(crashWorkerDir, 'crashWorker.js');
+    });
     afterEach(function () {
-      try {
-        fs.unlinkSync(crashWorkerPath);
-      } catch {
-        // File may not exist if test didn't reach the write step
-      }
+      fs.rmSync(crashWorkerDir, { recursive: true, force: true });
     });
 
     it('should reject the promise when a worker crashes', async function () {
