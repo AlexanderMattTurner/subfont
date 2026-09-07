@@ -32,8 +32,21 @@ async function getBrowser() {
   return browser;
 }
 
+// Every fixture is served from the same synthetic https://example.com/ origin,
+// so a font the "before" page fetched stays eligible for reuse on the "after"
+// page and `bannedUrls` reports a font that page never referenced. A context
+// per render partitions the cache, so a request seen here was caused here.
 async function screenshot(browser, assetGraph, fileName, bannedUrls) {
-  const page = await browser.newPage();
+  const context = await browser.createBrowserContext();
+  try {
+    return await renderInContext(context, assetGraph, fileName, bannedUrls);
+  } finally {
+    await context.close();
+  }
+}
+
+async function renderInContext(context, assetGraph, fileName, bannedUrls) {
+  const page = await context.newPage();
   await page.setViewport({ width: 800, height: 600, deviceScaleFactor: 1 });
   await page.setRequestInterception(true);
   const loadedUrls = [];
@@ -83,9 +96,7 @@ async function screenshot(browser, assetGraph, fileName, bannedUrls) {
       );
     }
   }
-  const screenshot = await page.screenshot();
-  await page.close();
-  return screenshot;
+  return page.screenshot();
 }
 
 expect.addAssertion(
