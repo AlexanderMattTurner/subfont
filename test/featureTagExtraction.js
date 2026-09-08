@@ -52,7 +52,7 @@ describe('extractFeatureTagsFromDecl', function () {
     for (const [value, expected] of [
       ['small-caps', ['smcp']],
       ['all-small-caps', ['smcp', 'c2sc']],
-      ['petite-caps', ['pcap']],
+      ['petite-caps', ['pcap', 'smcp']],
       ['titling-caps', ['titl']],
       ['normal', []],
     ]) {
@@ -119,7 +119,7 @@ describe('extractFeatureTagsFromDecl', function () {
   describe('font-variant-alternates', function () {
     for (const [value, expected] of [
       ['stylistic(fancy)', ['salt']],
-      ['swash(flowing)', ['swsh']],
+      ['swash(flowing)', ['swsh', 'cswh']],
       ['historical-forms', ['hist']],
       ['ornaments(bullets)', ['ornm']],
       ['annotation(circled)', ['nalt']],
@@ -219,6 +219,8 @@ describe('resolveFeatureSettings', function () {
       expect(result.hasFontFeatureSettings, 'to be', hasFFS);
       if (hasTags) {
         expect(result.fontFeatureTags, 'to be an array');
+      } else if (hasFFS) {
+        expect(result.fontFeatureTags, 'to equal', []);
       } else {
         expect(result.fontFeatureTags, 'to be undefined');
       }
@@ -255,14 +257,14 @@ describe('findFontFamiliesWithFeatureSettings', function () {
     expect(result, 'to be true');
   });
 
-  it('should return a Set of lowercase families for scoped rules', function () {
+  it('should retain inheritable features for descendant families', function () {
     const result = findFontFamiliesWithFeatureSettings(
       makeStylesheets(
         '.a { font-family: Roboto; font-feature-settings: "smcp"; }'
       ),
       new Map()
     );
-    expect(result, 'to equal', new Set(['roboto']));
+    expect(result, 'to be true');
   });
 
   it('should stay true when a global rule precedes a family-scoped rule', function () {
@@ -274,8 +276,8 @@ describe('findFontFamiliesWithFeatureSettings', function () {
       featureTagsByFamily
     );
     expect(result, 'to be true');
-    expect(featureTagsByFamily.get('*'), 'to equal', new Set(['liga']));
-    expect(featureTagsByFamily.get('roboto'), 'to equal', new Set(['smcp']));
+    expect(featureTagsByFamily.get('*'), 'to equal', new Set(['liga', 'smcp']));
+    expect(featureTagsByFamily.has('roboto'), 'to be false');
   });
 
   it('should stay true when a family-scoped rule precedes a global rule', function () {
@@ -287,7 +289,7 @@ describe('findFontFamiliesWithFeatureSettings', function () {
       featureTagsByFamily
     );
     expect(result, 'to be true');
-    expect(featureTagsByFamily.get('*'), 'to equal', new Set(['liga']));
-    expect(featureTagsByFamily.get('roboto'), 'to equal', new Set(['smcp']));
+    expect(featureTagsByFamily.get('*'), 'to equal', new Set(['liga', 'smcp']));
+    expect(featureTagsByFamily.has('roboto'), 'to be false');
   });
 });

@@ -535,6 +535,7 @@ async function queueAllSubsets(
       const bounds = variationAxisBoundsCache.get(fontUrl);
       const canInstance =
         !bounds?.variationAxes ||
+        Object.keys(bounds.variationAxes).length === 0 ||
         (await subsetFontWithGlyphs.supportsSubsetting(fontBuffer));
       const subsetInfo = subsetInfoFromBounds(canInstance ? bounds : undefined);
       subsetInfoByFontUrl.set(fontUrl, subsetInfo);
