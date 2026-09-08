@@ -2,6 +2,7 @@ const expect = require('unexpected');
 const fs = require('fs');
 const pathModule = require('path');
 const proxyquire = require('proxyquire');
+const fontverter = require('fontverter');
 const realFsPromises = require('fs/promises');
 const subsetFontWithGlyphs = require('../lib/subsetFontWithGlyphs');
 const getFontInfo = require('../lib/getFontInfo');
@@ -364,6 +365,29 @@ describe('subsetFontWithGlyphs', function () {
     });
   });
 
+  for (const targetFormat of ['truetype', 'woff2']) {
+    for (const smoothingOnly of [false, true]) {
+      it(`should preserve gasp preferences in ${targetFormat} (smoothing only: ${smoothingOnly})`, async function () {
+        const input = Buffer.from(ttfBuffer);
+        const gasp = findSfntTable(input, 'gasp');
+        expect(gasp, 'to be a', Buffer);
+        if (smoothingOnly) {
+          // EB Garamond requests grayscale smoothing without grid-fitting.
+          // Reuse Roboto's size ranges with that preference at every size.
+          for (let i = 0; i < gasp.readUInt16BE(2); i++) {
+            gasp.writeUInt16BE(2, 6 + i * 4);
+          }
+        }
+        const subset = await subsetFontWithGlyphs(input, 'Google', {
+          targetFormat,
+          featureTags: [],
+        });
+        const sfnt = await fontverter.convert(subset, 'truetype');
+        expect(findSfntTable(sfnt, 'gasp'), 'to equal', gasp);
+      });
+    }
+  }
+
   it('should drop hinting and unused web tables from a TrueType subset', async function () {
     const result = await subsetFontWithGlyphs(ttfBuffer, 'ABC', {
       targetFormat: 'truetype',
@@ -375,7 +399,7 @@ describe('subsetFontWithGlyphs', function () {
       expect(tables.has(tag), 'to be false');
     }
     // DROP_TABLE_TAGS catches the rest that NO_HINTING leaves behind.
-    for (const tag of ['gasp', 'DSIG', 'LTSH', 'VDMX', 'PCLT']) {
+    for (const tag of ['DSIG', 'LTSH', 'VDMX', 'PCLT']) {
       expect(tables.has(tag), 'to be false');
     }
   });

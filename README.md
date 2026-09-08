@@ -6,14 +6,14 @@ A faster fork of [subfont](https://github.com/Munter/subfont) that subsets web f
 
 ### Aggressive woff2 subsetting
 
-`subfont` produces dramatically smaller font files by stripping data that browsers never use:
+`subfont` produces dramatically smaller font files by pruning unused glyphs and selected font data:
 
 | Optimization                    | Technique                                                                                                                                                                                                      |
 | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Hinting removal                 | Strips TrueType hinting instructions (browsers auto-hint)                                                                                                                                                      |
+| Hinting removal                 | Strips embedded TrueType hinting instructions; this can change rendering on platforms that use them                                                                                                            |
 | Name table pruning              | Keeps only the 4 IDs browsers read (family, subfamily, full name, PostScript name)                                                                                                                             |
 | Name lang-ID filter             | Keeps only en-US name strings; drops Japanese, Russian, Korean, etc.                                                                                                                                           |
-| Table stripping                 | Drops `DSIG`, `LTSH`, `VDMX`, `hdmx`, `gasp`, `PCLT`                                                                                                                                                           |
+| Table stripping                 | Drops `DSIG`, `LTSH`, `VDMX`, `hdmx`, `PCLT`; preserves `gasp` grid-fitting and smoothing preferences                                                                                                          |
 | MATH-table drop (gated)         | Drops `MATH` when no math codepoints are used on the page                                                                                                                                                      |
 | Color-table drop (gated)        | Drops `COLR`/`CPAL`/`SVG `/`CBDT`/`CBLC`/`sbix`/`EBDT`/`EBLC`/`EBSC` when no emoji used                                                                                                                        |
 | Layout-script filter (gated)    | Drops GSUB/GPOS lookups for OpenType scripts the page doesn't render                                                                                                                                           |
@@ -27,9 +27,9 @@ Reproducible benchmark on `testdata/subsetFonts/OpenSans-400.ttf` (run with `pnp
 
 | Text sample       | Upstream subfont | `@turntrout/subfont` | Savings |
 | ----------------- | ---------------- | -------------------- | ------- |
-| Heading (short)   | 2,604 B          | 828 B                | **68%** |
-| Paragraph         | 4,448 B          | 2,072 B              | **53%** |
-| Full page charset | 9,388 B          | 5,500 B              | **41%** |
+| Heading (short)   | 2,604 B          | 824 B                | **68%** |
+| Paragraph         | 4,448 B          | 2,088 B              | **53%** |
+| Full page charset | 9,388 B          | 5,512 B              | **41%** |
 
 ## Install
 

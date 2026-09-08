@@ -295,9 +295,9 @@ function setAxisRange(
 
 // Tables unnecessary for web rendering — safe to drop unconditionally.
 // HB_SUBSET_FLAGS_NO_HINTING already drops cvt/fpgm/prep/hdmx in the
-// harfbuzzjs build we use; gasp/LTSH/VDMX/DSIG/PCLT survive the flag and
-// must be dropped here.
-const DROP_TABLE_TAGS = ['DSIG', 'LTSH', 'VDMX', 'hdmx', 'gasp', 'PCLT'];
+// harfbuzzjs build we use. Preserve gasp: its grid-fitting/smoothing
+// preferences affect browser rasterization even in fonts without hints.
+const DROP_TABLE_TAGS = ['DSIG', 'LTSH', 'VDMX', 'hdmx', 'PCLT'];
 
 // Color and bitmap tables — only relevant for color emoji (Apple/Google)
 // and legacy bitmap fonts. Dropped only when the caller signals that no
@@ -473,7 +473,7 @@ function configureSubsetInput(
   configureLayoutFeatures(exports, input, featureTags);
   configureLayoutScripts(exports, input, scriptTags);
 
-  // Strip hinting instructions (ignored by modern browsers)
+  // Strip embedded hinting, retaining gasp's rasterization preferences.
   const flags = exports.hb_subset_input_get_flags(input);
   exports.hb_subset_input_set_flags(input, flags | HB_SUBSET_FLAGS_NO_HINTING);
 
