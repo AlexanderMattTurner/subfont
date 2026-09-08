@@ -89,6 +89,108 @@ describe('subsetGeneration', function () {
   });
 
   describe('getSubsetsForFontUsage', function () {
+    for (const laterTags of [['smcp'], undefined]) {
+      it(`should union shared-font features across pages (${laterTags ? 'known' : 'unresolved'})`, async function () {
+        const calls = [];
+        const { getSubsetsForFontUsage } = proxyquire(
+          '../lib/subsetGeneration',
+          {
+            './variationAxes': { getVariationAxisBounds: async () => null },
+            './collectFeatureGlyphIds': async () => [],
+            './subsetFontWithGlyphs': async (_buf, _text, opts) => {
+              calls.push(opts);
+              return Buffer.alloc(100);
+            },
+          }
+        );
+        const fontUrl = 'https://example.com/shared.ttf';
+        const usages = [
+          {
+            fontUrl,
+            text: 'Dak',
+            hasFontFeatureSettings: true,
+            fontFeatureTags: ['onum'],
+          },
+          {
+            fontUrl,
+            text: 'Dak',
+            hasFontFeatureSettings: true,
+            fontFeatureTags: laterTags,
+          },
+        ];
+        const graph = {
+          populate: async () => {},
+          findAssets: () => [
+            { url: fontUrl, isLoaded: true, rawSrc: Buffer.alloc(10) },
+          ],
+          warn: (error) => {
+            throw error;
+          },
+        };
+        await getSubsetsForFontUsage(
+          graph,
+          usages.map((usage) => ({ fontUsages: [usage] })),
+          ['woff2'],
+          new Map(),
+          false
+        );
+        expect(calls.length, 'to equal', 1);
+        expect(
+          calls[0].featureTags,
+          'to equal',
+          laterTags ? ['onum', 'smcp'] : undefined
+        );
+        for (const key of ['dropMathTable', 'dropColorTables', 'scriptTags']) {
+          expect(calls[0], 'not to have key', key);
+        }
+        expect(usages[0].subsets.woff2, 'to equal', usages[1].subsets.woff2);
+        expect(usages[0].fontFeatureTags, 'to equal', ['onum']);
+      });
+    }
+
+    it('should not report axis work when the original font must be retained', async function () {
+      const calls = [];
+      const subsetter = Object.assign(
+        async (_buf, _text, opts) => {
+          calls.push(opts);
+          return Buffer.alloc(100);
+        },
+        { supportsSubsetting: async () => false }
+      );
+      const { getSubsetsForFontUsage } = proxyquire('../lib/subsetGeneration', {
+        './variationAxes': {
+          getVariationAxisBounds: async () => ({
+            variationAxes: { wght: 400 },
+            fullyInstanced: true,
+            numAxesPinned: 1,
+            numAxesReduced: 0,
+          }),
+        },
+        './subsetFontWithGlyphs': subsetter,
+      });
+      const fontUrl = 'https://example.com/color-variable.ttf';
+      const usage = { fontUrl, text: 'Dak' };
+      await getSubsetsForFontUsage(
+        {
+          populate: async () => {},
+          findAssets: () => [
+            { url: fontUrl, isLoaded: true, rawSrc: Buffer.alloc(10) },
+          ],
+          warn: (error) => {
+            throw error;
+          },
+        },
+        [{ fontUsages: [usage] }],
+        ['woff2'],
+        new Map(),
+        false
+      );
+      expect(calls[0].variationAxes, 'to be undefined');
+      expect(usage.fullyInstanced, 'to be false');
+      expect(usage.numAxesPinned, 'to equal', 0);
+      expect(usage.numAxesReduced, 'to equal', 0);
+    });
+
     it('should select the smallest format even when a larger format resolves first', async function () {
       const smallBuffer = Buffer.alloc(100, 0x41);
       const largeBuffer = Buffer.alloc(500, 0x42);

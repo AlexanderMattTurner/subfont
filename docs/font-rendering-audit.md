@@ -40,8 +40,8 @@ change.
 ## Other unsafe assumptions found
 
 These findings concern the default pipeline at the inspected commit. They are
-not additional demonstrated causes of the Pixel report and are not repaired by
-this focused PR.
+not additional demonstrated causes of the Pixel report. The revised PR repairs
+them while retaining targeted feature pruning and safe metadata reductions.
 
 | Area                    | Evidence and failure condition                                                                                                                                                                                                                                                         | Repair direction                                                                                                                                    |
 | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -58,6 +58,59 @@ scanner was also executed: `font-variant: small-caps` and a face-level
 `font-feature-settings: "smcp" 1` both returned no detected features, while the
 longhand `font-variant-caps: small-caps` correctly returned `smcp`. These are
 scanner reproductions, not browser-rendering reproductions.
+
+## Implemented retention policy
+
+- Preserve `gasp`, embedded hints, `hdmx`, and `VDMX`; still discard signatures,
+  scaler-acceleration `LTSH`, and printer metadata `PCLT`.
+- Remove the incomplete Unicode predicates for math, color, and script selection.
+  Keep `MATH` and all script systems while HarfBuzz subsets glyph-dependent data.
+- Keep essential shaping plus the features requested by CSS. Cover `font` and
+  `font-variant` shorthands, face descriptors, inline/SVG attributes, inherited
+  features when families change, and the union of every page sharing a font URL.
+  Preserve petite-cap fallback features, contextual swashes, and legal custom
+  feature tags. Unresolved/escaped values conservatively retain all features.
+- Preserve the full source glyph mapping for color/bitmap and legacy layout
+  formats that the bundled subsetter cannot reliably retain. A valid ASCII
+  COLR v0 fixture and a valid legacy kern pair both disappeared in the installed
+  build, even without the fork's explicit table deletion. Copying opaque tables
+  after renumbering glyphs is unsafe. This fallback also skips axis instancing;
+  regular fonts continue to be subset normally.
+- Bump the subset-cache version to 10 so stale outputs cannot bypass repairs.
+
+## Measured size tradeoffs
+
+WOFF2 bytes, measured using the installed dependency versions. Baseline is this
+PR's initial `gasp`-preserving commit `9017440`, with the old automatic
+math/color/script policy and no optional CSS features. Each column restores
+one category in isolation; compressed deltas need not add up or be positive.
+
+| Sample                                      | Baseline | Preserve hints/device metrics | Preserve color | Preserve math | All script records | All optional features | Revised selective policy |
+| ------------------------------------------- | -------: | ----------------------------: | -------------: | ------------: | -----------------: | --------------------: | -----------------------: |
+| EB Garamond, deployed 150-codepoint charset |   28,172 |                           +36 |              0 |             0 |                +36 |               +11,084 |                   28,220 |
+| Open Sans, paragraph                        |    2,088 |                        +2,252 |              0 |             0 |                  0 |                     0 |                    4,340 |
+| IBM Plex Sans, paragraph                    |    2,240 |                        +1,260 |              0 |             0 |                 −8 |                  +376 |                    3,484 |
+
+The paragraph is `The quick brown fox jumps over the lazy dog.` EB Garamond
+uses the original regular font and the deployed subset's cmap (150 codepoints).
+These fonts contain no color or MATH tables, so their zero costs do **not**
+estimate the cost for an emoji or math font. EB Garamond contains no hint
+programs; its small change under the hint-retention setting is a subset-output
+and compression difference, not newly added instructions.
+
+The captured article CSS requests `lnum`, `onum`, and `smcp`. With exactly those
+features and the same charset, the old policy produces **33,612 bytes**, the
+revised policy **33,544 bytes**, and blanket feature retention **39,312 bytes**.
+The source font is **104,624 bytes**. These are controlled font-subsetter
+comparisons, not a rebuilt whole-site bundle or a measurement of every font
+weight/style on the site. WOFF2 is not monotonic: preserving data can sometimes
+produce a slightly smaller compressed stream.
+
+Regression coverage checks exact `gasp`/hint bytes, glyph instructions, MATH
+constants, color/kern glyph-reference preservation, CSS discovery and
+inheritance, per-page isolation, shared-font feature unions, and size budgets.
+The synthetic SFNT helper now sorts its directory, so added tables are valid
+inputs rather than accidental table-lookup failures.
 
 ## References
 

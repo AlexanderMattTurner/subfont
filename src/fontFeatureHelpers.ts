@@ -1,6 +1,11 @@
+import postcss = require('postcss');
+import valueParser = require('postcss-value-parser');
+import type { Asset } from 'assetgraph';
 import * as cssFontParser from 'css-font-parser';
 
 export const featureSettingsProps = new Set<string>([
+  'font',
+  'font-variant',
   'font-feature-settings',
   'font-variant-alternates',
   'font-variant-caps',
@@ -25,8 +30,8 @@ export const fontVariantToOTTags: Record<string, Record<string, string[]>> = {
   'font-variant-caps': {
     'small-caps': ['smcp'],
     'all-small-caps': ['smcp', 'c2sc'],
-    'petite-caps': ['pcap'],
-    'all-petite-caps': ['pcap', 'c2pc'],
+    'petite-caps': ['pcap', 'smcp'],
+    'all-petite-caps': ['pcap', 'c2pc', 'smcp', 'c2sc'],
     unicase: ['unic'],
     'titling-caps': ['titl'],
   },
@@ -100,9 +105,8 @@ function addIndexedTags(
 // than 4 chars so it can't collide with a real OT feature tag.
 export const UNRESOLVED_FEATURES_SENTINEL = '<unresolved>';
 
-// Detects the CSS var() function. CSS keywords are case-insensitive, so
-// vAr(--x) is just as valid as var(--x).
-const VAR_FUNCTION_RE = /\bvar\s*\(/i;
+// Values supplied by runtime substitution cannot be enumerated statically.
+const UNRESOLVED_FUNCTION_RE = /\b(?:var|env|attr)\s*\(/i;
 
 export function extractFeatureTagsFromDecl(
   prop: string,
@@ -110,15 +114,41 @@ export function extractFeatureTagsFromDecl(
 ): Set<string> {
   const tags = new Set<string>();
   const propLower = prop.toLowerCase();
-  const hasUnresolvedToken = VAR_FUNCTION_RE.test(value);
+  // Use token boundaries around comments without touching comment-like text
+  // inside quoted custom tags.
+  value = valueParser(value)
+    .nodes.map((node) =>
+      node.type === 'comment' ? ' ' : valueParser.stringify(node)
+    )
+    .join('');
+  const hasUnresolvedToken =
+    UNRESOLVED_FUNCTION_RE.test(value) || value.includes('\\');
+  if (hasUnresolvedToken && featureSettingsProps.has(propLower)) {
+    tags.add(UNRESOLVED_FEATURES_SENTINEL);
+  }
+
+  if (propLower === 'font-variant') {
+    for (const longhand of [
+      ...Object.keys(fontVariantToOTTags),
+      'font-variant-alternates',
+    ]) {
+      for (const tag of extractFeatureTagsFromDecl(longhand, value))
+        tags.add(tag);
+    }
+    return tags;
+  }
+  if (propLower === 'font') {
+    // The font shorthand supports small-caps; font-variant supports the
+    // wider set of variant values. Overridden declarations remain a safe
+    // superset because this scanner does not resolve the cascade.
+    if (/(?:^|\s)small-caps(?:\s|$)/i.test(value)) tags.add('smcp');
+    return tags;
+  }
 
   if (propLower === 'font-feature-settings') {
-    // Parse quoted 4-letter tags: "liga" 1, 'dlig', etc.
-    // Per the OpenType feature-tag registry tags are 4 ASCII chars
-    // beginning with a letter and continuing with letters or digits;
-    // digits-only tags ("1234") are invalid and `[a-zA-Z0-9]{4}` would
-    // have wrongly accepted them as features.
-    const re = /["'](?<tag>[a-z][a-z0-9]{3})["']/gi;
+    // CSS permits any four printable ASCII characters, including custom
+    // tags absent from the registry. Escapes trigger the unresolved fallback.
+    const re = /(?<quote>["'])(?<tag>[\x20-\x7e]{4})\k<quote>/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(value)) !== null) {
       if (m.groups?.tag) tags.add(m.groups.tag);
@@ -131,7 +161,10 @@ export function extractFeatureTagsFromDecl(
     const v = value.toLowerCase();
     if (v.includes('historical-forms')) tags.add('hist');
     if (/stylistic\s*\(/.test(v)) tags.add('salt');
-    if (/swash\s*\(/.test(v)) tags.add('swsh');
+    if (/swash\s*\(/.test(v)) {
+      tags.add('swsh');
+      tags.add('cswh');
+    }
     if (/ornaments\s*\(/.test(v)) tags.add('ornm');
     if (/annotation\s*\(/.test(v)) tags.add('nalt');
     addIndexedTags(v, /styleset\s*\((?<args>[^)]*)\)/g, 'ss', 20, tags);
@@ -165,6 +198,7 @@ interface PostCssRuleNode {
   type: string;
   prop: string;
   value: string;
+  raws?: { value?: { raw: string } };
 }
 
 interface PostCssRule {
@@ -176,14 +210,15 @@ export function ruleFeatureTags(rule: PostCssRule): Set<string> | null {
   const tags = new Set<string>();
   let hasFeatureDecl = false;
   for (const node of rule.nodes) {
-    if (
-      node.type === 'decl' &&
-      featureSettingsProps.has(node.prop.toLowerCase())
-    ) {
+    if (node.type !== 'decl') continue;
+    if (node.prop.includes('\\')) {
       hasFeatureDecl = true;
-      for (const t of extractFeatureTagsFromDecl(node.prop, node.value)) {
-        tags.add(t);
-      }
+      tags.add(UNRESOLVED_FEATURES_SENTINEL);
+    } else if (featureSettingsProps.has(node.prop.toLowerCase())) {
+      hasFeatureDecl = true;
+      const value = node.raws?.value?.raw ?? node.value;
+      for (const tag of extractFeatureTagsFromDecl(node.prop, value))
+        tags.add(tag);
     }
   }
   return hasFeatureDecl ? tags : null;
@@ -239,7 +274,12 @@ export function recordRuleFeatureTags(
 }
 
 interface StylesheetEntry {
-  asset?: { parseTree?: { walkRules?(cb: (rule: PostCssRule) => void): void } };
+  asset?: {
+    parseTree?: {
+      walkRules?(cb: (rule: PostCssRule) => void): void;
+      walkAtRules?(name: RegExp, cb: (rule: PostCssRule) => void): void;
+    };
+  };
 }
 
 // Determine which font-families use font-feature-settings or font-variant-*.
@@ -252,7 +292,7 @@ export function findFontFamiliesWithFeatureSettings(
   let result: true | Set<string> | null = null;
   for (const { asset } of stylesheetsWithPredicates) {
     if (!asset?.parseTree?.walkRules) continue;
-    asset.parseTree.walkRules((rule) => {
+    const record = (rule: PostCssRule) => {
       if (result === true && !featureTagsByFamily) return;
 
       const recorded = recordRuleFeatureTags(rule, featureTagsByFamily);
@@ -266,10 +306,63 @@ export function findFontFamiliesWithFeatureSettings(
           result.add(family.toLowerCase());
         }
       }
+    };
+    asset.parseTree.walkRules((rule) => {
+      // Feature properties inherit even when descendants change font-family.
+      // Ordinary rules therefore contribute to every family; face descriptors
+      // below remain scoped to their face.
+      const tags = ruleFeatureTags(rule);
+      if (tags) {
+        if (featureTagsByFamily)
+          addTagsToMapEntry(featureTagsByFamily, '*', tags);
+        result = true;
+      }
     });
+    // Descriptors apply to the face even when no style rule requests them.
+    asset.parseTree.walkAtRules?.(/^font-face$/i, record);
     if (result === true && !featureTagsByFamily) break;
   }
   return result;
+}
+
+// Inline declarations belong to a page, not the memoized shared stylesheet
+// result. Union them separately so a page cannot contaminate another page's
+// feature map. SVG presentation attributes can request the same features.
+export function inlineFeatureTags(root: Asset['parseTree']): Set<string> {
+  const tags = new Set<string>();
+  if (!('querySelectorAll' in root)) return tags;
+  const selector = [
+    '[style]',
+    ...[...featureSettingsProps].map((p) => `[${p}]`),
+  ].join(',');
+  for (const element of Array.from(root.querySelectorAll(selector))) {
+    const style = element.getAttribute('style');
+    if (style) {
+      try {
+        const parsed = postcss.parse(style);
+        parsed.walkDecls((decl) => {
+          for (const tag of ruleFeatureTags({ nodes: [decl] }) ?? [])
+            tags.add(tag);
+        });
+      } catch {
+        // The browser may recover valid declarations from malformed CSS.
+        tags.add(UNRESOLVED_FEATURES_SENTINEL);
+      }
+    }
+    if (
+      'namespaceURI' in element &&
+      element.namespaceURI === 'http://www.w3.org/2000/svg'
+    ) {
+      for (const prop of featureSettingsProps) {
+        const value = element.getAttribute(prop);
+        if (value !== null) {
+          for (const tag of extractFeatureTagsFromDecl(prop, value))
+            tags.add(tag);
+        }
+      }
+    }
+  }
+  return tags;
 }
 
 // Determine whether a template's font families use feature settings, and
@@ -309,7 +402,7 @@ export function resolveFeatureSettings(
     // back to retain-all-features instead of dropping features silently.
     if (tags.has(UNRESOLVED_FEATURES_SENTINEL)) {
       tags.delete(UNRESOLVED_FEATURES_SENTINEL);
-    } else if (tags.size > 0) {
+    } else {
       fontFeatureTags = [...tags];
     }
   }

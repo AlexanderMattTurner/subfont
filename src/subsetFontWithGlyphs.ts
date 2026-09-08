@@ -11,15 +11,11 @@ const HB_SUBSET_SETS_DROP_TABLE_TAG = 3;
 const HB_SUBSET_SETS_NAME_ID = 4;
 const HB_SUBSET_SETS_NAME_LANG_ID = 5;
 const HB_SUBSET_SETS_LAYOUT_FEATURE_TAG = 6;
-const HB_SUBSET_SETS_LAYOUT_SCRIPT_TAG = 7;
 
 // Windows English (United States). The only name-table language we keep —
 // browsers don't expose localized name strings to web pages, so other lang
 // IDs are pure overhead.
 const KEEP_NAME_LANG_ID_EN_US = 0x0409;
-
-// hb_subset_flags_t
-const HB_SUBSET_FLAGS_NO_HINTING = 0x00000001;
 
 // Minimal shape of the harfbuzz subsetter WASM exports we actually call.
 // All pointers are exposed as numbers (WASM i32).
@@ -45,8 +41,6 @@ interface HarfbuzzExports {
   hb_set_invert(set: number): void;
   hb_subset_input_create_or_fail(): number;
   hb_subset_input_destroy(input: number): void;
-  hb_subset_input_get_flags(input: number): number;
-  hb_subset_input_set_flags(input: number, flags: number): void;
   hb_subset_input_pin_axis_location(
     input: number,
     face: number,
@@ -84,18 +78,6 @@ interface SubsetFontWithGlyphsOptions {
   // instead of retaining every layout feature in the font. When undefined,
   // fall back to retaining all layout features (legacy behavior).
   featureTags?: string[];
-  // When true, drop the OpenType MATH table. Caller is responsible for
-  // ensuring the page does not render math content with this font.
-  dropMathTable?: boolean;
-  // When true, drop COLR/CPAL/SVG/CBDT/CBLC/EBDT/EBLC/EBSC/sbix. Caller is
-  // responsible for ensuring the page does not render color emoji or color
-  // glyphs with this font.
-  dropColorTables?: boolean;
-  // OpenType script tags to retain GSUB/GPOS lookups for (e.g. ['latn',
-  // 'cyrl', 'DFLT']). When provided, harfbuzz's default "retain all
-  // scripts" set is replaced by exactly these tags. When undefined, all
-  // scripts in the font are retained (legacy behavior).
-  scriptTags?: string[];
   signal?: AbortSignal;
 }
 
@@ -293,27 +275,10 @@ function setAxisRange(
   }
 }
 
-// Tables unnecessary for web rendering — safe to drop unconditionally.
-// HB_SUBSET_FLAGS_NO_HINTING already drops cvt/fpgm/prep/hdmx in the
-// harfbuzzjs build we use. Preserve gasp: its grid-fitting/smoothing
-// preferences affect browser rasterization even in fonts without hints.
-const DROP_TABLE_TAGS = ['DSIG', 'LTSH', 'VDMX', 'hdmx', 'PCLT'];
-
-// Color and bitmap tables — only relevant for color emoji (Apple/Google)
-// and legacy bitmap fonts. Dropped only when the caller signals that no
-// color content needs to render with this font.
-// Note: 'SVG ' has a trailing space (4-byte tag).
-const COLOR_TABLE_TAGS = [
-  'COLR',
-  'CPAL',
-  'SVG ',
-  'CBDT',
-  'CBLC',
-  'sbix',
-  'EBDT',
-  'EBLC',
-  'EBSC',
-];
+// Signatures become invalid after subsetting. LTSH is a scaler acceleration
+// table and PCLT is printer metadata; keep rasterization preferences and
+// device metrics (gasp, VDMX, hdmx), along with embedded hints.
+const DROP_TABLE_TAGS = ['DSIG', 'LTSH', 'PCLT'];
 
 // Name IDs needed for web fonts: family (1), subfamily (2), full name (4),
 // PostScript name (6).  Copyright (0), unique ID (3), version (5), and
@@ -346,24 +311,6 @@ function configureLayoutFeatures(
   }
 }
 
-// When scriptTags is provided, replace harfbuzz's default (all scripts)
-// with exactly the listed tags. Undefined leaves the default in place.
-function configureLayoutScripts(
-  exports: HarfbuzzExports,
-  input: number,
-  scriptTags: string[] | undefined
-): void {
-  if (scriptTags === undefined) return;
-  const layoutScripts = exports.hb_subset_input_set(
-    input,
-    HB_SUBSET_SETS_LAYOUT_SCRIPT_TAG
-  );
-  exports.hb_set_clear(layoutScripts);
-  for (const tag of scriptTags) {
-    exports.hb_set_add(layoutScripts, HB_TAG(tag));
-  }
-}
-
 function configureNameTables(exports: HarfbuzzExports, input: number): void {
   const nameIdSet = exports.hb_subset_input_set(input, HB_SUBSET_SETS_NAME_ID);
   exports.hb_set_clear(nameIdSet);
@@ -378,12 +325,7 @@ function configureNameTables(exports: HarfbuzzExports, input: number): void {
   exports.hb_set_add(nameLangSet, KEEP_NAME_LANG_ID_EN_US);
 }
 
-function configureDropTables(
-  exports: HarfbuzzExports,
-  input: number,
-  dropMathTable: boolean,
-  dropColorTables: boolean
-): void {
+function configureDropTables(exports: HarfbuzzExports, input: number): void {
   const dropTableSet = exports.hb_subset_input_set(
     input,
     HB_SUBSET_SETS_DROP_TABLE_TAG
@@ -391,14 +333,44 @@ function configureDropTables(
   for (const tag of DROP_TABLE_TAGS) {
     exports.hb_set_add(dropTableSet, HB_TAG(tag));
   }
-  if (dropMathTable) {
-    exports.hb_set_add(dropTableSet, HB_TAG('MATH'));
+}
+
+// The bundled subsetter does not preserve every color/bitmap format (even
+// COLR v0 and legacy kern are lost in the installed build). Keep these fonts intact: copying
+// their tables after glyph renumbering would corrupt their glyph references.
+const UNSUPPORTED_RENDERING_TABLES = new Set([
+  'COLR',
+  'CPAL',
+  'SVG ',
+  'CBDT',
+  'CBLC',
+  'sbix',
+  'EBDT',
+  'EBLC',
+  'EBSC',
+  'kern',
+  'morx',
+  'mort',
+  'kerx',
+  'JSTF',
+  'Feat',
+  'Glat',
+  'Gloc',
+  'Silf',
+  'Sill',
+]);
+
+function needsFullFont(sfnt: Buffer | Uint8Array): boolean {
+  const view = new DataView(sfnt.buffer, sfnt.byteOffset, sfnt.byteLength);
+  if (view.byteLength < 12) return false;
+  const count = view.getUint16(4);
+  if (12 + count * 16 > view.byteLength) return false;
+  for (let i = 0; i < count; i++) {
+    const offset = 12 + i * 16;
+    const tag = String.fromCharCode(...sfnt.subarray(offset, offset + 4));
+    if (UNSUPPORTED_RENDERING_TABLES.has(tag)) return true;
   }
-  if (dropColorTables) {
-    for (const tag of COLOR_TABLE_TAGS) {
-      exports.hb_set_add(dropTableSet, HB_TAG(tag));
-    }
-  }
+  return false;
 }
 
 // Include codepoints from the raw text and from both NFC and NFD
@@ -465,20 +437,12 @@ function configureSubsetInput(
   text: string,
   glyphIds: number[] | undefined,
   variationAxes: Record<string, VariationAxisValue> | undefined,
-  featureTags: string[] | undefined,
-  dropMathTable: boolean,
-  dropColorTables: boolean,
-  scriptTags: string[] | undefined
+  featureTags: string[] | undefined
 ): void {
   configureLayoutFeatures(exports, input, featureTags);
-  configureLayoutScripts(exports, input, scriptTags);
-
-  // Strip embedded hinting, retaining gasp's rasterization preferences.
-  const flags = exports.hb_subset_input_get_flags(input);
-  exports.hb_subset_input_set_flags(input, flags | HB_SUBSET_FLAGS_NO_HINTING);
 
   configureNameTables(exports, input);
-  configureDropTables(exports, input, dropMathTable, dropColorTables);
+  configureDropTables(exports, input);
   configureUnicodeCodepoints(exports, input, text);
   configureGlyphIds(exports, input, glyphIds);
   configureVariationAxes(exports, input, face, variationAxes);
@@ -519,6 +483,7 @@ interface SubsetFontWithGlyphsFn {
     options?: SubsetFontWithGlyphsOptions
   ): Promise<Buffer>;
   warmup(): Promise<void>;
+  supportsSubsetting(font: Buffer | Uint8Array): Promise<boolean>;
   // Test-only handles on the WASM instance pool, mirroring the `_`-prefixed
   // internal exports used elsewhere (e.g. _SubsetDiskCache) for white-box
   // tests of the acquire/release/abort machinery.
@@ -534,9 +499,6 @@ async function subsetFontWithGlyphs(
     glyphIds,
     variationAxes,
     featureTags,
-    dropMathTable = false,
-    dropColorTables = false,
-    scriptTags,
     signal,
   }: SubsetFontWithGlyphsOptions = {}
 ): Promise<Buffer> {
@@ -547,6 +509,13 @@ async function subsetFontWithGlyphs(
   // been converted by getFontInfo or collectFeatureGlyphIds already).
   // sfntCache routes woff2 decompression through the worker pool.
   const ttf = await toSfnt(originalFont);
+  if (needsFullFont(ttf)) {
+    signal?.throwIfAborted();
+    if (targetFormat === 'woff2') {
+      return convertInWorker(ttf, targetFormat, 'truetype', { signal });
+    }
+    return Buffer.from(await fontverter.convert(ttf, targetFormat));
+  }
 
   const inst = await acquireInstance(signal);
   const { exports } = inst;
@@ -582,10 +551,7 @@ async function subsetFontWithGlyphs(
         text,
         glyphIds,
         variationAxes,
-        featureTags,
-        dropMathTable,
-        dropColorTables,
-        scriptTags
+        featureTags
       );
 
       subset = exports.hb_subset_or_fail(face, input);
@@ -623,6 +589,10 @@ async function subsetFontWithGlyphs(
     if (!released) releaseInstance(inst);
   }
 }
+
+(subsetFontWithGlyphs as SubsetFontWithGlyphsFn).supportsSubsetting = async (
+  font
+) => !needsFullFont(await toSfnt(font));
 
 // Pre-warm the WASM pool: call early to overlap compilation with other work.
 (subsetFontWithGlyphs as SubsetFontWithGlyphsFn).warmup = () => initPool();

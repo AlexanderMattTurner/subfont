@@ -4,7 +4,6 @@
 const expect = require('unexpected');
 const fs = require('fs');
 const pathModule = require('path');
-const fontverter = require('fontverter');
 const subsetFontWithGlyphs = require('../lib/subsetFontWithGlyphs');
 
 const PANGRAM = 'The quick brown fox jumps over the lazy dog 0123456789';
@@ -36,10 +35,10 @@ describe('subset size benchmarks', function () {
       targetFormat: 'truetype',
       featureTags: [],
     });
-    // Retaining the 12-byte gasp table also adds a 16-byte SFNT directory entry.
+    // The 2,400-byte budget includes the original hint programs and hdmx.
     // Lower bound guards against corrupted/truncated output.
     expect(result.length, 'to be greater than or equal to', 500);
-    expect(result.length, 'to be less than or equal to', 1158);
+    expect(result.length, 'to be less than or equal to', 2400);
     expect(tableSet(result).has('gasp'), 'to be true');
   });
 
@@ -55,24 +54,20 @@ describe('subset size benchmarks', function () {
   });
 
   [
-    { name: 'Roboto-400', path: ROBOTO, maxWoff2Bytes: 650 },
-    { name: 'IBMPlexSans-Regular', path: IBM_PLEX_SANS, maxWoff2Bytes: 4250 },
+    { name: 'Roboto-400', path: ROBOTO, maxWoff2Bytes: 1400 },
+    { name: 'IBMPlexSans-Regular', path: IBM_PLEX_SANS, maxWoff2Bytes: 6200 },
   ].forEach(({ name, path, maxWoff2Bytes }) => {
-    it(`${name} script filtering removes data within the woff2 size budget`, async function () {
-      const buf = fs.readFileSync(path);
-      const baseOpts = { targetFormat: 'woff2', featureTags: [] };
-      const all = await subsetFontWithGlyphs(buf, PANGRAM, baseOpts);
-      const latnOnly = await subsetFontWithGlyphs(buf, PANGRAM, {
-        ...baseOpts,
-        scriptTags: ['DFLT', 'latn'],
-      });
-      expect(latnOnly.length, 'to be greater than', 100);
-      expect(latnOnly.length, 'to be less than or equal to', maxWoff2Bytes);
-      // Compression is not monotonic: retaining gasp makes IBM Plex's
-      // filtered WOFF2 28 bytes larger despite removing 24 SFNT bytes.
-      const allSfnt = await fontverter.convert(all, 'truetype');
-      const latnSfnt = await fontverter.convert(latnOnly, 'truetype');
-      expect(latnSfnt.length, 'to be less than', allSfnt.length);
+    it(`${name} retains rendering data within the woff2 size budget`, async function () {
+      const result = await subsetFontWithGlyphs(
+        fs.readFileSync(path),
+        PANGRAM,
+        {
+          targetFormat: 'woff2',
+          featureTags: [],
+        }
+      );
+      expect(result.length, 'to be greater than', 100);
+      expect(result.length, 'to be less than or equal to', maxWoff2Bytes);
     });
   });
 });

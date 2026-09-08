@@ -48,6 +48,20 @@ function findSfntTable(buf, tag) {
   return null;
 }
 
+function simpleGlyphInstructions(sfnt, gid) {
+  const loca = findSfntTable(sfnt, 'loca');
+  const longOffsets = findSfntTable(sfnt, 'head').readInt16BE(50) === 1;
+  const offset = longOffsets
+    ? loca.readUInt32BE(gid * 4)
+    : loca.readUInt16BE(gid * 2) * 2;
+  const glyf = findSfntTable(sfnt, 'glyf');
+  const contours = glyf.readInt16BE(offset);
+  expect(contours, 'to be greater than', 0);
+  const lengthOffset = offset + 10 + contours * 2;
+  const length = glyf.readUInt16BE(lengthOffset);
+  return glyf.subarray(lengthOffset + 2, lengthOffset + 2 + length);
+}
+
 // Append an extra table to an sfnt buffer, shifting the existing table
 // offsets by one directory entry. Checksums are left at zero — harfbuzz
 // does not verify them.
@@ -77,6 +91,11 @@ function addSfntTable(buf, tag, data) {
   header.writeUInt32BE(0, newRecordOffset + 4);
   header.writeUInt32BE(header.length + body.length, newRecordOffset + 8);
   header.writeUInt32BE(data.length, newRecordOffset + 12);
+  // SFNT directories must be sorted by tag for HarfBuzz's table lookup.
+  const records = Array.from({ length: newNumTables }, (_, i) =>
+    Buffer.from(header.subarray(12 + i * 16, 28 + i * 16))
+  ).sort((a, b) => a.subarray(0, 4).compare(b.subarray(0, 4)));
+  records.forEach((record, i) => record.copy(header, 12 + i * 16));
   const padding = Buffer.alloc((4 - (data.length % 4)) % 4);
   return Buffer.concat([header, body, data, padding]);
 }
@@ -327,44 +346,6 @@ describe('subsetFontWithGlyphs', function () {
     for (const id of langIDs) expect([0x409, 0x0], 'to contain', id);
   });
 
-  it('should produce a smaller subset when scriptTags excludes scripts the font ships', async function () {
-    // Roboto-400 ships shaping data for DFLT/cyrl/grek/latn; restricting
-    // to DFLT+latn should drop cyrl/grek lookups.
-    const text = 'The quick brown fox';
-    const allScripts = await subsetFontWithGlyphs(ttfBuffer, text, {
-      targetFormat: 'woff2',
-      featureTags: [],
-    });
-    const latnOnly = await subsetFontWithGlyphs(ttfBuffer, text, {
-      targetFormat: 'woff2',
-      featureTags: [],
-      scriptTags: ['DFLT', 'latn'],
-    });
-    expect(latnOnly.length, 'to be less than', allScripts.length);
-  });
-
-  // No testdata font ships MATH or any color table, so these only verify
-  // that the option produces a valid subset (no-op when tables are absent).
-  [
-    { opt: { dropMathTable: true }, expectAbsent: ['MATH'] },
-    {
-      opt: { dropColorTables: true },
-      expectAbsent: ['COLR', 'CPAL', 'SVG ', 'CBDT', 'CBLC', 'sbix'],
-    },
-  ].forEach(({ opt, expectAbsent }) => {
-    const knob = Object.keys(opt)[0];
-    it(`should accept ${knob} without affecting fonts that lack the dropped tables`, async function () {
-      const result = await subsetFontWithGlyphs(ttfBuffer, 'ABC', {
-        targetFormat: 'truetype',
-        featureTags: [],
-        ...opt,
-      });
-      expect(result.length, 'to be greater than', 0);
-      const tables = listSfntTables(result);
-      for (const tag of expectAbsent) expect(tables.has(tag), 'to be false');
-    });
-  });
-
   for (const targetFormat of ['truetype', 'woff2']) {
     for (const smoothingOnly of [false, true]) {
       it(`should preserve gasp preferences in ${targetFormat} (smoothing only: ${smoothingOnly})`, async function () {
@@ -388,20 +369,142 @@ describe('subsetFontWithGlyphs', function () {
     }
   }
 
-  it('should drop hinting and unused web tables from a TrueType subset', async function () {
-    const result = await subsetFontWithGlyphs(ttfBuffer, 'ABC', {
+  for (const targetFormat of ['truetype', 'woff2']) {
+    it(`should retain hint programs and glyph instructions in ${targetFormat}`, async function () {
+      const output = await subsetFontWithGlyphs(ttfBuffer, 'D', {
+        targetFormat,
+      });
+      const sfnt = await fontverter.convert(output, 'truetype');
+      for (const tag of ['cvt ', 'fpgm', 'prep']) {
+        const original = findSfntTable(ttfBuffer, tag);
+        expect(original.length, 'to be greater than', 0);
+        expect(findSfntTable(sfnt, tag), 'to equal', original);
+      }
+      // Roboto fixture: source glyph 2 is D, remapped to 1 in this subset.
+      const originalInstructions = simpleGlyphInstructions(ttfBuffer, 2);
+      expect(originalInstructions.length, 'to be greater than', 0);
+      expect(
+        simpleGlyphInstructions(sfnt, 1),
+        'to equal',
+        originalInstructions
+      );
+      expect(listSfntTables(sfnt).has('hdmx'), 'to be true');
+      for (const tag of ['DSIG', 'LTSH', 'PCLT']) {
+        expect(listSfntTables(sfnt).has(tag), 'to be false');
+      }
+    });
+
+    it(`should preserve MATH constants for ASCII-only text in ${targetFormat}`, async function () {
+      // MATH v1 with a complete constants record, no per-glyph records.
+      const math = Buffer.alloc(224);
+      math.writeUInt16BE(1, 0);
+      math.writeUInt16BE(10, 4);
+      math.writeUInt16BE(80, 10); // ScriptPercentScaleDown
+      const input = addSfntTable(ttfBuffer, 'MATH', math);
+      const output = await subsetFontWithGlyphs(input, 'Dak', { targetFormat });
+      const sfnt = await fontverter.convert(output, 'truetype');
+      expect(findSfntTable(sfnt, 'MATH'), 'to equal', math);
+    });
+
+    it(`should keep color presentations of ASCII glyphs in ${targetFormat}`, async function () {
+      // COLR v0: D (source gid 2) paints a (gid 3) using palette entry 0.
+      const colr = Buffer.alloc(24);
+      colr.writeUInt16BE(1, 2);
+      colr.writeUInt32BE(14, 4);
+      colr.writeUInt32BE(20, 8);
+      colr.writeUInt16BE(1, 12);
+      colr.writeUInt16BE(2, 14);
+      colr.writeUInt16BE(1, 18);
+      colr.writeUInt16BE(3, 20);
+      const cpal = Buffer.from([
+        0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 14, 0, 0, 0, 0, 255, 255,
+      ]);
+      const input = addSfntTable(
+        addSfntTable(ttfBuffer, 'COLR', colr),
+        'CPAL',
+        cpal
+      );
+      const output = await subsetFontWithGlyphs(input, 'D', { targetFormat });
+      const sfnt = await fontverter.convert(output, 'truetype');
+      const result = findSfntTable(sfnt, 'COLR');
+      expect(result.readUInt16BE(2), 'to equal', 1);
+      expect(result.readUInt16BE(result.readUInt32BE(4)), 'to equal', 2);
+      expect(result.readUInt16BE(result.readUInt32BE(8)), 'to equal', 3);
+      expect(findSfntTable(sfnt, 'CPAL'), 'to equal', cpal);
+      expect(
+        findSfntTable(sfnt, 'maxp'),
+        'to equal',
+        findSfntTable(ttfBuffer, 'maxp')
+      );
+    });
+
+    for (const tag of [
+      'SVG ',
+      'EBDT',
+      'EBLC',
+      'EBSC',
+      'CBDT',
+      'CBLC',
+      'sbix',
+      'morx',
+      'Silf',
+    ]) {
+      it(`should preserve the full glyph mapping for unsupported ${tag} in ${targetFormat}`, async function () {
+        // Opaque bytes deliberately verify passthrough, not table parsing.
+        const data = Buffer.from([0, 1, 0, 0, 0, 0, 0, 0]);
+        const input = addSfntTable(ttfBuffer, tag, data);
+        const output = await subsetFontWithGlyphs(input, 'D', { targetFormat });
+        const sfnt = await fontverter.convert(output, 'truetype');
+        expect(findSfntTable(sfnt, tag), 'to equal', data);
+        expect(
+          findSfntTable(sfnt, 'cmap'),
+          'to equal',
+          findSfntTable(ttfBuffer, 'cmap')
+        );
+        expect(
+          findSfntTable(sfnt, 'maxp'),
+          'to equal',
+          findSfntTable(ttfBuffer, 'maxp')
+        );
+      });
+    }
+  }
+
+  it('should keep all applicable script records when subsetting Latin text', async function () {
+    const scriptTags = (font) => {
+      const gpos = findSfntTable(font, 'GPOS');
+      const scriptList = gpos.readUInt16BE(4);
+      return Array.from({ length: gpos.readUInt16BE(scriptList) }, (_, i) =>
+        gpos
+          .subarray(scriptList + 2 + i * 6, scriptList + 6 + i * 6)
+          .toString('ascii')
+      );
+    };
+    const original = scriptTags(ttfBuffer);
+    expect(original, 'to contain', 'cyrl', 'grek', 'latn');
+    const output = await subsetFontWithGlyphs(ttfBuffer, 'Dak', {
       targetFormat: 'truetype',
       featureTags: [],
     });
-    const tables = listSfntTables(result);
-    // NO_HINTING flag drops these for TrueType outlines.
-    for (const tag of ['cvt ', 'fpgm', 'prep', 'hdmx']) {
-      expect(tables.has(tag), 'to be false');
-    }
-    // DROP_TABLE_TAGS catches the rest that NO_HINTING leaves behind.
-    for (const tag of ['DSIG', 'LTSH', 'VDMX', 'PCLT']) {
-      expect(tables.has(tag), 'to be false');
-    }
+    expect(scriptTags(output), 'to equal', original);
+  });
+
+  it('should preserve a legacy kern pair and its glyph IDs', async function () {
+    // kern v0, horizontal format 0, one pair: D (2), a (3), -100 units.
+    const kern = Buffer.from(
+      '00000001000000140001000100060000000000020003ff9c',
+      'hex'
+    );
+    const input = addSfntTable(ttfBuffer, 'kern', kern);
+    const output = await subsetFontWithGlyphs(input, 'Da', {
+      targetFormat: 'truetype',
+    });
+    expect(findSfntTable(output, 'kern'), 'to equal', kern);
+    expect(
+      findSfntTable(output, 'cmap'),
+      'to equal',
+      findSfntTable(input, 'cmap')
+    );
   });
 
   it('should default to woff2 when targetFormat is omitted', async function () {
@@ -617,21 +720,6 @@ describe('subsetFontWithGlyphs', function () {
     expect(numGlyphs(withGlyphIds), 'to equal', 4);
   });
 
-  it('should retain more layout data for explicitly listed scripts than for an empty script list', async function () {
-    const text = 'The quick brown fox';
-    const noScripts = await subsetFontWithGlyphs(ttfBuffer, text, {
-      targetFormat: 'woff2',
-      featureTags: [],
-      scriptTags: [],
-    });
-    const latnOnly = await subsetFontWithGlyphs(ttfBuffer, text, {
-      targetFormat: 'woff2',
-      featureTags: [],
-      scriptTags: ['DFLT', 'latn'],
-    });
-    expect(latnOnly.length, 'to be greater than', noScripts.length);
-  });
-
   it('should restrict the fvar wght axis to the requested range', async function () {
     const result = await subsetFontWithGlyphs(variableFontBuffer, 'Hi', {
       targetFormat: 'truetype',
@@ -679,10 +767,7 @@ describe('subsetFontWithGlyphs', function () {
     );
   });
 
-  describe('with a font containing a corrupt MATH table', function () {
-    // A MATH table with null subtable offsets makes harfbuzz's subsetter
-    // fail — unless the table is added to the drop set, in which case it
-    // is never parsed at all.
+  describe('with a minimal MATH table', function () {
     let mathFontBuffer;
     before(function () {
       mathFontBuffer = addSfntTable(
@@ -692,23 +777,15 @@ describe('subsetFontWithGlyphs', function () {
       );
     });
 
-    it('should fail to subset when the MATH table is kept (the default)', async function () {
-      await expect(
-        subsetFontWithGlyphs(mathFontBuffer, 'A', {
-          targetFormat: 'truetype',
-        }),
-        'to be rejected with',
-        /hb_subset_or_fail returned zero/
-      );
-    });
-
-    it('should subset successfully when dropMathTable is given', async function () {
-      const result = await subsetFontWithGlyphs(mathFontBuffer, 'A', {
+    it('should preserve a MATH table with empty optional records', async function () {
+      const result = await subsetFontWithGlyphs(mathFontBuffer, 'D', {
         targetFormat: 'truetype',
-        dropMathTable: true,
       });
-      expect(result.length, 'to be greater than', 0);
-      expect(listSfntTables(result).has('MATH'), 'to be false');
+      expect(
+        findSfntTable(result, 'MATH'),
+        'to equal',
+        findSfntTable(mathFontBuffer, 'MATH')
+      );
     });
   });
 

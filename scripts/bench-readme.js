@@ -5,7 +5,7 @@
 //   pnpm run build && node scripts/bench-readme.js
 // "Upstream" = the `subset-font` package upstream subfont uses (only
 //   layout-features=* and an optional name-ID list). "subfont" =
-//   subsetFontWithGlyphs with every optimization enabled.
+//   subsetFontWithGlyphs with the production retention policy.
 
 const fs = require('fs');
 const path = require('path');
@@ -13,12 +13,6 @@ const fontverter = require('fontverter');
 const upstreamSubsetFont = require('subset-font');
 
 const subsetFontWithGlyphs = require('../lib/subsetFontWithGlyphs');
-const {
-  pageNeedsMathTable,
-  pageNeedsColorTables,
-  scriptsForText,
-} = require('../lib/codepointMaps');
-
 const FONT = path.resolve(
   __dirname,
   '..',
@@ -59,9 +53,6 @@ const SAMPLES = [
     const optimized = await subsetFontWithGlyphs(buf, text, {
       targetFormat: 'woff2',
       featureTags: [],
-      dropMathTable: !pageNeedsMathTable(text),
-      dropColorTables: !pageNeedsColorTables(text),
-      scriptTags: scriptsForText(text),
     });
     const pct = Math.round(
       ((upstream.length - optimized.length) / upstream.length) * 100
