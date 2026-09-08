@@ -88,6 +88,40 @@ describe('collectTextsByPage', function () {
     });
   });
 
+  it('should retain inherited and per-page inline features without contaminating shared CSS', async function () {
+    const graph = new AssetGraph({ root: localSingleRoot });
+    graph.addAsset({
+      type: 'Css',
+      url: `${graph.root}shared.css`,
+      text: `
+        @font-face { font-family: Example; src: url(OpenSans.ttf); }
+        body { font-family: Arial; font-variant: small-caps; }
+        p { font-family: Example; }
+      `,
+    });
+    const pages = [`style="font-feature-settings: 'ss02' 1"`, ''].map(
+      (attrs, i) =>
+        graph.addAsset({
+          type: 'Html',
+          url: `${graph.root}features-${i}.html`,
+          text: `<html><head><link rel="stylesheet" href="shared.css"></head><body><p ${attrs}>Hello</p></body></html>`,
+        })
+    );
+    await graph.populate();
+    const { htmlOrSvgAssetTextsWithProps } = await collectTextsByPage(
+      graph,
+      pages
+    );
+    const tagsFor = (page) =>
+      [
+        ...htmlOrSvgAssetTextsWithProps.find(
+          (entry) => entry.htmlOrSvgAsset === page
+        ).fontUsages[0].fontFeatureTags,
+      ].sort();
+    expect(tagsFor(pages[0]), 'to equal', ['smcp', 'ss02']);
+    expect(tagsFor(pages[1]), 'to equal', ['smcp']);
+  });
+
   it('should return empty results for a page with no @font-face', async function () {
     const assetGraph = new AssetGraph({ root: localSingleRoot });
     const htmlAsset = assetGraph.addAsset({

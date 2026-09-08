@@ -1,6 +1,7 @@
 const expect = require('unexpected').clone().use(require('unexpected-set'));
 const {
   extractFeatureTagsFromDecl,
+  inlineFeatureTags,
   ruleFeatureTags,
   ruleFontFamily,
   recordRuleFeatureTags,
@@ -19,6 +20,39 @@ function sortedTags(set) {
 
 describe('fontFeatureHelpers', function () {
   describe('extractFeatureTagsFromDecl', function () {
+    for (const [prop, value, expected] of [
+      [
+        'font-variant',
+        'small-caps oldstyle-nums discretionary-ligatures',
+        ['dlig', 'onum', 'smcp'],
+      ],
+      ['font', 'italic small-caps 16px Example', ['smcp']],
+      ['font-variant', 'styleset(2) swash(fancy)', ['cswh', 'ss02', 'swsh']],
+      ['font-variant', 'normal', []],
+      ['font-variant-caps', 'petite-caps', ['pcap', 'smcp']],
+      [
+        'font-variant-caps',
+        'all-petite-caps',
+        ['c2pc', 'c2sc', 'pcap', 'smcp'],
+      ],
+      ['font-feature-settings', '"A! ?" 1', ['A! ?']],
+      [
+        'font-variant',
+        'var(--variant) small-caps',
+        [UNRESOLVED_FEATURES_SENTINEL, 'smcp'],
+      ],
+      ['font', 'var(--font)', [UNRESOLVED_FEATURES_SENTINEL]],
+      ['font-feature-settings', '"\\73mcp"', [UNRESOLVED_FEATURES_SENTINEL]],
+    ]) {
+      it(`should retain features for ${prop}: ${value}`, function () {
+        expect(
+          sortedTags(extractFeatureTagsFromDecl(prop, value)),
+          'to equal',
+          expected
+        );
+      });
+    }
+
     it('should extract tags from font-feature-settings', function () {
       const tags = extractFeatureTagsFromDecl(
         'font-feature-settings',
@@ -43,17 +77,12 @@ describe('fontFeatureHelpers', function () {
       expect(tags.size, 'to equal', 0);
     });
 
-    it('should ignore digits-only "tags" (not valid OpenType)', function () {
-      // Regression: the previous regex [a-zA-Z0-9]{4} accepted any
-      // 4-character alphanumeric sequence as a tag. OpenType tags must
-      // begin with a letter, so a CSS author writing
-      // `font-feature-settings: "1234" 1` doesn't reference a real
-      // feature and we shouldn't add anything to the retained-tag set.
+    it('should preserve custom four-character printable ASCII tags', function () {
       const tags = extractFeatureTagsFromDecl(
         'font-feature-settings',
         '"1234" 1, "liga" 1'
       );
-      expect(tags, 'to satisfy', new Set(['liga']));
+      expect(sortedTags(tags), 'to equal', ['1234', 'liga']);
     });
 
     it('should extract tags from font-variant-ligatures', function () {
@@ -231,7 +260,7 @@ describe('fontFeatureHelpers', function () {
           extractFeatureTagsFromDecl('font-variant-alternates', 'swash (flowy)')
         ),
         'to equal',
-        ['swsh']
+        ['cswh', 'swsh']
       );
       expect(
         sortedTags(
@@ -496,13 +525,12 @@ describe('fontFeatureHelpers', function () {
       expect(result, 'to be null');
     });
 
-    it('should collect lowercased families and skip non-feature rules', function () {
+    it('should make ordinary feature rules available to descendant families', function () {
       const result = findFontFamiliesWithFeatureSettings(
         [makeStylesheet([colorRule, robotoRule])],
         null
       );
-      expect(result, 'to be a', Set);
-      expect(sortedTags(result), 'to equal', ['roboto']);
+      expect(result, 'to be true');
     });
 
     it('should accumulate families across rules', function () {
@@ -510,7 +538,7 @@ describe('fontFeatureHelpers', function () {
         [makeStylesheet([robotoRule, arialRule])],
         null
       );
-      expect(sortedTags(result), 'to equal', ['arial', 'roboto']);
+      expect(result, 'to be true');
     });
 
     it('should return true for a feature rule without font-family', function () {
@@ -528,8 +556,8 @@ describe('fontFeatureHelpers', function () {
         featureTagsByFamily
       );
       expect(result, 'to be true');
-      expect(sortedTags(featureTagsByFamily.get('*')), 'to equal', ['dlig']);
-      expect(sortedTags(featureTagsByFamily.get('roboto')), 'to equal', [
+      expect(sortedTags(featureTagsByFamily.get('*')), 'to equal', [
+        'dlig',
         'smcp',
       ]);
     });
@@ -539,7 +567,7 @@ describe('fontFeatureHelpers', function () {
         [makeStylesheet([robotoRule]), makeStylesheet([arialRule])],
         null
       );
-      expect(sortedTags(result), 'to equal', ['arial', 'roboto']);
+      expect(result, 'to be true');
     });
 
     it('should keep processing later stylesheets when a map is provided', function () {
@@ -549,10 +577,76 @@ describe('fontFeatureHelpers', function () {
         featureTagsByFamily
       );
       expect(result, 'to be true');
-      expect(sortedTags(featureTagsByFamily.get('roboto')), 'to equal', [
+      expect(sortedTags(featureTagsByFamily.get('*')), 'to equal', [
+        'dlig',
         'smcp',
       ]);
     });
+  });
+
+  it('should collect font-face descriptors together with shorthand declarations', function () {
+    const postcss = require('postcss');
+    const tags = new Map();
+    const families = findFontFamiliesWithFeatureSettings(
+      [
+        {
+          asset: {
+            parseTree: postcss.parse(`
+      @font-face { font-family: Example; src: url(font.woff2); font-feature-settings: "ss02" 1; }
+      p { font-family: Example; font-variant: small-caps oldstyle-nums; }
+    `),
+          },
+        },
+      ],
+      tags
+    );
+    const result = resolveFeatureSettings(['Example'], families, tags);
+    expect(result.hasFontFeatureSettings, 'to be true');
+    expect([...result.fontFeatureTags].sort(), 'to equal', [
+      'onum',
+      'smcp',
+      'ss02',
+    ]);
+  });
+
+  for (const [css, expected] of [
+    ['p{font-variant:small-caps/**/oldstyle-nums}', ['onum', 'smcp']],
+    [String.raw`p{font-\76ariant:small-caps}`, [UNRESOLVED_FEATURES_SENTINEL]],
+    ['p{font-variant:attr(data-variant)}', [UNRESOLVED_FEATURES_SENTINEL]],
+    [
+      'p{font-feature-settings:env(custom-feature)}',
+      [UNRESOLVED_FEATURES_SENTINEL],
+    ],
+  ]) {
+    it(`should preserve feature uncertainty and token boundaries in ${css}`, function () {
+      const postcss = require('postcss');
+      const map = new Map();
+      findFontFamiliesWithFeatureSettings(
+        [{ asset: { parseTree: postcss.parse(css) } }],
+        map
+      );
+      expect(sortedTags(map.get('*')), 'to equal', expected);
+    });
+  }
+
+  it('should retain inline SVG feature attributes and fall back on malformed inline CSS', function () {
+    const { JSDOM } = require('jsdom');
+    const dom = new JSDOM(
+      `<svg><text font-variant="small-caps">Hi</text></svg><p style="font-variant: var(--caps)">Hello</p>`
+    );
+    expect(sortedTags(inlineFeatureTags(dom.window.document)), 'to equal', [
+      UNRESOLVED_FEATURES_SENTINEL,
+      'smcp',
+    ]);
+    const malformed = new JSDOM('<p>Hi</p>');
+    malformed.window.document
+      .querySelector('p')
+      .setAttribute('style', 'font-feature-settings: "smcp');
+    expect(
+      sortedTags(inlineFeatureTags(malformed.window.document)),
+      'to equal',
+      [UNRESOLVED_FEATURES_SENTINEL]
+    );
   });
 
   describe('resolveFeatureSettings', function () {
@@ -602,14 +696,14 @@ describe('fontFeatureHelpers', function () {
       );
     });
 
-    it('should return undefined fontFeatureTags when no tags found', function () {
+    it('should return an empty tag list when declarations resolve to no features', function () {
       const featureTagsByFamily = new Map();
       const result = resolveFeatureSettings(
         ['Roboto'],
         true,
         featureTagsByFamily
       );
-      expect(result.fontFeatureTags, 'to be undefined');
+      expect(result.fontFeatureTags, 'to equal', []);
     });
 
     it('should collect exactly the union of wildcard and per-family tags', function () {

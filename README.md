@@ -6,20 +6,23 @@ A faster fork of [subfont](https://github.com/Munter/subfont) that subsets web f
 
 ### Aggressive woff2 subsetting
 
-`subfont` produces dramatically smaller font files by stripping data that browsers never use:
+`subfont` reduces font files by pruning unused glyphs and font data that can be removed without changing the required rendering:
 
 | Optimization                    | Technique                                                                                                                                                                                                      |
 | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Hinting removal                 | Strips TrueType hinting instructions (browsers auto-hint)                                                                                                                                                      |
+| Rendering preservation          | Keeps embedded hints, rasterization preferences, math layout, and script shaping data                                                                                                                          |
 | Name table pruning              | Keeps only the 4 IDs browsers read (family, subfamily, full name, PostScript name)                                                                                                                             |
 | Name lang-ID filter             | Keeps only en-US name strings; drops Japanese, Russian, Korean, etc.                                                                                                                                           |
-| Table stripping                 | Drops `DSIG`, `LTSH`, `VDMX`, `hdmx`, `gasp`, `PCLT`                                                                                                                                                           |
-| MATH-table drop (gated)         | Drops `MATH` when no math codepoints are used on the page                                                                                                                                                      |
-| Color-table drop (gated)        | Drops `COLR`/`CPAL`/`SVG `/`CBDT`/`CBLC`/`sbix`/`EBDT`/`EBLC`/`EBSC` when no emoji used                                                                                                                        |
-| Layout-script filter (gated)    | Drops GSUB/GPOS lookups for OpenType scripts the page doesn't render                                                                                                                                           |
-| CSS-aware feature retention     | Drops GSUB/GPOS features the page's CSS doesn't reference                                                                                                                                                      |
+| Table stripping                 | Drops invalidated `DSIG` signatures, scaler-acceleration `LTSH`, and printer metadata `PCLT`                                                                                                                   |
+| CSS-aware feature retention     | Retains essential shaping plus requested features, including shorthands, face descriptors, inherited and inline settings, and all pages sharing a font; unresolved CSS retains all features                    |
 | Family-scoped page text (gated) | On shared-CSS pages, attributes a page's visible text only to the webfont families whose selectors can match an element on that page (falls back to all families when the `font-family` rules can't be parsed) |
 | Non-rendered attribute skip     | Excludes `title`/`aria-label`/`aria-description` text from subsets (tooltips render in the OS font; ARIA labels are never painted)                                                                             |
+
+Fonts containing color/bitmap presentations or legacy layout tables that the
+bundled HarfBuzz cannot safely subset retain their full glyph data. Ordinary
+TrueType/OpenType fonts still receive glyph subsetting and variable-axis
+instancing. See [the retention audit](docs/font-rendering-audit.md) for measured
+size costs and the rendering regression history.
 
 ### Upstream subfont vs `@turntrout/subfont`
 
@@ -27,9 +30,9 @@ Reproducible benchmark on `testdata/subsetFonts/OpenSans-400.ttf` (run with `pnp
 
 | Text sample       | Upstream subfont | `@turntrout/subfont` | Savings |
 | ----------------- | ---------------- | -------------------- | ------- |
-| Heading (short)   | 2,604 B          | 828 B                | **68%** |
-| Paragraph         | 4,448 B          | 2,072 B              | **53%** |
-| Full page charset | 9,388 B          | 5,500 B              | **41%** |
+| Heading (short)   | 2,604 B          | 2,488 B              | **4%**  |
+| Paragraph         | 4,448 B          | 4,340 B              | **2%**  |
+| Full page charset | 9,388 B          | 9,324 B              | **1%**  |
 
 ## Install
 

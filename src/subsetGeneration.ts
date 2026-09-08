@@ -11,18 +11,12 @@ import { wrapAssetGraphError } from './types/shared';
 import { getVariationAxisBounds } from './variationAxes';
 import collectFeatureGlyphIds = require('./collectFeatureGlyphIds');
 import subsetFontWithGlyphs = require('./subsetFontWithGlyphs');
-import {
-  pageNeedsMathTable,
-  pageNeedsColorTables,
-  scriptsForText,
-} from './codepointMaps';
-
 // Bump when subsetting behaviour changes the output bytes for any cached key
 // (e.g. after adding hinting removal or table stripping). Pure cache-key
 // reshaping that doesn't alter bytes (like adding a sort to a stable input)
 // does NOT need a bump — old keys just stop matching and new equivalents
 // fill in on next run; existing entries remain byte-correct.
-const SUBSET_CACHE_VERSION = '8';
+const SUBSET_CACHE_VERSION = '10';
 
 type FontBuffer = Buffer | Uint8Array;
 
@@ -61,12 +55,12 @@ function getFontBufferDigest(fontBuffer: FontBuffer): Buffer {
 //   - `featureTags: undefined`  →  "retain ALL features" (no -features=… flag
 //                                   sent to harfbuzz). JSON.stringify omits the
 //                                   key entirely.
-//   - `featureTags: []`         →  "retain NO features". JSON.stringify emits
+//   - `featureTags: []`         →  "retain essential features only". JSON.stringify emits
 //                                   `"featureTags":[]`.
 //
 // Both cases are produced today: buildExtraSubsetOptions returns `undefined`
 // when feature settings can't be fully enumerated (retain-all fallback) and
-// `[]` when the page uses no feature settings at all (retain-none). Because the
+// `[]` when the page uses no feature settings at all (essential-only). Because the
 // empty array serialises to `"featureTags":[]` while an `undefined` value is
 // omitted, the two never collide.
 //
@@ -160,8 +154,7 @@ function subsetCacheKey(
 
 // Sort string-array fields in extraOptions so the cache key doesn't depend on
 // the upstream Set traversal order that produced them (e.g. fontFeatureTags
-// is `[...Set]` in fontFeatureHelpers, scriptsForText insertion-orders by
-// codepoint sweep). Boolean/string fields pass through.
+// is `[...Set]` in fontFeatureHelpers). Boolean/string fields pass through.
 function normalizeExtraOptions(
   opts: ExtraSubsetCacheOptions
 ): ExtraSubsetCacheOptions {
@@ -322,12 +315,25 @@ function collectCanonicalFontUsages(
   const canonicalFontUsageByUrl = new Map<string, SubsettedFontUsage>();
   for (const item of htmlOrSvgAssetTextsWithProps) {
     for (const fontUsage of item.fontUsages) {
-      if (
-        fontUsage.fontUrl &&
-        !canonicalFontUsageByUrl.has(fontUsage.fontUrl)
-      ) {
-        canonicalFontUsageByUrl.set(fontUsage.fontUrl, fontUsage);
+      if (!fontUsage.fontUrl) continue;
+      const canonical = canonicalFontUsageByUrl.get(fontUsage.fontUrl);
+      if (!canonical) {
+        canonicalFontUsageByUrl.set(fontUsage.fontUrl, { ...fontUsage });
+        continue;
       }
+      // One subset is shared by every usage of this URL. A later page can
+      // require features absent from the first, and any unresolved usage
+      // must force retain-all for the shared subset.
+      const unresolved =
+        (canonical.hasFontFeatureSettings && !canonical.fontFeatureTags) ||
+        (fontUsage.hasFontFeatureSettings && !fontUsage.fontFeatureTags);
+      canonical.hasFontFeatureSettings ||= fontUsage.hasFontFeatureSettings;
+      canonical.fontFeatureTags = unresolved
+        ? undefined
+        : new Set([
+            ...(canonical.fontFeatureTags ?? []),
+            ...(fontUsage.fontFeatureTags ?? []),
+          ]);
     }
   }
   return canonicalFontUsageByUrl;
@@ -407,7 +413,6 @@ function subsetInfoFromBounds(
 }
 
 function buildExtraSubsetOptions(
-  text: string,
   fontUsage: SubsettedFontUsage
 ): ExtraSubsetCacheOptions {
   // Targeted feature retention when we can fully enumerate the
@@ -422,15 +427,10 @@ function buildExtraSubsetOptions(
         ? [...fontUsage.fontFeatureTags]
         : [];
 
-  // False positives (keeping a table the page doesn't need) cost a few
-  // hundred bytes; false negatives (dropping a needed table) break
-  // rendering, so the heuristics err on the side of keeping.
-  return {
-    dropMathTable: !pageNeedsMathTable(text),
-    dropColorTables: !pageNeedsColorTables(text),
-    scriptTags: scriptsForText(text),
-    featureTags,
-  };
+  // Characters alone cannot prove math/color data or script records unused.
+  // HarfBuzz subsets glyph-dependent data; retain all script systems, including
+  // modern Indic tags and scripts absent from our former Unicode-range map.
+  return { featureTags };
 }
 
 // Shared across subset queueing: the assetGraph (for warn routing), the
@@ -532,9 +532,12 @@ async function queueAllSubsets(
       if (!fontBuffer) return;
       const text = fontUsage.text;
 
-      const subsetInfo = subsetInfoFromBounds(
-        variationAxisBoundsCache.get(fontUrl)
-      );
+      const bounds = variationAxisBoundsCache.get(fontUrl);
+      const canInstance =
+        !bounds?.variationAxes ||
+        Object.keys(bounds.variationAxes).length === 0 ||
+        (await subsetFontWithGlyphs.supportsSubsetting(fontBuffer));
+      const subsetInfo = subsetInfoFromBounds(canInstance ? bounds : undefined);
       subsetInfoByFontUrl.set(fontUrl, subsetInfo);
 
       let featureGlyphIds: number[] | undefined;
@@ -554,7 +557,7 @@ async function queueAllSubsets(
         }
       }
 
-      const extraOptions = buildExtraSubsetOptions(text, fontUsage);
+      const extraOptions = buildExtraSubsetOptions(fontUsage);
 
       for (const targetFormat of formats) {
         const promiseId = getSubsetPromiseId(

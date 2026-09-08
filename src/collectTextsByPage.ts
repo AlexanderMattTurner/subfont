@@ -31,6 +31,8 @@ import {
 import {
   findFontFamiliesWithFeatureSettings,
   resolveFeatureSettings,
+  inlineFeatureTags,
+  UNRESOLVED_FEATURES_SENTINEL,
 } from './fontFeatureHelpers';
 import allInitialValues = require('./initialValueByProp');
 import type { Asset, AssetGraph, Relation, PostCssNode } from 'assetgraph';
@@ -40,7 +42,7 @@ import type { TracedFontUsage } from './types/shared';
 // \bfont\s*: catches the `font:` shorthand, which sets family/weight/style
 // without any longhand property appearing in the text.
 const fontRelevantCssRegex =
-  /font-family|font-weight|font-style|font-stretch|font-display|@font-face|font-variation|font-feature|\bfont\s*:/i;
+  /font-family|font-weight|font-style|font-stretch|font-display|@font-face|font-variation|font-feature|font-variant|\bfont\s*:/i;
 
 // The \s before style ensures we don't match data-style or similar.
 const inlineFontStyleRegex =
@@ -1868,6 +1870,7 @@ function instantiateFontUsagesForPage(
     if (fontUrl) preloadFontUrls.add(fontUrl);
   }
 
+  const pageInlineTags = inlineFeatureTags(entry.htmlOrSvgAsset.parseTree);
   const assetTexts = pageTextIndex.get(entry.htmlOrSvgAsset);
   entry.fontUsages = fontUsageTemplates.map((template) => {
     const pageTexts = assetTexts ? assetTexts.get(template.fontUrl) : undefined;
@@ -1880,11 +1883,20 @@ function instantiateFontUsagesForPage(
       uniqueCharsCache.set(pageTextStr, pageTextUnique);
     }
 
-    const { hasFontFeatureSettings, fontFeatureTags } = resolveFeatureSettings(
+    let { hasFontFeatureSettings, fontFeatureTags } = resolveFeatureSettings(
       template.fontFamilies,
       entry.fontFamiliesWithFeatureSettings,
       entry.featureTagsByFamily
     );
+    if (pageInlineTags.size > 0) {
+      const unresolved =
+        pageInlineTags.has(UNRESOLVED_FEATURES_SENTINEL) ||
+        (hasFontFeatureSettings && fontFeatureTags === undefined);
+      hasFontFeatureSettings = true;
+      fontFeatureTags = unresolved
+        ? undefined
+        : [...new Set([...(fontFeatureTags ?? []), ...pageInlineTags])];
+    }
 
     return {
       smallestOriginalSize: template.smallestOriginalSize,
