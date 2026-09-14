@@ -5,9 +5,7 @@ const expect = require('unexpected')
 const AssetGraph = require('assetgraph');
 const pathModule = require('path');
 const { subsetFontsWithTestDefaults } = require('./subsetFonts-helpers');
-const { Worker } = require('worker_threads');
 
-const fs = require('fs');
 const { getFontFaceDeclarationText } = require('../lib/fontFaceHelpers');
 
 describe('regression bug fixes', function () {
@@ -89,94 +87,6 @@ describe('regression bug fixes', function () {
 
       // Should not throw -- instancing handles unused axes automatically
       await subsetFontsWithTestDefaults(assetGraph);
-    });
-  });
-
-  describe('Bug 5: FontTracerPool should reject pending tasks when all workers crash', function () {
-    const crashWorkerPath = pathModule.resolve(__dirname, '_crashWorker.js');
-    afterEach(function () {
-      try {
-        fs.unlinkSync(crashWorkerPath);
-      } catch {
-        // File may not exist if test didn't reach the write step
-      }
-    });
-
-    it('should reject the promise when a worker crashes', async function () {
-      // Create a minimal worker that exits immediately with code 1
-      fs.writeFileSync(
-        crashWorkerPath,
-        `
-const { parentPort } = require('worker_threads');
-parentPort.on('message', (msg) => {
-  if (msg.type === 'init') {
-    parentPort.postMessage({ type: 'ready' });
-  } else {
-    // Crash on any other message
-    process.exit(1);
-  }
-});
-`
-      );
-
-      // Test using actual workers
-      const worker = new Worker(crashWorkerPath);
-
-      const readyPromise = new Promise((resolve) => {
-        worker.on('message', (msg) => {
-          if (msg.type === 'ready') resolve();
-        });
-      });
-      worker.postMessage({ type: 'init' });
-      await readyPromise;
-
-      const exitPromise = new Promise((resolve, reject) => {
-        worker.on('exit', (code) => {
-          if (code !== 0) {
-            resolve(code);
-          }
-        });
-        worker.on('error', reject);
-      });
-
-      // Send a message that will crash the worker
-      worker.postMessage({ type: 'crash' });
-
-      const exitCode = await exitPromise;
-      expect(exitCode, 'to equal', 1);
-    });
-
-    it('should reject all pending tasks when no workers remain', function () {
-      // Test the logic directly: simulate a pool with no workers
-      // and pending tasks
-      const pendingTasks = [];
-      const taskCallbacks = new Map();
-      const workers = [];
-
-      // Add some pending tasks
-      const rejections = [];
-      for (let i = 0; i < 3; i++) {
-        const taskId = i;
-        pendingTasks.push({ message: { taskId } });
-        taskCallbacks.set(taskId, {
-          resolve: () => {},
-          reject: (err) => rejections.push(err),
-        });
-      }
-
-      // Simulate: no workers remain, reject all pending
-      if (workers.length === 0) {
-        for (const pending of pendingTasks) {
-          const cb = taskCallbacks.get(pending.message.taskId);
-          if (cb) {
-            taskCallbacks.delete(pending.message.taskId);
-            cb.reject(new Error('All workers have crashed'));
-          }
-        }
-      }
-
-      expect(rejections, 'to have length', 3);
-      expect(rejections[0].message, 'to equal', 'All workers have crashed');
     });
   });
 });

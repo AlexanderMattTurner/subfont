@@ -32,8 +32,20 @@ async function getBrowser() {
   return browser;
 }
 
+// Every fixture is served from the same synthetic https://example.com/ origin, so
+// a fresh context per render keeps a prior render's per-origin state out of the
+// `bannedUrls` check. Disabling the HTTP cache is not enough — the state survives it.
 async function screenshot(browser, assetGraph, fileName, bannedUrls) {
-  const page = await browser.newPage();
+  const context = await browser.createBrowserContext();
+  try {
+    return await renderAndCapture(context, assetGraph, fileName, bannedUrls);
+  } finally {
+    await context.close();
+  }
+}
+
+async function renderAndCapture(context, assetGraph, fileName, bannedUrls) {
+  const page = await context.newPage();
   await page.setViewport({ width: 800, height: 600, deviceScaleFactor: 1 });
   await page.setRequestInterception(true);
   const loadedUrls = [];
@@ -83,9 +95,7 @@ async function screenshot(browser, assetGraph, fileName, bannedUrls) {
       );
     }
   }
-  const screenshot = await page.screenshot();
-  await page.close();
-  return screenshot;
+  return page.screenshot();
 }
 
 expect.addAssertion(
