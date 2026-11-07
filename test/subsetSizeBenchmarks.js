@@ -77,15 +77,15 @@ describe('subset size benchmarks', function () {
   });
 
   it('Roboto-300i Latin subset drops cyrl/grek script records within budget', async function () {
-    // The source font registers DFLT, cyrl, grek and latn; the bound holds
-    // only when cyrl and grek are dropped.
+    // The source font registers DFLT, cyrl, grek and latn. Unpruned output is
+    // 13456 B; the bound (current output) holds only when cyrl/grek go.
     const result = await subsetFontWithGlyphs(
       fs.readFileSync(ROBOTO_300I),
       PANGRAM,
       {
         targetFormat: 'truetype',
         featureTags: [],
-        scriptTags: otScriptTagsForText(PANGRAM, PANGRAM),
+        scriptTags: otScriptTagsForText(PANGRAM, { text: PANGRAM, langs: [] }),
       }
     );
     expect(result.length, 'to be greater than', 100);

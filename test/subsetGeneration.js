@@ -3,6 +3,7 @@ const proxyquire = require('proxyquire').noCallThru();
 const fs = require('fs');
 const pathModule = require('path');
 const os = require('os');
+const { JSDOM } = require('jsdom');
 const {
   getSubsetPromiseId,
   _subsetCacheKey: subsetCacheKey,
@@ -424,27 +425,36 @@ describe('subsetGeneration', function () {
         return calls[0].scriptTags;
       }
 
-      it('should keep the scripts of every page sharing the font', async function () {
-        const usage = () => ({ fontUrl, text: 'ab 1' });
-        const tags = await scriptTagsFor([
-          { htmlOrSvgAsset: { text: '<p>ab 1</p>' }, fontUsages: [usage()] },
-          {
-            htmlOrSvgAsset: { text: '<p>Привет 1</p>' },
-            fontUsages: [usage()],
-          },
-        ]);
-        expect(tags, 'to equal', ['DFLT', 'cyrl', 'dflt', 'latn']);
+      const page = (html, text) => ({
+        htmlOrSvgAsset: {
+          text: html,
+          parseTree: new JSDOM(html).window.document,
+        },
+        fontUsages: [{ fontUrl, text }],
       });
 
-      it('should retain every script when a page has no source text', async function () {
-        const tags = await scriptTagsFor([
-          {
-            htmlOrSvgAsset: { text: '<p>ab</p>' },
-            fontUsages: [{ fontUrl, text: 'ab' }],
-          },
-          { fontUsages: [{ fontUrl, text: 'ab' }] },
-        ]);
-        expect(tags, 'to be undefined');
+      [
+        ['the text of every page', ['<p>ab 1</p>', '<p>Привет 1</p>']],
+        ['character references', ['<p>ab 1 &#x41F;</p>']],
+        ['lang attributes', ['<p>ab 1</p>', '<p lang="ru">1</p>']],
+      ].forEach(([label, htmls]) => {
+        it(`should keep the scripts of ${label}`, async function () {
+          const tags = await scriptTagsFor(
+            htmls.map((html) => page(html, 'ab 1'))
+          );
+          expect(tags, 'to equal', ['DFLT', 'cyrl', 'dflt', 'latn', 'math']);
+        });
+      });
+
+      [false, true].forEach((missingFirst) => {
+        it(`should retain every script when a page has no source (${missingFirst ? 'first' : 'last'})`, async function () {
+          const pages = [
+            page('<p>ab</p>', 'ab'),
+            { fontUsages: [{ fontUrl, text: 'ab' }] },
+          ];
+          if (missingFirst) pages.reverse();
+          expect(await scriptTagsFor(pages), 'to be undefined');
+        });
       });
     });
   });

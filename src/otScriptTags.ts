@@ -1,17 +1,12 @@
-// Maps the characters a subset will contain to the OpenType script tags
-// (GSUB/GPOS ScriptList entries) that a shaper could select for them, so the
-// subsetter can drop script systems the text can never reach.
-//
-// Script membership comes from the JS engine's own Unicode Script and
-// Script_Extensions data (\p{sc=…}, \p{scx=…}), not a range table. The ISO 15924 → OT tag
-// mapping mirrors HarfBuzz's hb_ot_all_tags_from_script (hb-ot-tag.cc), plus
-// 'jamo' for Hangul.
-//
-// Every uncertainty resolves toward keeping scripts.
+// Maps a subset's characters to the OpenType script tags (GSUB/GPOS
+// ScriptList entries) a shaper could select for them, using the JS engine's
+// Unicode Script/Script_Extensions data and HarfBuzz's
+// hb_ot_all_tags_from_script (hb-ot-tag.cc) tag mapping. Every uncertainty
+// resolves toward keeping scripts.
 
 // Unicode Script property values (ISO 15924 codes) known to V8/ICU as of
 // Unicode 17, excluding the non-specific Zyyy (Common), Zinh (Inherited) and
-// Zzzz (Unknown) and the aliases Qaac/Qaai.
+// Zzzz (Unknown) and the aliases Qaac, Qaai and Miao (= Plrd).
 const UNICODE_SCRIPTS = [
   'Adlm', 'Aghb', 'Ahom', 'Arab', 'Armi', 'Armn', 'Avst', 'Bali', 'Bamu',
   'Bass', 'Batk', 'Beng', 'Berf', 'Bhks', 'Bopo', 'Brah', 'Brai', 'Bugi',
@@ -23,7 +18,7 @@ const UNICODE_SCRIPTS = [
   'Kawi', 'Khar', 'Khmr', 'Khoj', 'Kits', 'Knda', 'Krai', 'Kthi', 'Lana',
   'Laoo', 'Latn', 'Lepc', 'Limb', 'Lina', 'Linb', 'Lisu', 'Lyci', 'Lydi',
   'Mahj', 'Maka', 'Mand', 'Mani', 'Marc', 'Medf', 'Mend', 'Merc', 'Mero',
-  'Miao', 'Mlym', 'Modi', 'Mong', 'Mroo', 'Mtei', 'Mult', 'Mymr', 'Nagm',
+  'Mlym', 'Modi', 'Mong', 'Mroo', 'Mtei', 'Mult', 'Mymr', 'Nagm',
   'Nand', 'Narb', 'Nbat', 'Newa', 'Nkoo', 'Nshu', 'Ogam', 'Olck', 'Onao',
   'Orkh', 'Orya', 'Osge', 'Osma', 'Ougr', 'Palm', 'Pauc', 'Perm', 'Phag',
   'Phli', 'Phlp', 'Phnx', 'Plrd', 'Prti', 'Rjng', 'Rohg', 'Runr', 'Samr',
@@ -62,11 +57,22 @@ const OLD_TAGS: Record<string, string[]> = {
   Yiii: ['yi  '],
 };
 
-// HarfBuzz falls back to these when none of a run's script tags exist in the
-// font (hb_ot_layout_table_select_script), so they're needed by any text.
-const ALWAYS_KEPT = ['DFLT', 'dflt', 'latn'];
+// HarfBuzz falls back to DFLT, dflt and latn when none of a run's script tags
+// exist in the font (hb_ot_layout_table_select_script). Math layout selects
+// 'math' (e.g. ssty in MathML scripts) whatever the characters' Script.
+const ALWAYS_KEPT = ['DFLT', 'dflt', 'latn', 'math'];
 
-export function otTagsForScript(script: string): string[] {
+// ISO 15924 codes that Intl.Locale#maximize reports for zh, ja and ko, which
+// name combinations of the scripts above.
+const COMBINED_SCRIPTS: Record<string, string[]> = {
+  Hanb: ['Hani', 'Bopo'],
+  Hans: ['Hani'],
+  Hant: ['Hani'],
+  Jpan: ['Hani', 'Hira', 'Kana'],
+  Kore: ['Hang', 'Hani'],
+};
+
+export function _otTagsForScript(script: string): string[] {
   const tags: string[] = [];
   const newTag = NEW_TAGS[script];
   if (newTag) {
@@ -146,30 +152,60 @@ function extensionScriptsToKeep(
   return added;
 }
 
+// The scripts the `lang` values imply, which browsers use for runs of
+// Common characters; undefined when a value names no script this table has.
+function scriptsOfLangs(
+  langs: readonly string[],
+  { scripts }: Matchers
+): string[] | undefined {
+  const known = new Set(scripts.map(({ script }) => script));
+  const result: string[] = [];
+  for (const lang of langs) {
+    if (lang === '') continue;
+    let script: string | undefined;
+    try {
+      script = new Intl.Locale(lang).maximize().script;
+    } catch (err) {
+      if (err instanceof RangeError) return undefined;
+      throw err;
+    }
+    const implied = script && (COMBINED_SCRIPTS[script] ?? [script]);
+    if (!implied || !implied.every((s) => known.has(s))) return undefined;
+    result.push(...implied);
+  }
+  return result;
+}
+
+export interface ScriptContext {
+  // All text that can share a paragraph with the subset's characters.
+  text: string;
+  // Every `lang`/`xml:lang` value on the pages using the font.
+  langs: readonly string[];
+}
+
 // Returns the OpenType script tags to keep for a subset covering `text`, or
-// undefined when every script record must be retained. `contextText` is all
-// text that can share a paragraph with the subset's characters (the pages
-// using the font): browsers resolve the script of a digit or punctuation run
-// from its paragraph, which may be set in another font. Retains everything
-//   - when `text` has no script-specific characters (only digits,
-//     punctuation, symbols, combining marks, private-use…), whose script the
-//     browser may take from the `lang` attribute;
-//   - when either text contains a character of an unknown script.
+// undefined when every script record must be retained: when `text` has no
+// script-specific characters, or the text or context has a character or
+// `lang` of an unknown script. The page context counts because browsers
+// resolve a digit or punctuation run's script from its paragraph and `lang`.
 export function otScriptTagsForText(
   text: string,
-  contextText: string
+  context: ScriptContext
 ): string[] | undefined {
   const matchers = compileMatchers();
-  if (matchers.unknownScript.test(text + contextText)) return undefined;
+  if (matchers.unknownScript.test(text + context.text)) return undefined;
   const present = scriptsIn(text, matchers);
   if (present.size === 0) return undefined;
-  for (const script of scriptsIn(contextText, matchers)) present.add(script);
+  const langScripts = scriptsOfLangs(context.langs, matchers);
+  if (!langScripts) return undefined;
+  for (const script of langScripts) present.add(script);
+  for (const script of scriptsIn(context.text, matchers)) present.add(script);
   for (const script of extensionScriptsToKeep(text, matchers, present)) {
     present.add(script);
   }
   const tags = new Set(ALWAYS_KEPT);
   for (const script of present) {
-    for (const tag of otTagsForScript(script)) tags.add(tag);
+    for (const tag of _otTagsForScript(script)) tags.add(tag);
   }
   return [...tags].sort();
 }

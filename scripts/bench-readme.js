@@ -54,7 +54,7 @@ const SAMPLES = [
     const optimized = await subsetFontWithGlyphs(buf, text, {
       targetFormat: 'woff2',
       featureTags: [],
-      scriptTags: otScriptTagsForText(text, text),
+      scriptTags: otScriptTagsForText(text, { text, langs: [] }),
     });
     const pct = Math.round(
       ((upstream.length - optimized.length) / upstream.length) * 100

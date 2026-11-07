@@ -514,7 +514,7 @@ describe('subsetFontWithGlyphs', function () {
       subsetFontWithGlyphs(font, text, {
         targetFormat: 'truetype',
         featureTags: [],
-        scriptTags: otScriptTagsForText(text, text),
+        scriptTags: otScriptTagsForText(text, { text, langs: [] }),
         ...options,
       });
 
@@ -572,7 +572,7 @@ describe('subsetFontWithGlyphs', function () {
       expect(await shapeOutput(output, text), 'to equal', expected);
     });
 
-    it('should subset a font without GSUB or GPOS', async function () {
+    it('should subset a font without GSUB or GPOS without failing', async function () {
       const icomoon = fs.readFileSync(
         pathModule.resolve(
           __dirname,
