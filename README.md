@@ -10,12 +10,13 @@ A faster fork of [subfont](https://github.com/Munter/subfont) that subsets web f
 
 | Optimization                    | Technique                                                                                                                                                                                                      |
 | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Rendering preservation          | Keeps embedded hints, rasterization preferences, math layout, and script shaping data                                                                                                                          |
+| Rendering preservation          | Keeps embedded hints, rasterization preferences, math layout, and shaping data for the subset's scripts                                                                                                        |
 | Name table pruning              | Keeps only the 4 IDs browsers read (family, subfamily, full name, PostScript name)                                                                                                                             |
 | Name lang-ID filter             | Keeps only en-US name strings; drops Japanese, Russian, Korean, etc.                                                                                                                                           |
 | Table stripping                 | Drops invalidated `DSIG` signatures, scaler-acceleration `LTSH`, and printer metadata `PCLT`                                                                                                                   |
 | CSS-aware feature retention     | Retains essential shaping plus requested features, including shorthands, face descriptors, inherited and inline settings, and all pages sharing a font; unresolved CSS retains all features                    |
 | Family-scoped page text (gated) | On shared-CSS pages, attributes a page's visible text only to the webfont families whose selectors can match an element on that page (falls back to all families when the `font-family` rules can't be parsed) |
+| Layout-script pruning (gated)   | Drops GSUB/GPOS script records (e.g. `cyrl`, `grek`) the subset's characters can't select; text that is all digits/punctuation keeps all                                                                       |
 | Non-rendered attribute skip     | Excludes `title`/`aria-label`/`aria-description` text from subsets (tooltips render in the OS font; ARIA labels are never painted)                                                                             |
 
 Fonts containing color/bitmap presentations or legacy layout tables that the

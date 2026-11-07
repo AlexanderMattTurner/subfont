@@ -21,6 +21,10 @@ const ROBOTO = pathModule.resolve(
   __dirname,
   '../testdata/subsetFonts/Roboto-400.ttf'
 );
+const ROBOTO_300I = pathModule.resolve(
+  __dirname,
+  '../testdata/subsetFonts/Roboto-300i.ttf'
+);
 const IBM_PLEX_SANS = pathModule.resolve(
   __dirname,
   '../testdata/referenceImages/fontVariant/IBMPlexSans-Regular.woff'
@@ -69,5 +73,17 @@ describe('subset size benchmarks', function () {
       expect(result.length, 'to be greater than', 100);
       expect(result.length, 'to be less than or equal to', maxWoff2Bytes);
     });
+  });
+
+  it('Roboto-300i Latin subset drops cyrl/grek script records within budget', async function () {
+    // The source font registers DFLT, cyrl, grek and latn. Retaining all four
+    // costs 13,456 bytes; keeping only DFLT and latn costs 13,432.
+    const result = await subsetFontWithGlyphs(
+      fs.readFileSync(ROBOTO_300I),
+      PANGRAM,
+      { targetFormat: 'truetype', featureTags: [] }
+    );
+    expect(result.length, 'to be greater than', 100);
+    expect(result.length, 'to be less than or equal to', 13432);
   });
 });

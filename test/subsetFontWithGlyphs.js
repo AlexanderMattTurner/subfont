@@ -470,23 +470,122 @@ describe('subsetFontWithGlyphs', function () {
     }
   }
 
-  it('should keep all applicable script records when subsetting Latin text', async function () {
-    const scriptTags = (font) => {
-      const gpos = findSfntTable(font, 'GPOS');
-      const scriptList = gpos.readUInt16BE(4);
-      return Array.from({ length: gpos.readUInt16BE(scriptList) }, (_, i) =>
-        gpos
+  describe('layout script pruning', function () {
+    const scriptTags = (font, tableTag) => {
+      const table = findSfntTable(font, tableTag);
+      const scriptList = table.readUInt16BE(4);
+      return Array.from({ length: table.readUInt16BE(scriptList) }, (_, i) =>
+        table
           .subarray(scriptList + 2 + i * 6, scriptList + 6 + i * 6)
           .toString('ascii')
       );
     };
-    const original = scriptTags(ttfBuffer);
-    expect(original, 'to contain', 'cyrl', 'grek', 'latn');
-    const output = await subsetFontWithGlyphs(ttfBuffer, 'Dak', {
-      targetFormat: 'truetype',
-      featureTags: [],
+
+    // Glyph outline plus positioning for each shaped glyph. Glyph IDs are
+    // renumbered by subsetting, so outlines identify the glyphs instead.
+    async function shapeOutput(font, text, features) {
+      const hb = await require('harfbuzzjs');
+      const blob = hb.createBlob(font);
+      const face = hb.createFace(blob, 0);
+      const hbFont = hb.createFont(face);
+      const buffer = hb.createBuffer();
+      buffer.addText(text);
+      buffer.guessSegmentProperties();
+      hb.shape(hbFont, buffer, features);
+      const glyphs = buffer
+        .json()
+        .map(({ g, ax, dx, dy, cl }) => [
+          hbFont.glyphToPath(g),
+          ax,
+          dx,
+          dy,
+          cl,
+        ]);
+      buffer.destroy();
+      hbFont.destroy();
+      face.destroy();
+      blob.destroy();
+      return glyphs;
+    }
+
+    for (const tableTag of ['GSUB', 'GPOS']) {
+      it(`should drop ${tableTag} script records Latin text cannot use`, async function () {
+        expect(scriptTags(ttfBuffer, tableTag), 'to equal', [
+          'DFLT',
+          'cyrl',
+          'grek',
+          'latn',
+        ]);
+        const output = await subsetFontWithGlyphs(ttfBuffer, 'Dak', {
+          targetFormat: 'truetype',
+          featureTags: [],
+        });
+        expect(scriptTags(output, tableTag), 'to equal', ['DFLT', 'latn']);
+      });
+
+      it(`should keep ${tableTag} cyrl for Cyrillic text`, async function () {
+        const output = await subsetFontWithGlyphs(ttfBuffer, 'Dak к', {
+          targetFormat: 'truetype',
+          featureTags: [],
+        });
+        expect(scriptTags(output, tableTag), 'to equal', [
+          'DFLT',
+          'cyrl',
+          'latn',
+        ]);
+      });
+    }
+
+    it('should keep every GSUB script record for script-neutral text', async function () {
+      // Digits and punctuation carry no script of their own, so the shaper's
+      // script depends on context the subset text doesn't record.
+      const output = await subsetFontWithGlyphs(ttfBuffer, '0123 .,', {
+        targetFormat: 'truetype',
+        featureTags: [],
+      });
+      expect(
+        scriptTags(output, 'GSUB'),
+        'to equal',
+        scriptTags(ttfBuffer, 'GSUB')
+      );
     });
-    expect(scriptTags(output), 'to equal', original);
+
+    it('should not change shaping of the subset text', async function () {
+      const roboto300i = fs.readFileSync(
+        pathModule.resolve(__dirname, '../testdata/subsetFonts/Roboto-300i.ttf')
+      );
+      const text = 'AVATAR Wo, To.';
+      const output = await subsetFontWithGlyphs(roboto300i, text, {
+        targetFormat: 'truetype',
+        featureTags: [],
+      });
+      expect(scriptTags(roboto300i, 'GPOS'), 'to contain', 'cyrl', 'grek');
+      expect(scriptTags(output, 'GPOS'), 'to equal', ['DFLT', 'latn']);
+      const expected = await shapeOutput(roboto300i, text);
+      // Kerning moves this text, so a subset that lost the lookups the
+      // Latin run selects would shape differently.
+      expect(
+        expected,
+        'not to equal',
+        await shapeOutput(roboto300i, text, '-kern')
+      );
+      expect(await shapeOutput(output, text), 'to equal', expected);
+    });
+
+    it('should subset a font without GSUB or GPOS', async function () {
+      const icomoon = fs.readFileSync(
+        pathModule.resolve(
+          __dirname,
+          '../testdata/subsetFonts/non-truetype-and-truetype/icomoon.ttf'
+        )
+      );
+      const tables = listSfntTables(icomoon);
+      expect(tables.has('GSUB') || tables.has('GPOS'), 'to be false');
+      const output = await subsetFontWithGlyphs(icomoon, 'abc', {
+        targetFormat: 'truetype',
+      });
+      expect(listSfntTables(output).has('glyf'), 'to be true');
+    });
   });
 
   it('should preserve a legacy kern pair and its glyph IDs', async function () {

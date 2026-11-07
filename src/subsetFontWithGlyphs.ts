@@ -4,6 +4,7 @@ import * as fontverter from 'fontverter';
 import { toSfnt } from './sfntCache';
 import { convert as convertInWorker } from './fontConverter';
 import { MAX_POOL_SIZE } from './concurrencyLimit';
+import { otScriptTagsForText } from './otScriptTags';
 
 // hb_subset_sets_t enum values — https://github.com/harfbuzz/harfbuzz/blob/main/src/hb-subset.h
 const HB_SUBSET_SETS_GLYPH_INDEX = 0;
@@ -11,6 +12,7 @@ const HB_SUBSET_SETS_DROP_TABLE_TAG = 3;
 const HB_SUBSET_SETS_NAME_ID = 4;
 const HB_SUBSET_SETS_NAME_LANG_ID = 5;
 const HB_SUBSET_SETS_LAYOUT_FEATURE_TAG = 6;
+const HB_SUBSET_SETS_LAYOUT_SCRIPT_TAG = 7;
 
 // Windows English (United States). The only name-table language we keep —
 // browsers don't expose localized name strings to web pages, so other lang
@@ -311,6 +313,28 @@ function configureLayoutFeatures(
   }
 }
 
+// Keep only the GSUB/GPOS script systems a shaper could select for the
+// subset's characters. A retained script whose characters were subset away
+// still reaches shared glyphs through its lookups, and FreeType-style
+// autohinters (Skrifa in Chrome on Android/Linux) then hint those glyphs
+// against that script's missing alignment zones, misaligning the x-height.
+function configureLayoutScripts(
+  exports: HarfbuzzExports,
+  input: number,
+  text: string
+): void {
+  const scriptTags = otScriptTagsForText(text);
+  if (scriptTags === undefined) return;
+  const layoutScripts = exports.hb_subset_input_set(
+    input,
+    HB_SUBSET_SETS_LAYOUT_SCRIPT_TAG
+  );
+  exports.hb_set_clear(layoutScripts);
+  for (const tag of scriptTags) {
+    exports.hb_set_add(layoutScripts, HB_TAG(tag));
+  }
+}
+
 function configureNameTables(exports: HarfbuzzExports, input: number): void {
   const nameIdSet = exports.hb_subset_input_set(input, HB_SUBSET_SETS_NAME_ID);
   exports.hb_set_clear(nameIdSet);
@@ -382,6 +406,10 @@ function needsFullFont(sfnt: Buffer | Uint8Array): boolean {
 // NFC and NFD, so the original codepoint would otherwise be absent from the
 // subset's cmap. Browsers do not normalize before glyph lookup, so a missing
 // raw codepoint renders as tofu.
+function withNormalizedForms(text: string): string {
+  return text + text.normalize('NFC') + text.normalize('NFD');
+}
+
 function configureUnicodeCodepoints(
   exports: HarfbuzzExports,
   input: number,
@@ -389,12 +417,6 @@ function configureUnicodeCodepoints(
 ): void {
   const inputUnicodes = exports.hb_subset_input_unicode_set(input);
   for (const c of text) {
-    exports.hb_set_add(inputUnicodes, c.codePointAt(0)!);
-  }
-  for (const c of text.normalize('NFC')) {
-    exports.hb_set_add(inputUnicodes, c.codePointAt(0)!);
-  }
-  for (const c of text.normalize('NFD')) {
     exports.hb_set_add(inputUnicodes, c.codePointAt(0)!);
   }
 }
@@ -439,11 +461,13 @@ function configureSubsetInput(
   variationAxes: Record<string, VariationAxisValue> | undefined,
   featureTags: string[] | undefined
 ): void {
+  const subsetText = withNormalizedForms(text);
   configureLayoutFeatures(exports, input, featureTags);
+  configureLayoutScripts(exports, input, subsetText);
 
   configureNameTables(exports, input);
   configureDropTables(exports, input);
-  configureUnicodeCodepoints(exports, input, text);
+  configureUnicodeCodepoints(exports, input, subsetText);
   configureGlyphIds(exports, input, glyphIds);
   configureVariationAxes(exports, input, face, variationAxes);
 }

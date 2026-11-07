@@ -16,7 +16,7 @@ import subsetFontWithGlyphs = require('./subsetFontWithGlyphs');
 // reshaping that doesn't alter bytes (like adding a sort to a stable input)
 // does NOT need a bump — old keys just stop matching and new equivalents
 // fill in on next run; existing entries remain byte-correct.
-const SUBSET_CACHE_VERSION = '10';
+const SUBSET_CACHE_VERSION = '11';
 
 type FontBuffer = Buffer | Uint8Array;
 
@@ -427,9 +427,9 @@ function buildExtraSubsetOptions(
         ? [...fontUsage.fontFeatureTags]
         : [];
 
-  // Characters alone cannot prove math/color data or script records unused.
-  // HarfBuzz subsets glyph-dependent data; retain all script systems, including
-  // modern Indic tags and scripts absent from our former Unicode-range map.
+  // Characters alone cannot prove math/color data unused; HarfBuzz subsets
+  // glyph-dependent data. Script records are pruned from the subset text
+  // inside subsetFontWithGlyphs.
   return { featureTags };
 }
 
