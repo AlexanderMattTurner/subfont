@@ -5,6 +5,7 @@ const proxyquire = require('proxyquire');
 const fontverter = require('fontverter');
 const realFsPromises = require('fs/promises');
 const subsetFontWithGlyphs = require('../lib/subsetFontWithGlyphs');
+const { otScriptTagsForText } = require('../lib/otScriptTags');
 const getFontInfo = require('../lib/getFontInfo');
 const { MAX_POOL_SIZE } = require('../lib/concurrencyLimit');
 
@@ -508,6 +509,15 @@ describe('subsetFontWithGlyphs', function () {
       return glyphs;
     }
 
+    // Subset with the production policy: scripts of the text itself.
+    const subsetLike = (font, text, options = {}) =>
+      subsetFontWithGlyphs(font, text, {
+        targetFormat: 'truetype',
+        featureTags: [],
+        scriptTags: otScriptTagsForText(text, text),
+        ...options,
+      });
+
     for (const tableTag of ['GSUB', 'GPOS']) {
       it(`should drop ${tableTag} script records Latin text cannot use`, async function () {
         expect(scriptTags(ttfBuffer, tableTag), 'to equal', [
@@ -516,18 +526,12 @@ describe('subsetFontWithGlyphs', function () {
           'grek',
           'latn',
         ]);
-        const output = await subsetFontWithGlyphs(ttfBuffer, 'Dak', {
-          targetFormat: 'truetype',
-          featureTags: [],
-        });
+        const output = await subsetLike(ttfBuffer, 'Dak');
         expect(scriptTags(output, tableTag), 'to equal', ['DFLT', 'latn']);
       });
 
       it(`should keep ${tableTag} cyrl for Cyrillic text`, async function () {
-        const output = await subsetFontWithGlyphs(ttfBuffer, 'Dak к', {
-          targetFormat: 'truetype',
-          featureTags: [],
-        });
+        const output = await subsetLike(ttfBuffer, 'Dak к');
         expect(scriptTags(output, tableTag), 'to equal', [
           'DFLT',
           'cyrl',
@@ -536,18 +540,17 @@ describe('subsetFontWithGlyphs', function () {
       });
     }
 
-    it('should keep every GSUB script record for script-neutral text', async function () {
-      // Digits and punctuation carry no script of their own, so the shaper's
-      // script depends on context the subset text doesn't record.
-      const output = await subsetFontWithGlyphs(ttfBuffer, '0123 .,', {
-        targetFormat: 'truetype',
-        featureTags: [],
+    it('should keep every script record when scriptTags is undefined', async function () {
+      const output = await subsetLike(ttfBuffer, 'Dak', {
+        scriptTags: undefined,
       });
-      expect(
-        scriptTags(output, 'GSUB'),
-        'to equal',
-        scriptTags(ttfBuffer, 'GSUB')
-      );
+      for (const tableTag of ['GSUB', 'GPOS']) {
+        expect(
+          scriptTags(output, tableTag),
+          'to equal',
+          scriptTags(ttfBuffer, tableTag)
+        );
+      }
     });
 
     it('should not change shaping of the subset text', async function () {
@@ -555,10 +558,7 @@ describe('subsetFontWithGlyphs', function () {
         pathModule.resolve(__dirname, '../testdata/subsetFonts/Roboto-300i.ttf')
       );
       const text = 'AVATAR Wo, To.';
-      const output = await subsetFontWithGlyphs(roboto300i, text, {
-        targetFormat: 'truetype',
-        featureTags: [],
-      });
+      const output = await subsetLike(roboto300i, text);
       expect(scriptTags(roboto300i, 'GPOS'), 'to contain', 'cyrl', 'grek');
       expect(scriptTags(output, 'GPOS'), 'to equal', ['DFLT', 'latn']);
       const expected = await shapeOutput(roboto300i, text);
@@ -581,10 +581,13 @@ describe('subsetFontWithGlyphs', function () {
       );
       const tables = listSfntTables(icomoon);
       expect(tables.has('GSUB') || tables.has('GPOS'), 'to be false');
-      const output = await subsetFontWithGlyphs(icomoon, 'abc', {
-        targetFormat: 'truetype',
-      });
-      expect(listSfntTables(output).has('glyf'), 'to be true');
+      const output = await subsetLike(icomoon, 'abc');
+      const outputTables = listSfntTables(output);
+      expect(
+        outputTables.has('GSUB') || outputTables.has('GPOS'),
+        'to be false'
+      );
+      expect(outputTables.has('cmap'), 'to be true');
     });
   });
 

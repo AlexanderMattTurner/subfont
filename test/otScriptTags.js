@@ -43,24 +43,46 @@ describe('otScriptTags', function () {
       ],
     ].forEach(([label, text, tags]) => {
       it(`should select ${tags.join(', ')} for ${label}`, function () {
-        expect(otScriptTagsForText(text), 'to equal', tags);
+        expect(otScriptTagsForText(text, text), 'to equal', tags);
       });
     });
 
-    it('should keep every script a lone Common character extends to', function () {
+    it('should keep every script a Common character extends to when none is present', function () {
       // U+0964 DEVANAGARI DANDA is Script=Common, shared by Indic scripts.
-      const tags = otScriptTagsForText('ab।');
-      expect(tags, 'to contain', 'dev2', 'deva', 'bng2', 'beng', 'latn');
+      expect(otScriptTagsForText('ab\u0964', 'ab\u0964'), 'to equal', [
+        ...['DFLT', 'beng', 'bng2', 'bng3', 'dev2', 'dev3', 'deva', 'dflt'],
+        ...['dogr', 'gjr2', 'gjr3', 'gong', 'gonm', 'gran', 'gujr', 'gur2'],
+        ...['gur3', 'guru', 'knd2', 'knd3', 'knda', 'latn', 'mahj', 'mlm2'],
+        ...['mlm3', 'mlym', 'nand', 'onao', 'ory2', 'ory3', 'orya', 'sind'],
+        ...['sinh', 'sylo', 'takr', 'taml', 'tel2', 'tel3', 'telu', 'tirh'],
+        ...['tml2', 'tml3'],
+      ]);
+    });
+
+    it('should keep the scripts of the pages the font appears on', function () {
+      // Digits set in this font inside a Cyrillic paragraph shape as cyrl.
+      expect(otScriptTagsForText('abc 123', 'Привет abc 123'), 'to equal', [
+        'DFLT',
+        'cyrl',
+        'dflt',
+        'latn',
+      ]);
     });
 
     [
       ['digits and punctuation', '0123 .,!'],
+      ['a lone combining mark', '\u0301'],
       ['an empty string', ''],
-      ['private-use characters', ''],
+      ['private-use characters', '\ue000\ue001'],
+      ['a codepoint unassigned in this runtime', 'ab\u0378'],
     ].forEach(([label, text]) => {
       it(`should retain all scripts for ${label}`, function () {
-        expect(otScriptTagsForText(text), 'to be undefined');
+        expect(otScriptTagsForText(text, text), 'to be undefined');
       });
+    });
+
+    it('should retain all scripts when the page context has an unknown script', function () {
+      expect(otScriptTagsForText('abc', 'abc\u0378'), 'to be undefined');
     });
   });
 });

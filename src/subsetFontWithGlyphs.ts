@@ -4,7 +4,6 @@ import * as fontverter from 'fontverter';
 import { toSfnt } from './sfntCache';
 import { convert as convertInWorker } from './fontConverter';
 import { MAX_POOL_SIZE } from './concurrencyLimit';
-import { otScriptTagsForText } from './otScriptTags';
 
 // hb_subset_sets_t enum values — https://github.com/harfbuzz/harfbuzz/blob/main/src/hb-subset.h
 const HB_SUBSET_SETS_GLYPH_INDEX = 0;
@@ -80,6 +79,9 @@ interface SubsetFontWithGlyphsOptions {
   // instead of retaining every layout feature in the font. When undefined,
   // fall back to retaining all layout features (legacy behavior).
   featureTags?: string[];
+  // OpenType script tags whose GSUB/GPOS script records to keep (see
+  // otScriptTagsForText). When undefined, retain every script record.
+  scriptTags?: string[];
   signal?: AbortSignal;
 }
 
@@ -313,17 +315,15 @@ function configureLayoutFeatures(
   }
 }
 
-// Keep only the GSUB/GPOS script systems a shaper could select for the
-// subset's characters. A retained script whose characters were subset away
-// still reaches shared glyphs through its lookups, and FreeType-style
-// autohinters (Skrifa in Chrome on Android/Linux) then hint those glyphs
-// against that script's missing alignment zones, misaligning the x-height.
+// A retained script whose characters were subset away still reaches shared
+// glyphs through its lookups, and FreeType-style autohinters (Skrifa in
+// Chrome on Android/Linux) then hint those glyphs against that script's
+// missing alignment zones, misaligning the x-height.
 function configureLayoutScripts(
   exports: HarfbuzzExports,
   input: number,
-  text: string
+  scriptTags: string[] | undefined
 ): void {
-  const scriptTags = otScriptTagsForText(text);
   if (scriptTags === undefined) return;
   const layoutScripts = exports.hb_subset_input_set(
     input,
@@ -406,10 +406,6 @@ function needsFullFont(sfnt: Buffer | Uint8Array): boolean {
 // NFC and NFD, so the original codepoint would otherwise be absent from the
 // subset's cmap. Browsers do not normalize before glyph lookup, so a missing
 // raw codepoint renders as tofu.
-function withNormalizedForms(text: string): string {
-  return text + text.normalize('NFC') + text.normalize('NFD');
-}
-
 function configureUnicodeCodepoints(
   exports: HarfbuzzExports,
   input: number,
@@ -417,6 +413,12 @@ function configureUnicodeCodepoints(
 ): void {
   const inputUnicodes = exports.hb_subset_input_unicode_set(input);
   for (const c of text) {
+    exports.hb_set_add(inputUnicodes, c.codePointAt(0)!);
+  }
+  for (const c of text.normalize('NFC')) {
+    exports.hb_set_add(inputUnicodes, c.codePointAt(0)!);
+  }
+  for (const c of text.normalize('NFD')) {
     exports.hb_set_add(inputUnicodes, c.codePointAt(0)!);
   }
 }
@@ -459,15 +461,15 @@ function configureSubsetInput(
   text: string,
   glyphIds: number[] | undefined,
   variationAxes: Record<string, VariationAxisValue> | undefined,
-  featureTags: string[] | undefined
+  featureTags: string[] | undefined,
+  scriptTags: string[] | undefined
 ): void {
-  const subsetText = withNormalizedForms(text);
   configureLayoutFeatures(exports, input, featureTags);
-  configureLayoutScripts(exports, input, subsetText);
+  configureLayoutScripts(exports, input, scriptTags);
 
   configureNameTables(exports, input);
   configureDropTables(exports, input);
-  configureUnicodeCodepoints(exports, input, subsetText);
+  configureUnicodeCodepoints(exports, input, text);
   configureGlyphIds(exports, input, glyphIds);
   configureVariationAxes(exports, input, face, variationAxes);
 }
@@ -523,6 +525,7 @@ async function subsetFontWithGlyphs(
     glyphIds,
     variationAxes,
     featureTags,
+    scriptTags,
     signal,
   }: SubsetFontWithGlyphsOptions = {}
 ): Promise<Buffer> {
@@ -575,7 +578,8 @@ async function subsetFontWithGlyphs(
         text,
         glyphIds,
         variationAxes,
-        featureTags
+        featureTags,
+        scriptTags
       );
 
       subset = exports.hb_subset_or_fail(face, input);

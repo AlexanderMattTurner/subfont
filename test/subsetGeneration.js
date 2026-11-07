@@ -140,9 +140,10 @@ describe('subsetGeneration', function () {
           'to equal',
           laterTags ? ['onum', 'smcp'] : undefined
         );
-        for (const key of ['dropMathTable', 'dropColorTables', 'scriptTags']) {
+        for (const key of ['dropMathTable', 'dropColorTables']) {
           expect(calls[0], 'not to have key', key);
         }
+        expect(calls[0].scriptTags, 'to be undefined');
         expect(usages[0].subsets.woff2, 'to equal', usages[1].subsets.woff2);
         expect(usages[0].fontFeatureTags, 'to equal', ['onum']);
       });
@@ -386,6 +387,65 @@ describe('subsetGeneration', function () {
       expect(warnCalls, 'to have length', 1);
       expect(warnCalls[0].message, 'to equal', 'simulated woff2 failure');
       expect(warnCalls[0].asset, 'to be', fontAsset);
+    });
+
+    describe('script tags', function () {
+      const fontUrl = 'https://example.com/scripts.ttf';
+      async function scriptTagsFor(pages) {
+        const calls = [];
+        const { getSubsetsForFontUsage } = proxyquire(
+          '../lib/subsetGeneration',
+          {
+            './variationAxes': {
+              getVariationAxisBounds: () => Promise.resolve(null),
+            },
+            './subsetFontWithGlyphs': (_buffer, _text, opts) => {
+              calls.push(opts);
+              return Promise.resolve(Buffer.alloc(100, 0x41));
+            },
+          }
+        );
+        await getSubsetsForFontUsage(
+          {
+            populate: async () => {},
+            findAssets: () => [
+              { url: fontUrl, isLoaded: true, rawSrc: Buffer.alloc(10) },
+            ],
+            warn: (error) => {
+              throw error;
+            },
+          },
+          pages,
+          ['woff2'],
+          new Map(),
+          false
+        );
+        expect(calls, 'to have length', 1);
+        return calls[0].scriptTags;
+      }
+
+      it('should keep the scripts of every page sharing the font', async function () {
+        const usage = () => ({ fontUrl, text: 'ab 1' });
+        const tags = await scriptTagsFor([
+          { htmlOrSvgAsset: { text: '<p>ab 1</p>' }, fontUsages: [usage()] },
+          {
+            htmlOrSvgAsset: { text: '<p>Привет 1</p>' },
+            fontUsages: [usage()],
+          },
+        ]);
+        expect(tags, 'to equal', ['DFLT', 'cyrl', 'dflt', 'latn']);
+      });
+
+      it('should retain every script when a page has no source text', async function () {
+        const tags = await scriptTagsFor([
+          {
+            htmlOrSvgAsset: { text: '<p>ab</p>' },
+            fontUsages: [{ fontUrl, text: 'ab' }],
+          },
+          { fontUsages: [{ fontUrl, text: 'ab' }] },
+        ]);
+        expect(tags, 'to be undefined');
+      });
     });
   });
 

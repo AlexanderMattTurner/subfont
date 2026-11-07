@@ -2,19 +2,16 @@
 // (GSUB/GPOS ScriptList entries) that a shaper could select for them, so the
 // subsetter can drop script systems the text can never reach.
 //
-// Script membership comes from the JS engine's own Unicode Script_Extensions
-// data (\p{scx=…}), not a hand-maintained range table. The ISO 15924 → OT tag
-// mapping mirrors HarfBuzz's hb_ot_all_tags_from_script (hb-ot-tag.cc).
+// Script membership comes from the JS engine's own Unicode Script and
+// Script_Extensions data (\p{sc=…}, \p{scx=…}), not a range table. The ISO 15924 → OT tag
+// mapping mirrors HarfBuzz's hb_ot_all_tags_from_script (hb-ot-tag.cc), plus
+// 'jamo' for Hangul.
 //
-// Every uncertainty resolves toward keeping scripts: if the text contains a
-// character of a script this list doesn't know, or contains no
-// script-specific characters at all, the caller is told to retain every
-// script record.
+// Every uncertainty resolves toward keeping scripts.
 
 // Unicode Script property values (ISO 15924 codes) known to V8/ICU as of
 // Unicode 17, excluding the non-specific Zyyy (Common), Zinh (Inherited) and
-// Zzzz (Unknown) and the aliases Qaac/Qaai. A runtime whose ICU predates a
-// script rejects its \p{sc=…} escape; those entries are skipped below.
+// Zzzz (Unknown) and the aliases Qaac/Qaai.
 const UNICODE_SCRIPTS = [
   'Adlm', 'Aghb', 'Ahom', 'Arab', 'Armi', 'Armn', 'Avst', 'Bali', 'Bamu',
   'Bass', 'Batk', 'Beng', 'Berf', 'Bhks', 'Bopo', 'Brah', 'Brai', 'Bugi',
@@ -88,8 +85,9 @@ interface ScriptMatcher {
 
 interface Matchers {
   scripts: ScriptMatcher[];
-  // Assigned characters whose Script is outside UNICODE_SCRIPTS (a script
-  // added to Unicode after the table was written).
+  // A character outside every known script: either an assigned script the
+  // table lacks, or a codepoint this runtime's Unicode data leaves unassigned
+  // (on Node 18, every Unicode 16+ script). Private-use characters are fine.
   unknownScript: RegExp;
   commonOrInherited: RegExp;
 }
@@ -106,15 +104,17 @@ function compileMatchers(): Matchers {
         sc: new RegExp(`\\p{sc=${script}}`, 'u'),
         scx: new RegExp(`\\p{scx=${script}}`, 'u'),
       });
-    } catch {
-      // This runtime's ICU predates the script, so no character has it.
+    } catch (err) {
+      // This runtime's ICU predates the script; its characters are
+      // unassigned here and trip unknownScript instead.
+      if (!(err instanceof SyntaxError)) throw err;
     }
   }
   const known = scripts.map(({ script }) => `\\p{sc=${script}}`).join('');
   _matchers = {
     scripts,
     unknownScript: new RegExp(
-      `[^${known}\\p{sc=Zyyy}\\p{sc=Zinh}\\p{sc=Zzzz}]`,
+      `[^${known}\\p{sc=Zyyy}\\p{sc=Zinh}\\p{Co}]`,
       'u'
     ),
     commonOrInherited: /[\p{sc=Zyyy}\p{sc=Zinh}]/gu,
@@ -122,12 +122,17 @@ function compileMatchers(): Matchers {
   return _matchers;
 }
 
-// Scripts a Common/Inherited character could be shaped under even though no
-// character of those scripts is in the text. Script_Extensions lists the
-// scripts a character such as U+0964 DEVANAGARI DANDA is used with. When one
-// of them already occurs in the text (U+0301 COMBINING ACUTE beside Latin),
-// the character's run is covered; otherwise keep all of them.
-function uncoveredExtensionScripts(
+function scriptsIn(text: string, { scripts }: Matchers): Set<string> {
+  return new Set(
+    scripts.filter(({ sc }) => sc.test(text)).map((m) => m.script)
+  );
+}
+
+// Scripts a Common/Inherited character could be shaped under although none
+// of them is present. Script_Extensions lists the scripts a character such
+// as U+0964 DEVANAGARI DANDA is used with; when one of them is present
+// (U+0301 COMBINING ACUTE beside Latin) the character's run is covered.
+function extensionScriptsToKeep(
   text: string,
   { scripts, commonOrInherited }: Matchers,
   present: Set<string>
@@ -142,24 +147,26 @@ function uncoveredExtensionScripts(
 }
 
 // Returns the OpenType script tags to keep for a subset covering `text`, or
-// undefined when every script record must be retained:
-//   - the text has no script-specific characters (only digits, punctuation,
-//     symbols, private-use…). Such runs are shaped under whatever script the
-//     browser resolves from context or the `lang` attribute, which the text
-//     alone can't reveal.
-//   - the text contains a character from a script missing from the table.
-// Common/Inherited characters mixed with script-specific text are shaped as
-// part of a neighbouring run, whose script is already in the text.
-export function otScriptTagsForText(text: string): string[] | undefined {
+// undefined when every script record must be retained. `contextText` is all
+// text that can share a paragraph with the subset's characters (the pages
+// using the font): browsers resolve the script of a digit or punctuation run
+// from its paragraph, which may be set in another font. Retains everything
+//   - when `text` has no script-specific characters (only digits,
+//     punctuation, symbols, combining marks, private-use…), whose script the
+//     browser may take from the `lang` attribute;
+//   - when either text contains a character of an unknown script.
+export function otScriptTagsForText(
+  text: string,
+  contextText: string
+): string[] | undefined {
   const matchers = compileMatchers();
-  if (matchers.unknownScript.test(text)) return undefined;
-  const present = new Set(
-    matchers.scripts.filter(({ sc }) => sc.test(text)).map((m) => m.script)
-  );
-  for (const script of uncoveredExtensionScripts(text, matchers, present)) {
+  if (matchers.unknownScript.test(text + contextText)) return undefined;
+  const present = scriptsIn(text, matchers);
+  if (present.size === 0) return undefined;
+  for (const script of scriptsIn(contextText, matchers)) present.add(script);
+  for (const script of extensionScriptsToKeep(text, matchers, present)) {
     present.add(script);
   }
-  if (present.size === 0) return undefined;
   const tags = new Set(ALWAYS_KEPT);
   for (const script of present) {
     for (const tag of otTagsForScript(script)) tags.add(tag);

@@ -69,13 +69,15 @@ scanner reproductions, not browser-rendering reproductions.
   each character's Unicode Script (from the JS engine's ICU data), mapped with
   HarfBuzz's `hb_ot_all_tags_from_script` (so Devanagari keeps `dev3`, `dev2`
   and `deva`), plus `DFLT`, `dflt` and `latn`, which HarfBuzz falls back to.
-  A Common/Inherited character adds its Script_Extensions only when none of
-  them occurs in the text. Text that is only Common/Inherited, or that contains
-  a script the table doesn't know, retains every script system. Stale script
-  records are not free: FreeType-style autohinters (Skrifa in Chrome on
-  Android and Linux) assign glyphs reachable from a script's lookups to that
-  script's style and hint them against its alignment zones, which the subset
-  no longer contains.
+  Add the scripts of every page that uses the font, since a browser shapes a
+  digit or punctuation run under its paragraph's script, which another font
+  may set. A Common/Inherited character adds its Script_Extensions only when
+  none of them is present. Text that is only Common/Inherited, or that
+  contains a script or codepoint the runtime doesn't know, retains every
+  script system. Stale script records are not free: FreeType-style
+  autohinters (Skrifa in Chrome on Android and Linux) assign glyphs reachable
+  from a script's lookups to that script's style and hint them against its
+  alignment zones, which the subset no longer contains.
 - Keep essential shaping plus the features requested by CSS. Cover `font` and
   `font-variant` shorthands, face descriptors, inline/SVG attributes, inherited
   features when families change, and the union of every page sharing a font URL.
