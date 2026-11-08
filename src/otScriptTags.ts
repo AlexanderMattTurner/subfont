@@ -134,12 +134,6 @@ function scriptsIn(text: string, { scripts }: Matchers): Set<string> {
   );
 }
 
-// The Unicode scripts (ISO 15924 codes) of `text`'s characters, excluding
-// Common and Inherited.
-export function unicodeScriptsOf(text: string): Set<string> {
-  return scriptsIn(text, compileMatchers());
-}
-
 // Scripts a Common/Inherited character could be shaped under although none
 // of them is present. Script_Extensions lists the scripts a character such
 // as U+0964 DEVANAGARI DANDA is used with; when one of them is present

@@ -31,8 +31,25 @@ const IBM_PLEX_SANS = pathModule.resolve(
   '../testdata/referenceImages/fontVariant/IBMPlexSans-Regular.woff'
 );
 
+const SOURCE_SERIF = pathModule.resolve(
+  __dirname,
+  '../testdata/iframe/SourceSerifVariable-Roman.ttf.woff2'
+);
+
 describe('subset size benchmarks', function () {
   this.timeout(60000);
+
+  it('autohint reference characters stay bounded on an unhinted variable font', async function () {
+    const result = await subsetFontWithGlyphs(
+      fs.readFileSync(SOURCE_SERIF),
+      'Hello',
+      { targetFormat: 'woff2', featureTags: [], autohintReferenceChars: true }
+    );
+    // "Hello" alone is ~1.8 KB; the lower bound proves the Latin reference
+    // letters were added.
+    expect(result.length, 'to be greater than or equal to', 8000);
+    expect(result.length, 'to be less than or equal to', 11500);
+  });
 
   it('Roboto-400 truetype subset stays compact while preserving gasp', async function () {
     const buf = fs.readFileSync(ROBOTO);

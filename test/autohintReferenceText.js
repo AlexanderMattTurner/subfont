@@ -73,6 +73,18 @@ describe('autohintReferenceText', function () {
     });
 
     [
+      ['a truncated table directory', sfntWith({ glyf }).subarray(0, 20)],
+      [
+        'a table past the end of the font',
+        sfntWith({ glyf: new Uint8Array(8) }).subarray(0, 32),
+      ],
+    ].forEach(([label, sfnt]) => {
+      it(`should throw for ${label}`, function () {
+        expect(() => isAutohinted(sfnt), 'to throw');
+      });
+    });
+
+    [
       [UNHINTED_LATIN, true],
       [HINTED_LATIN, false],
     ].forEach(([path, expected]) => {
@@ -87,10 +99,12 @@ describe('autohintReferenceText', function () {
     [
       ['Latin', 'ab', `ab${AUTOHINT_REFERENCE_CHARS.Latn}`],
       ['Cyrillic', 'дом', `дом${AUTOHINT_REFERENCE_CHARS.Cyrl}`],
-      ['digits only', '123', '123'],
-      ['private-use only', '', ''],
+      ['digits', '123', `123${AUTOHINT_REFERENCE_CHARS.Latn}`],
+      ['kana', 'かな', `かな${AUTOHINT_REFERENCE_CHARS.Hani}`],
+      ['Hangul', '한', `한${AUTOHINT_REFERENCE_CHARS.Hani}`],
+      ['private-use', '\ue000', '\ue000'],
     ].forEach(([label, text, expected]) => {
-      it(`should append the reference characters of ${label} text's scripts`, function () {
+      it(`should append the reference characters of the autohinter scripts of ${label} text`, function () {
         expect(withAutohintReferenceChars(text), 'to equal', expected);
       });
     });

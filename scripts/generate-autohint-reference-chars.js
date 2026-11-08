@@ -1,12 +1,10 @@
 #!/usr/bin/env node
 // Regenerates src/autohintReferenceChars.ts from Skrifa's autohinter style
-// table (the FreeType autohinter port Chrome uses), which lists per script
-// the characters it measures stem widths (std_chars) and alignment zones
-// (blues) on. Usage:
+// tables (the FreeType autohinter port Chrome uses). Usage:
 //   node scripts/generate-autohint-reference-chars.js \
 //     <fontations>/skrifa/generated/generated_autohint_styles.rs
-// That file is itself generated in a fixed layout; every ScriptClass block
-// must yield a tag and its strings, or this throws.
+// That file is itself generated in a fixed layout; anything that doesn't parse
+// throws. Bump SUBSET_CACHE_VERSION when the output changes.
 const fs = require('fs');
 const path = require('path');
 
@@ -17,13 +15,11 @@ if (!source)
   );
 const rust = fs.readFileSync(source, 'utf8');
 
-function isUnicodeScript(tag) {
-  try {
-    return new RegExp(`\\p{sc=${tag}}`, 'u').unicode;
-  } catch (err) {
-    if (err instanceof SyntaxError) return false;
-    throw err;
-  }
+// The body of `const NAME: &[...] = &[ ... ];`.
+function arrayBody(name) {
+  const start = rust.indexOf(`const ${name}: `);
+  if (start === -1) throw new Error(`${name} not found`);
+  return rust.slice(start, rust.indexOf('\n];', start));
 }
 
 // Rust string-literal escapes; anything else is left for the quote check to reject.
@@ -34,51 +30,89 @@ function decodeRustEscapes(str) {
   );
 }
 
-const blocks = rust.split('ScriptClass {').slice(1);
-const charsByScript = {};
-for (const block of blocks) {
-  const body = block.slice(0, block.indexOf('\n    },'));
-  if (!body.includes('std_chars:')) continue; // the struct definition, not an entry
-  const tag = /tag: Tag::new\(b"(?<tag>\w{4})"\)/.exec(body)?.groups?.tag;
-  const strings = [...body.matchAll(/"(?<str>(?:[^"\\]|\\.)*)"/g)].map((m) =>
-    decodeRustEscapes(m.groups.str)
-  );
-  // strings: name, tag, std_chars, then one per blue zone.
-  if (!tag || strings.length < 3) throw new Error(`unparsed entry:\n${body}`);
-  // Some styles (Latb, Latp, Geok, Khms) cover a codepoint range within a
-  // script rather than a Unicode script, so text never selects them.
-  if (!isUnicodeScript(tag)) continue;
-  // '|' separates CJK blue-string groups.
-  const chars = new Set(strings.slice(2).join('').replace(/[\s|]/g, ''));
-  if (chars.size === 0) continue; // "no script" has no reference characters
-  if (charsByScript[tag]) throw new Error(`duplicate script ${tag}`);
-  charsByScript[tag] = [...chars].join('');
-}
-const entryCount = (rust.match(/^ {4}ScriptClass \{$/gm) || []).length;
-if (Object.keys(charsByScript).length === 0 || entryCount === 0) {
-  throw new Error('no ScriptClass entries found');
+// SCRIPT_CLASSES, in order: each script's tag and the characters it measures
+// stem widths (std_chars) and alignment zones (blues) on.
+const scripts = arrayBody('SCRIPT_CLASSES')
+  .split(/^ {4}ScriptClass \{$/m)
+  .slice(1)
+  .map((body) => {
+    const tag = /tag: Tag::new\(b"(?<tag>\w{4})"\)/.exec(body)?.groups?.tag;
+    const strings = [...body.matchAll(/"(?<str>(?:[^"\\]|\\.)*)"/g)].map((m) =>
+      decodeRustEscapes(m.groups.str)
+    );
+    // strings: name, tag, std_chars, then one per blue zone.
+    if (!tag || strings.length < 3) throw new Error(`unparsed entry:\n${body}`);
+    // '|' separates CJK blue-string groups.
+    const chars = [
+      ...new Set(strings.slice(2).join('').replace(/[\s|]/g, '')),
+    ].join('');
+    return { tag, chars };
+  });
+
+// STYLE_CLASSES: style index -> script class index.
+const scriptOfStyle = [
+  ...arrayBody('STYLE_CLASSES').matchAll(
+    /index: (?<style>\d+), script: &SCRIPT_CLASSES\[(?<script>\d+)\]/g
+  ),
+].map((m, i) => {
+  if (Number(m.groups.style) !== i) throw new Error(`style ${i} out of order`);
+  return scripts[Number(m.groups.script)];
+});
+
+// STYLE_RANGES: the codepoint ranges whose glyphs the autohinter assigns to
+// each style. Adjacent ranges of one script merge; marks (non_base_range)
+// count, since the script's metrics apply to them too.
+const rangeLines = arrayBody('STYLE_RANGES').split('\n').slice(1);
+const ranges = [];
+for (const line of rangeLines) {
+  const m =
+    /^ {4}(?:non_)?base_range\((?<first>\d+), (?<last>\d+), (?<style>\d+)\),$/.exec(
+      line
+    );
+  if (!m) throw new Error(`unparsed range: ${line}`);
+  const script = scriptOfStyle[Number(m.groups.style)];
+  if (!script) throw new Error(`unknown style in ${line}`);
+  if (!script.chars) continue; // "no script" has no reference characters
+  const [first, last] = [Number(m.groups.first), Number(m.groups.last)];
+  const prev = ranges.at(-1);
+  if (prev && first <= prev[1]) throw new Error(`unsorted range: ${line}`);
+  if (prev && prev[2] === script.tag && first === prev[1] + 1) prev[1] = last;
+  else ranges.push([first, last, script.tag]);
 }
 
-const lines = Object.keys(charsByScript)
-  .sort()
-  .map((tag) => {
-    // Single-quoted, as prettier writes it, so regeneration is byte-stable.
-    if (/['\\]/.test(charsByScript[tag])) throw new Error(`quote in ${tag}`);
-    return `  ${tag}: '${charsByScript[tag]}',`;
-  });
+const usedTags = [...new Set(ranges.map(([, , tag]) => tag))].sort();
+const charsLines = usedTags.map((tag) => {
+  const { chars } = scripts.find((s) => s.tag === tag);
+  // Single-quoted, as prettier writes it, so regeneration is byte-stable.
+  if (/['\\]/.test(chars)) throw new Error(`quote in ${tag}`);
+  return `  ${tag}: '${chars}',`;
+});
+const rangeOut = ranges.map(
+  ([first, last, tag]) => `  [0x${hex(first)}, 0x${hex(last)}, '${tag}'],`
+);
+function hex(n) {
+  return n.toString(16);
+}
+
 const out = `// GENERATED by scripts/generate-autohint-reference-chars.js from fontations'
 // skrifa/generated/generated_autohint_styles.rs. Do not edit.
-//
-// For each ISO 15924 script, the characters FreeType's autohinter (Skrifa in
+
+// For each autohinter script, the characters FreeType's autohinter (Skrifa in
 // Chrome) measures that script's stem widths and alignment zones on.
 export const AUTOHINT_REFERENCE_CHARS: Readonly<Record<string, string>> = {
-${lines.join('\n')}
+${charsLines.join('\n')}
 };
+
+// [first, last, script]: the autohinter hints glyphs of codepoints first..last
+// with that script's metrics. Sorted and disjoint.
+export const AUTOHINT_SCRIPT_RANGES: ReadonlyArray<
+  readonly [number, number, string]
+> = [
+${rangeOut.join('\n')}
+];
 `;
 fs.writeFileSync(
   path.join(__dirname, '..', 'src', 'autohintReferenceChars.ts'),
   out
 );
-console.log(
-  `${Object.keys(charsByScript).length} of ${entryCount} script classes written`
-);
+console.log(`${usedTags.length} scripts, ${ranges.length} ranges written`);
