@@ -104,6 +104,12 @@ function registerLoggingOptions(y: Argv): Argv {
       type: 'boolean',
       default: false,
     })
+    .options('autohint-reference-chars', {
+      describe:
+        "Add the characters Chrome's autohinter (Android, Linux) measures alignment zones on to each subset of an unhinted TrueType font, so subsets are hinted like the full font. Adds bytes to small subsets",
+      type: 'boolean',
+      default: false,
+    })
     .options('dry-run', {
       describe: `Don't write anything to disk. Shows a preview of files, sizes, and CSS changes that would be made`,
       type: 'boolean',

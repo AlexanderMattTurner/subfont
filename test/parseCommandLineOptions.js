@@ -149,4 +149,13 @@ describe('parseCommandLineOptions', function () {
     expect(result.inputFiles, 'to equal', ['index.html', 'about.html']);
     expect(result.dryRun, 'to be true');
   });
+
+  it('should default --autohint-reference-chars to off and parse it', function () {
+    expect(parseCommandLineOptions([]).autohintReferenceChars, 'to be false');
+    expect(
+      parseCommandLineOptions(['--autohint-reference-chars'])
+        .autohintReferenceChars,
+      'to be true'
+    );
+  });
 });

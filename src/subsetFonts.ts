@@ -1243,6 +1243,8 @@ interface SubsetFontsOptions {
   concurrency?: number;
   chromeArgs?: string[];
   cacheDir?: string | null;
+  // Add Chrome's autohinter reference characters to autohinted subsets.
+  autohintReferenceChars?: boolean;
   // Optional abort hook. Forwarded to font-tracing and woff2 conversion
   // so orchestrators can interrupt long-running work on Ctrl-C.
   signal?: AbortSignal;
@@ -1548,6 +1550,7 @@ interface PreCollectCtx {
   omitFallbacks: boolean;
   sourceMaps: boolean;
   cacheDir: string | null;
+  autohintReferenceChars: boolean;
   hasGoogleFonts: boolean;
   potentiallyOrphanedAssets: Set<Asset>;
   trackPhase: ReturnType<typeof makePhaseTracker>;
@@ -1647,7 +1650,8 @@ async function runSubsetPhase(ctx: SubsetCtx): Promise<void> {
     ctx.cacheDir,
     ctx.console,
     ctx.debug,
-    ctx.signal
+    ctx.signal,
+    ctx.autohintReferenceChars
   );
   ctx.timings.getSubsetsForFontUsage = subsetPhase.end();
 
@@ -1707,6 +1711,7 @@ async function subsetFonts(
     concurrency,
     chromeArgs = [],
     cacheDir = null,
+    autohintReferenceChars = false,
     signal,
   }: SubsetFontsOptions = {}
 ): Promise<SubsetFontsResult> {
@@ -1761,6 +1766,7 @@ async function subsetFonts(
     omitFallbacks,
     sourceMaps,
     cacheDir,
+    autohintReferenceChars,
     hasGoogleFonts,
     potentiallyOrphanedAssets: new Set<Asset>(),
     trackPhase,
