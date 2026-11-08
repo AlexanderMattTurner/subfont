@@ -63,8 +63,22 @@ scanner reproductions, not browser-rendering reproductions.
 
 - Preserve `gasp`, embedded hints, `hdmx`, and `VDMX`; still discard signatures,
   scaler-acceleration `LTSH`, and printer metadata `PCLT`.
-- Remove the incomplete Unicode predicates for math, color, and script selection.
-  Keep `MATH` and all script systems while HarfBuzz subsets glyph-dependent data.
+- Remove the incomplete Unicode predicates for math and color. Keep `MATH`
+  while HarfBuzz subsets glyph-dependent data.
+- Keep the GSUB/GPOS script systems HarfBuzz could select for the subset text:
+  each character's Unicode Script (from the JS engine's ICU data), mapped with
+  HarfBuzz's `hb_ot_all_tags_from_script` (so Devanagari keeps `dev3`, `dev2`
+  and `deva`), plus `DFLT`, `dflt` and `latn`, which HarfBuzz falls back to,
+  and `math`. Add the scripts of every page that uses the font (its source,
+  decoded DOM text and the script each `lang` implies), since a browser shapes
+  a digit or punctuation run under its paragraph's script and `lang`. A
+  Common/Inherited character adds its Script_Extensions only when
+  none of them is present. Text that is only Common/Inherited, or that
+  contains a script or codepoint the runtime doesn't know, retains every
+  script system. Stale script records are not free: FreeType-style
+  autohinters (Skrifa in Chrome on Android and Linux) assign glyphs reachable
+  from a script's lookups to that script's style and hint them against its
+  alignment zones, which the subset no longer contains.
 - Keep essential shaping plus the features requested by CSS. Cover `font` and
   `font-variant` shorthands, face descriptors, inline/SVG attributes, inherited
   features when families change, and the union of every page sharing a font URL.

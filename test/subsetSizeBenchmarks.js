@@ -5,6 +5,7 @@ const expect = require('unexpected');
 const fs = require('fs');
 const pathModule = require('path');
 const subsetFontWithGlyphs = require('../lib/subsetFontWithGlyphs');
+const { otScriptTagsForText } = require('../lib/otScriptTags');
 
 const PANGRAM = 'The quick brown fox jumps over the lazy dog 0123456789';
 
@@ -20,6 +21,10 @@ function tableSet(buf) {
 const ROBOTO = pathModule.resolve(
   __dirname,
   '../testdata/subsetFonts/Roboto-400.ttf'
+);
+const ROBOTO_300I = pathModule.resolve(
+  __dirname,
+  '../testdata/subsetFonts/Roboto-300i.ttf'
 );
 const IBM_PLEX_SANS = pathModule.resolve(
   __dirname,
@@ -69,5 +74,21 @@ describe('subset size benchmarks', function () {
       expect(result.length, 'to be greater than', 100);
       expect(result.length, 'to be less than or equal to', maxWoff2Bytes);
     });
+  });
+
+  it('Roboto-300i Latin subset drops cyrl/grek script records within budget', async function () {
+    // The source font registers DFLT, cyrl, grek and latn. Unpruned output is
+    // 13456 B; the bound (current output) holds only when cyrl/grek go.
+    const result = await subsetFontWithGlyphs(
+      fs.readFileSync(ROBOTO_300I),
+      PANGRAM,
+      {
+        targetFormat: 'truetype',
+        featureTags: [],
+        scriptTags: otScriptTagsForText(PANGRAM, { text: PANGRAM, langs: [] }),
+      }
+    );
+    expect(result.length, 'to be greater than', 100);
+    expect(result.length, 'to be less than or equal to', 13432);
   });
 });

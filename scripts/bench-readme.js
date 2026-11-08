@@ -13,6 +13,7 @@ const fontverter = require('fontverter');
 const upstreamSubsetFont = require('subset-font');
 
 const subsetFontWithGlyphs = require('../lib/subsetFontWithGlyphs');
+const { otScriptTagsForText } = require('../lib/otScriptTags');
 const FONT = path.resolve(
   __dirname,
   '..',
@@ -53,6 +54,7 @@ const SAMPLES = [
     const optimized = await subsetFontWithGlyphs(buf, text, {
       targetFormat: 'woff2',
       featureTags: [],
+      scriptTags: otScriptTagsForText(text, { text, langs: [] }),
     });
     const pct = Math.round(
       ((upstream.length - optimized.length) / upstream.length) * 100

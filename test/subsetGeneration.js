@@ -3,6 +3,7 @@ const proxyquire = require('proxyquire').noCallThru();
 const fs = require('fs');
 const pathModule = require('path');
 const os = require('os');
+const { JSDOM } = require('jsdom');
 const {
   getSubsetPromiseId,
   _subsetCacheKey: subsetCacheKey,
@@ -140,9 +141,10 @@ describe('subsetGeneration', function () {
           'to equal',
           laterTags ? ['onum', 'smcp'] : undefined
         );
-        for (const key of ['dropMathTable', 'dropColorTables', 'scriptTags']) {
+        for (const key of ['dropMathTable', 'dropColorTables']) {
           expect(calls[0], 'not to have key', key);
         }
+        expect(calls[0].scriptTags, 'to be undefined');
         expect(usages[0].subsets.woff2, 'to equal', usages[1].subsets.woff2);
         expect(usages[0].fontFeatureTags, 'to equal', ['onum']);
       });
@@ -386,6 +388,74 @@ describe('subsetGeneration', function () {
       expect(warnCalls, 'to have length', 1);
       expect(warnCalls[0].message, 'to equal', 'simulated woff2 failure');
       expect(warnCalls[0].asset, 'to be', fontAsset);
+    });
+
+    describe('script tags', function () {
+      const fontUrl = 'https://example.com/scripts.ttf';
+      async function scriptTagsFor(pages) {
+        const calls = [];
+        const { getSubsetsForFontUsage } = proxyquire(
+          '../lib/subsetGeneration',
+          {
+            './variationAxes': {
+              getVariationAxisBounds: () => Promise.resolve(null),
+            },
+            './subsetFontWithGlyphs': (_buffer, _text, opts) => {
+              calls.push(opts);
+              return Promise.resolve(Buffer.alloc(100, 0x41));
+            },
+          }
+        );
+        await getSubsetsForFontUsage(
+          {
+            populate: async () => {},
+            findAssets: () => [
+              { url: fontUrl, isLoaded: true, rawSrc: Buffer.alloc(10) },
+            ],
+            warn: (error) => {
+              throw error;
+            },
+          },
+          pages,
+          ['woff2'],
+          new Map(),
+          false
+        );
+        expect(calls, 'to have length', 1);
+        return calls[0].scriptTags;
+      }
+
+      const page = (html, text) => ({
+        htmlOrSvgAsset: {
+          text: html,
+          parseTree: new JSDOM(html).window.document,
+        },
+        fontUsages: [{ fontUrl, text }],
+      });
+
+      [
+        ['the text of every page', ['<p>ab 1</p>', '<p>Привет 1</p>']],
+        ['character references', ['<p>ab 1 &#x41F;</p>']],
+        ['lang attributes', ['<p>ab 1</p>', '<p lang="ru">1</p>']],
+      ].forEach(([label, htmls]) => {
+        it(`should keep the scripts of ${label}`, async function () {
+          const tags = await scriptTagsFor(
+            htmls.map((html) => page(html, 'ab 1'))
+          );
+          expect(tags, 'to equal', ['DFLT', 'cyrl', 'dflt', 'latn', 'math']);
+        });
+      });
+
+      [false, true].forEach((missingFirst) => {
+        it(`should retain every script when a page has no source (${missingFirst ? 'first' : 'last'})`, async function () {
+          const pages = [
+            page('<p>ab</p>', 'ab'),
+            { fontUsages: [{ fontUrl, text: 'ab' }] },
+          ];
+          if (missingFirst) pages.reverse();
+          expect(await scriptTagsFor(pages), 'to be undefined');
+        });
+      });
     });
   });
 

@@ -11,6 +11,7 @@ const HB_SUBSET_SETS_DROP_TABLE_TAG = 3;
 const HB_SUBSET_SETS_NAME_ID = 4;
 const HB_SUBSET_SETS_NAME_LANG_ID = 5;
 const HB_SUBSET_SETS_LAYOUT_FEATURE_TAG = 6;
+const HB_SUBSET_SETS_LAYOUT_SCRIPT_TAG = 7;
 
 // Windows English (United States). The only name-table language we keep —
 // browsers don't expose localized name strings to web pages, so other lang
@@ -78,6 +79,9 @@ interface SubsetFontWithGlyphsOptions {
   // instead of retaining every layout feature in the font. When undefined,
   // fall back to retaining all layout features (legacy behavior).
   featureTags?: string[];
+  // OpenType script tags whose GSUB/GPOS script records to keep (see
+  // otScriptTagsForText). When undefined, retain every script record.
+  scriptTags?: string[];
   signal?: AbortSignal;
 }
 
@@ -311,6 +315,26 @@ function configureLayoutFeatures(
   }
 }
 
+// A retained script whose characters were subset away still reaches shared
+// glyphs through its lookups, and FreeType-style autohinters (Skrifa in
+// Chrome on Android/Linux) then hint those glyphs against that script's
+// missing alignment zones, misaligning the x-height.
+function configureLayoutScripts(
+  exports: HarfbuzzExports,
+  input: number,
+  scriptTags: string[] | undefined
+): void {
+  if (scriptTags === undefined) return;
+  const layoutScripts = exports.hb_subset_input_set(
+    input,
+    HB_SUBSET_SETS_LAYOUT_SCRIPT_TAG
+  );
+  exports.hb_set_clear(layoutScripts);
+  for (const tag of scriptTags) {
+    exports.hb_set_add(layoutScripts, HB_TAG(tag));
+  }
+}
+
 function configureNameTables(exports: HarfbuzzExports, input: number): void {
   const nameIdSet = exports.hb_subset_input_set(input, HB_SUBSET_SETS_NAME_ID);
   exports.hb_set_clear(nameIdSet);
@@ -437,9 +461,11 @@ function configureSubsetInput(
   text: string,
   glyphIds: number[] | undefined,
   variationAxes: Record<string, VariationAxisValue> | undefined,
-  featureTags: string[] | undefined
+  featureTags: string[] | undefined,
+  scriptTags: string[] | undefined
 ): void {
   configureLayoutFeatures(exports, input, featureTags);
+  configureLayoutScripts(exports, input, scriptTags);
 
   configureNameTables(exports, input);
   configureDropTables(exports, input);
@@ -499,6 +525,7 @@ async function subsetFontWithGlyphs(
     glyphIds,
     variationAxes,
     featureTags,
+    scriptTags,
     signal,
   }: SubsetFontWithGlyphsOptions = {}
 ): Promise<Buffer> {
@@ -551,7 +578,8 @@ async function subsetFontWithGlyphs(
         text,
         glyphIds,
         variationAxes,
-        featureTags
+        featureTags,
+        scriptTags
       );
 
       subset = exports.hb_subset_or_fail(face, input);

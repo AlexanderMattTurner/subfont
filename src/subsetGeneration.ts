@@ -11,17 +11,31 @@ import { wrapAssetGraphError } from './types/shared';
 import { getVariationAxisBounds } from './variationAxes';
 import collectFeatureGlyphIds = require('./collectFeatureGlyphIds');
 import subsetFontWithGlyphs = require('./subsetFontWithGlyphs');
+import { otScriptTagsForText, type ScriptContext } from './otScriptTags';
 // Bump when subsetting behaviour changes the output bytes for any cached key
 // (e.g. after adding hinting removal or table stripping). Pure cache-key
 // reshaping that doesn't alter bytes (like adding a sort to a stable input)
 // does NOT need a bump — old keys just stop matching and new equivalents
 // fill in on next run; existing entries remain byte-correct.
-const SUBSET_CACHE_VERSION = '10';
+const SUBSET_CACHE_VERSION = '11';
 
 type FontBuffer = Buffer | Uint8Array;
 
+// The DOM surface of an HTML/SVG parse tree that script-context collection
+// reads; a CSS asset's postcss root lacks querySelectorAll.
+interface DomDocumentLike {
+  documentElement?: { textContent: string | null } | null;
+  querySelectorAll(
+    selector: string
+  ): ArrayLike<{ getAttribute(name: string): string | null }>;
+}
+
 interface AssetTextWithProps {
   fontUsages: TracedFontUsage[];
+  htmlOrSvgAsset?: {
+    text?: string;
+    parseTree?: Asset['parseTree'] | DomDocumentLike;
+  };
 }
 
 interface SubsetInfo {
@@ -62,7 +76,8 @@ function getFontBufferDigest(fontBuffer: FontBuffer): Buffer {
 // when feature settings can't be fully enumerated (retain-all fallback) and
 // `[]` when the page uses no feature settings at all (essential-only). Because the
 // empty array serialises to `"featureTags":[]` while an `undefined` value is
-// omitted, the two never collide.
+// omitted, the two never collide. `scriptTags` works the same way: undefined
+// retains every script record, and a defined list is never empty.
 //
 // The caveat for future fields: a field whose *only* distinction from another
 // invocation is `undefined` vs an omitted key would alias in the hash. Such a
@@ -412,8 +427,70 @@ function subsetInfoFromBounds(
       };
 }
 
+interface ScriptContextParts {
+  chars: Set<string>;
+  langs: Set<string>;
+}
+
+// One page's script context: its source (attribute values, script bodies),
+// its decoded DOM text (character references spelled out), its traced text
+// (JS-rendered under --dynamic) and its `lang` values. Undefined when the
+// page's source or DOM is unavailable.
+function pageScriptContext(
+  htmlOrSvgAsset: AssetTextWithProps['htmlOrSvgAsset'],
+  fontUsages: TracedFontUsage[]
+): ScriptContextParts | undefined {
+  const document = htmlOrSvgAsset?.parseTree;
+  if (htmlOrSvgAsset?.text === undefined || !document) return undefined;
+  if (!('documentElement' in document) || !document.documentElement) {
+    return undefined;
+  }
+  const decoded = document.documentElement.textContent ?? '';
+  const chars = new Set(htmlOrSvgAsset.text + decoded);
+  for (const { text } of fontUsages) for (const ch of text) chars.add(ch);
+  const langs = new Set<string>();
+  for (const element of Array.from(document.querySelectorAll('*'))) {
+    const lang =
+      element.getAttribute('lang') ?? element.getAttribute('xml:lang');
+    if (lang !== null) langs.add(lang.trim());
+  }
+  return { chars, langs };
+}
+
+// The union of the script contexts of every page using each font URL, or
+// undefined for a URL used by a page whose context is unavailable.
+function collectScriptContextByUrl(
+  htmlOrSvgAssetTextsWithProps: AssetTextWithProps[]
+): Map<string, ScriptContext | undefined> {
+  const partsByUrl = new Map<string, ScriptContextParts | undefined>();
+  for (const { fontUsages, htmlOrSvgAsset } of htmlOrSvgAssetTextsWithProps) {
+    const urls = new Set(fontUsages.flatMap((u) => u.fontUrl ?? []));
+    if (urls.size === 0) continue;
+    const page = pageScriptContext(htmlOrSvgAsset, fontUsages);
+    for (const url of urls) {
+      const merged = partsByUrl.has(url)
+        ? partsByUrl.get(url)
+        : { chars: new Set<string>(), langs: new Set<string>() };
+      if (!merged || !page) {
+        partsByUrl.set(url, undefined);
+        continue;
+      }
+      for (const ch of page.chars) merged.chars.add(ch);
+      for (const lang of page.langs) merged.langs.add(lang);
+      partsByUrl.set(url, merged);
+    }
+  }
+  return new Map(
+    [...partsByUrl].map(([url, parts]) => [
+      url,
+      parts && { text: [...parts.chars].join(''), langs: [...parts.langs] },
+    ])
+  );
+}
+
 function buildExtraSubsetOptions(
-  fontUsage: SubsettedFontUsage
+  fontUsage: SubsettedFontUsage,
+  scriptContext: ScriptContext | undefined
 ): ExtraSubsetCacheOptions {
   // Targeted feature retention when we can fully enumerate the
   // CSS-requested feature tags. If the page declares feature settings
@@ -427,10 +504,13 @@ function buildExtraSubsetOptions(
         ? [...fontUsage.fontFeatureTags]
         : [];
 
-  // Characters alone cannot prove math/color data or script records unused.
-  // HarfBuzz subsets glyph-dependent data; retain all script systems, including
-  // modern Indic tags and scripts absent from our former Unicode-range map.
-  return { featureTags };
+  // Characters alone cannot prove math/color data unused; HarfBuzz subsets
+  // glyph-dependent data. Script records, though, are selected by text.
+  const scriptTags =
+    scriptContext === undefined
+      ? undefined
+      : otScriptTagsForText(fontUsage.text, scriptContext);
+  return { featureTags, scriptTags };
 }
 
 // Shared across subset queueing: the assetGraph (for warn routing), the
@@ -511,6 +591,7 @@ async function queueSubsetForFormat(
 async function queueAllSubsets(
   ctx: SubsetGenCtx,
   canonicalFontUsageByUrl: Map<string, SubsettedFontUsage>,
+  scriptContextByUrl: Map<string, ScriptContext | undefined>,
   originalFontBuffers: Map<string, FontBuffer>,
   variationAxisBoundsCache: Map<
     string,
@@ -557,7 +638,10 @@ async function queueAllSubsets(
         }
       }
 
-      const extraOptions = buildExtraSubsetOptions(fontUsage);
+      const extraOptions = buildExtraSubsetOptions(
+        fontUsage,
+        scriptContextByUrl.get(fontUrl)
+      );
 
       for (const targetFormat of formats) {
         const promiseId = getSubsetPromiseId(
@@ -719,6 +803,7 @@ export async function getSubsetsForFontUsage(
       signal,
     },
     canonicalFontUsageByUrl,
+    collectScriptContextByUrl(htmlOrSvgAssetTextsWithProps),
     originalFontBuffers,
     variationAxisBoundsCache,
     formats
