@@ -6,6 +6,25 @@ their contents are recorded in the `v*` git tags and the commit history. The
 
 ## Unreleased
 
+## [1.13.0] - 2026-11-10
+
+### Added
+- Documentation on font layout script retention and how math and language influence it.
+- New test suite for OpenType script tag handling with pinned runtime-stable danda extensions.
+
+### Changed
+- Font subsetting now derives script context from language, decoded DOM text, and math content for more accurate script selection.
+- Improved script retention to consider page context and handle unknown codepoints more robustly.
+
+### Fixed
+- Font subsetting now keeps only layout scripts that a subset's text can actually select.
+- Preserve invalid-font warnings when no axes need instancing.
+- Preserve required font data while pruning unused features.
+- Preserve font rasterization preferences in subsets.
+- Release workflow now pushes the release commit with organization bypass PAT.
+- CI now runs the npm-max-stable suite to guard the semver import.
+- Test system Chrome resolution now works for both browser paths consistently.
+
 ## [1.12.4] - 2026-09-07
 
 1.12.2 through 1.12.4 have no user-facing changes: they carry a lockfile-only `postcss` bump (the published `^8.3.11` range already allowed it) and repository tooling. The retired local publisher released them without writing this file, so this entry was added afterwards.
