@@ -390,9 +390,9 @@ describe('subsetGeneration', function () {
       expect(warnCalls[0].asset, 'to be', fontAsset);
     });
 
-    describe('script tags', function () {
+    describe('per-font subset options', function () {
       const fontUrl = 'https://example.com/scripts.ttf';
-      async function scriptTagsFor(pages) {
+      async function subsetOptionsFor(pages, autohintReferenceChars) {
         const calls = [];
         const { getSubsetsForFontUsage } = proxyquire(
           '../lib/subsetGeneration',
@@ -419,11 +419,17 @@ describe('subsetGeneration', function () {
           pages,
           ['woff2'],
           new Map(),
-          false
+          null,
+          null,
+          false,
+          undefined,
+          autohintReferenceChars
         );
         expect(calls, 'to have length', 1);
-        return calls[0].scriptTags;
+        return calls[0];
       }
+      const scriptTagsFor = async (pages) =>
+        (await subsetOptionsFor(pages)).scriptTags;
 
       const page = (html, text) => ({
         htmlOrSvgAsset: {
@@ -454,6 +460,16 @@ describe('subsetGeneration', function () {
           ];
           if (missingFirst) pages.reverse();
           expect(await scriptTagsFor(pages), 'to be undefined');
+        });
+      });
+
+      [
+        [true, true],
+        [false, undefined],
+      ].forEach(([flag, expected]) => {
+        it(`should pass autohintReferenceChars ${expected} when the flag is ${flag}`, async function () {
+          const opts = await subsetOptionsFor([page('<p>ab</p>', 'ab')], flag);
+          expect(opts.autohintReferenceChars, 'to be', expected);
         });
       });
     });

@@ -65,6 +65,12 @@ interface SubfontOptions {
   chromeFlags?: string[];
   /** Cache subset results. Pass a path or `true` for `.subfont-cache` inside `root`. */
   cache?: boolean | string;
+  /**
+   * Add the characters Chrome's autohinter (Android, Linux) measures
+   * alignment zones on to each subset of an unhinted TrueType font, so the
+   * subset is hinted like the full font. Costs bytes on small subsets.
+   */
+  autohintReferenceChars?: boolean;
   /** Exit non-zero if any warnings are emitted. */
   strict?: boolean;
   /** Abort the run early. Cancels in-flight font tracing and subsetting. */
@@ -725,6 +731,7 @@ const subfont = async function subfont(
     concurrency,
     chromeFlags = [],
     cache = false,
+    autohintReferenceChars = false,
     strict = false,
     signal,
   }: SubfontOptions,
@@ -836,6 +843,7 @@ const subfont = async function subfont(
       concurrency,
       chromeArgs: chromeFlags,
       cacheDir,
+      autohintReferenceChars,
       signal,
     });
     const subsetFontsTotal = subsetPhase.end();

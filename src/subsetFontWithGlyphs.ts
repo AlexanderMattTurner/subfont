@@ -2,6 +2,10 @@ import os = require('os');
 import { readFile } from 'fs/promises';
 import * as fontverter from 'fontverter';
 import { toSfnt } from './sfntCache';
+import {
+  isAutohinted,
+  withAutohintReferenceChars,
+} from './autohintReferenceText';
 import { convert as convertInWorker } from './fontConverter';
 import { MAX_POOL_SIZE } from './concurrencyLimit';
 
@@ -82,6 +86,9 @@ interface SubsetFontWithGlyphsOptions {
   // OpenType script tags whose GSUB/GPOS script records to keep (see
   // otScriptTagsForText). When undefined, retain every script record.
   scriptTags?: string[];
+  // Add the characters Chrome's autohinter measures alignment zones on (see
+  // withAutohintReferenceChars) when the font is autohinted.
+  autohintReferenceChars?: boolean;
   signal?: AbortSignal;
 }
 
@@ -526,6 +533,7 @@ async function subsetFontWithGlyphs(
     variationAxes,
     featureTags,
     scriptTags,
+    autohintReferenceChars = false,
     signal,
   }: SubsetFontWithGlyphsOptions = {}
 ): Promise<Buffer> {
@@ -575,7 +583,9 @@ async function subsetFontWithGlyphs(
         exports,
         input,
         face,
-        text,
+        autohintReferenceChars && isAutohinted(ttf)
+          ? withAutohintReferenceChars(text)
+          : text,
         glyphIds,
         variationAxes,
         featureTags,

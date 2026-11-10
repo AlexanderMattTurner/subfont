@@ -18,6 +18,7 @@ A faster fork of [subfont](https://github.com/Munter/subfont) that subsets web f
 | Family-scoped page text (gated) | On shared-CSS pages, attributes a page's visible text only to the webfont families whose selectors can match an element on that page (falls back to all families when the `font-family` rules can't be parsed) |
 | Layout-script pruning (gated)   | Drops GSUB/GPOS script records (e.g. `cyrl`, `grek`) the subset's characters can't select; text that is all digits/punctuation keeps all                                                                       |
 | Non-rendered attribute skip     | Excludes `title`/`aria-label`/`aria-description` text from subsets (tooltips render in the OS font; ARIA labels are never painted)                                                                             |
+| Autohint reference (opt-in)     | Adds the letters Chrome's autohinter measures alignment zones on to unhinted TrueType subsets, so Android/Linux hint them like the full font                                                                   |
 
 Fonts containing color/bitmap presentations or legacy layout tables that the
 bundled HarfBuzz cannot safely subset retain their full glyph data. Ordinary
@@ -73,27 +74,28 @@ subfont path/to/index.html -i --cache
 
 ## Options
 
-|               Flag | Default | Description                                                                                                                                                                      |
-| -----------------: | :-----: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-|   `-i, --in-place` |   off   | Modify files in-place                                                                                                                                                            |
-|     `-o, --output` |         | Output directory                                                                                                                                                                 |
-|           `--root` |         | Path to web root (deduced from input files if not specified)                                                                                                                     |
-| `--canonical-root` |         | URI root where the site will be deployed                                                                                                                                         |
-|  `-r, --recursive` |   off   | Crawl linked pages                                                                                                                                                               |
-|        `--dynamic` |   off   | Trace with headless browser                                                                                                                                                      |
-|        `--dry-run` |   off   | Preview without writing                                                                                                                                                          |
-|      `--fallbacks` |   on    | Async-load the full original font as a fallback for dynamic content                                                                                                              |
-|   `--font-display` | `swap`  | `auto`/`block`/`swap`/`fallback`/`optional`                                                                                                                                      |
-|           `--text` |         | Extra characters for every subset                                                                                                                                                |
-|    `--cache [dir]` |   off   | Cache subset results to disk between runs                                                                                                                                        |
-|  `--concurrency N` |  auto   | Max worker threads (defaults to CPU count, max 8). Warns when exceeding memory-based estimate (~50 MB per worker). With `--dynamic`, headless-Chrome tabs are always capped at 8 |
-|   `--chrome-flags` |         | Custom Chrome flag for `--dynamic`. Use the `=` form and repeat for multiple flags: `--chrome-flags=--no-sandbox --chrome-flags=--disable-features=Foo,Bar`                      |
-|    `--source-maps` |   off   | Preserve CSS source maps (slower)                                                                                                                                                |
-|         `--strict` |   off   | Exit non-zero if any warnings are emitted                                                                                                                                        |
-|     `-s, --silent` |   off   | Suppress all console output                                                                                                                                                      |
-|      `-d, --debug` |   off   | Verbose timing and font glyph detection info                                                                                                                                     |
-|  `--relative-urls` |   off   | Emit relative URLs instead of root-relative                                                                                                                                      |
-|     `--inline-css` |   off   | Inline the subset @font-face CSS into HTML                                                                                                                                       |
+|                         Flag | Default | Description                                                                                                                                                                      |
+| ---------------------------: | :-----: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|             `-i, --in-place` |   off   | Modify files in-place                                                                                                                                                            |
+|               `-o, --output` |         | Output directory                                                                                                                                                                 |
+|                     `--root` |         | Path to web root (deduced from input files if not specified)                                                                                                                     |
+|           `--canonical-root` |         | URI root where the site will be deployed                                                                                                                                         |
+|            `-r, --recursive` |   off   | Crawl linked pages                                                                                                                                                               |
+|                  `--dynamic` |   off   | Trace with headless browser                                                                                                                                                      |
+|                  `--dry-run` |   off   | Preview without writing                                                                                                                                                          |
+|                `--fallbacks` |   on    | Async-load the full original font as a fallback for dynamic content                                                                                                              |
+|             `--font-display` | `swap`  | `auto`/`block`/`swap`/`fallback`/`optional`                                                                                                                                      |
+|                     `--text` |         | Extra characters for every subset                                                                                                                                                |
+|              `--cache [dir]` |   off   | Cache subset results to disk between runs                                                                                                                                        |
+| `--autohint-reference-chars` |   off   | Add the letters Chrome's autohinter measures alignment zones on to subsets of unhinted TrueType fonts. Adds bytes to small subsets                                               |
+|            `--concurrency N` |  auto   | Max worker threads (defaults to CPU count, max 8). Warns when exceeding memory-based estimate (~50 MB per worker). With `--dynamic`, headless-Chrome tabs are always capped at 8 |
+|             `--chrome-flags` |         | Custom Chrome flag for `--dynamic`. Use the `=` form and repeat for multiple flags: `--chrome-flags=--no-sandbox --chrome-flags=--disable-features=Foo,Bar`                      |
+|              `--source-maps` |   off   | Preserve CSS source maps (slower)                                                                                                                                                |
+|                   `--strict` |   off   | Exit non-zero if any warnings are emitted                                                                                                                                        |
+|               `-s, --silent` |   off   | Suppress all console output                                                                                                                                                      |
+|                `-d, --debug` |   off   | Verbose timing and font glyph detection info                                                                                                                                     |
+|            `--relative-urls` |   off   | Emit relative URLs instead of root-relative                                                                                                                                      |
+|               `--inline-css` |   off   | Inline the subset @font-face CSS into HTML                                                                                                                                       |
 
 Run `subfont --help` for the full list.
 

@@ -490,7 +490,8 @@ function collectScriptContextByUrl(
 
 function buildExtraSubsetOptions(
   fontUsage: SubsettedFontUsage,
-  scriptContext: ScriptContext | undefined
+  scriptContext: ScriptContext | undefined,
+  autohintReferenceChars: boolean
 ): ExtraSubsetCacheOptions {
   // Targeted feature retention when we can fully enumerate the
   // CSS-requested feature tags. If the page declares feature settings
@@ -510,7 +511,12 @@ function buildExtraSubsetOptions(
     scriptContext === undefined
       ? undefined
       : otScriptTagsForText(fontUsage.text, scriptContext);
-  return { featureTags, scriptTags };
+  // Omitted when off, so default runs keep their existing cache keys.
+  return {
+    featureTags,
+    scriptTags,
+    autohintReferenceChars: autohintReferenceChars || undefined,
+  };
 }
 
 // Shared across subset queueing: the assetGraph (for warn routing), the
@@ -527,6 +533,7 @@ interface SubsetGenCtx {
   // truncate in-flight writes, leaving orphaned *.tmp files and cache misses
   // on every subsequent run.
   pendingCacheWrites: Promise<void>[];
+  autohintReferenceChars: boolean;
   signal?: AbortSignal;
 }
 
@@ -640,7 +647,8 @@ async function queueAllSubsets(
 
       const extraOptions = buildExtraSubsetOptions(
         fontUsage,
-        scriptContextByUrl.get(fontUrl)
+        scriptContextByUrl.get(fontUrl),
+        ctx.autohintReferenceChars
       );
 
       for (const targetFormat of formats) {
@@ -771,7 +779,8 @@ export async function getSubsetsForFontUsage(
   cacheDir: string | null = null,
   console: Console | null = null,
   debug = false,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  autohintReferenceChars = false
 ): Promise<Map<string, Asset>> {
   const diskCache = cacheDir ? new SubsetDiskCache(cacheDir, console) : null;
   const cacheStats = diskCache ? { hits: 0, misses: 0 } : null;
@@ -800,6 +809,7 @@ export async function getSubsetsForFontUsage(
       diskCache,
       cacheStats,
       pendingCacheWrites,
+      autohintReferenceChars,
       signal,
     },
     canonicalFontUsageByUrl,
