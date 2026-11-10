@@ -6,6 +6,10 @@ their contents are recorded in the `v*` git tags and the commit history. The
 
 ## Unreleased
 
+## [1.12.4] - 2026-09-07
+
+1.12.2 through 1.12.4 have no user-facing changes: they carry a lockfile-only `postcss` bump (the published `^8.3.11` range already allowed it) and repository tooling. The retired local publisher released them without writing this file, so this entry was added afterwards.
+
 ## [1.12.1] - 2026-08-18
 
 ### Fixed
